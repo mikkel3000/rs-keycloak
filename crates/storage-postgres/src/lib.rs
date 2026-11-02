@@ -15,6 +15,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0002_bootstrap.sql"),
     include_str!("../../../migrations/0003_login.sql"),
     include_str!("../../../migrations/0004_authorization.sql"),
+    include_str!("../../../migrations/0005_code_replay_retention.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -549,9 +550,9 @@ impl Storage {
             tx.commit().await?;
             return Ok(None);
         }
-        sqlx::query("DELETE FROM authorization_codes WHERE code_hash IN (SELECT code_hash FROM authorization_codes WHERE expires_at <= clock_timestamp() - interval '1 day' ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
+        sqlx::query("DELETE FROM authorization_codes WHERE code_hash IN (SELECT a.code_hash FROM authorization_codes a WHERE a.replay_until <= clock_timestamp() AND NOT EXISTS (SELECT 1 FROM user_sessions us WHERE us.realm_id = a.realm_id AND us.id = a.user_session_id AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL) ORDER BY a.replay_until LIMIT 16 FOR UPDATE OF a SKIP LOCKED)").execute(&mut *conn).await?;
         let redirect_uri: String = req.try_get("redirect_uri")?;
-        sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, user_session_id, pkce_s256, scope, nonce, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9))")
+        sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, user_session_id, pkce_s256, scope, nonce, expires_at, replay_until) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $5))")
             .bind(code_hash).bind(&realm).bind(&client).bind(&redirect_uri).bind(user_session_id).bind(req.try_get::<Vec<u8>, _>("pkce_s256")?).bind(req.try_get::<String, _>("scope")?).bind(req.try_get::<Option<String>, _>("nonce")?).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
         let state = req.try_get("state")?;
         tx.commit().await?;
@@ -575,7 +576,7 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let code = sqlx::query("SELECT a.realm_id, a.client_id, a.user_session_id, us.user_id, c.client_id AS client_identifier, a.scope, a.nonce, EXTRACT(EPOCH FROM us.created_at)::bigint AS auth_time, a.consumed_at IS NOT NULL AS consumed FROM authorization_codes a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN realms r ON r.id = a.realm_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE a.code_hash = $1 AND a.realm_id = $2 AND c.client_id = $3 AND a.redirect_uri = $4 AND a.pkce_s256 = $5 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND c.enabled AND c.public_client AND u.enabled FOR UPDATE OF a, us FOR SHARE OF c, r, u, cs")
+        let code = sqlx::query("SELECT a.realm_id, a.client_id, a.user_session_id, us.user_id, c.client_id AS client_identifier, a.scope, a.nonce, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, a.consumed_at IS NOT NULL AS consumed FROM authorization_codes a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN realms r ON r.id = a.realm_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE a.code_hash = $1 AND a.realm_id = $2 AND c.client_id = $3 AND a.redirect_uri = $4 AND a.pkce_s256 = $5 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND c.enabled AND c.public_client AND u.enabled FOR UPDATE OF a, us FOR SHARE OF c, r, u, cs")
             .bind(code_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).fetch_optional(&mut *conn).await?;
         let Some(code) = code else {
             return Ok(None);
