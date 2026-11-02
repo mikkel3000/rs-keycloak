@@ -38,3 +38,11 @@ To reproduce the distribution fallback, fetch the exact URL in `reference.lock`,
 To regenerate source-declared operations from the exact source archive, use `python3 compatibility/inventory.py --source /path/to/extracted/source --output compatibility/operations.json`; a semantic route/profile/permission review is still required, and a generated count is not a coverage result.
 
 The Java admin client is independently released as 26.0.12, evidenced by the Maven Central POM, while the tagged console dependency lock resolves `keycloak-js` to 26.2.2; neither client has passed runtime qualification here.
+
+## OAuth reference fixture
+
+Run `tests/reference/oauth.py --archive /path/to/keycloak-26.8.1.tar.gz` with Python 3.12+, OpenJDK 25 and OpenSSL on PATH; the launcher verifies the archive digest, starts a fresh loopback reference on port 18081, uses an in-memory bootstrap service-account secret, and removes the temporary realm/data after the run.
+
+The fixture imports synthetic realm/client/user data through Admin REST and exercises HTTP login forms/cookies, authorization code with S256 PKCE, nonce/state/issuer/audience/time binding, public JWKS signature verification through OpenSSL, userinfo, refresh and replay/wrong-verifier denial; child logs are suppressed and secrets/tokens/signatures stay in memory and anonymous pipes.
+
+The HTTP form client is not browser-engine automation, uses loopback-specific secure-cookie handling and is not an independent OIDC client library; signature checks currently cover the fixture's RS256 algorithm, and no paired target parity is claimed.
