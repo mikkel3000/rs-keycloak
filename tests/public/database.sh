@@ -29,8 +29,12 @@ if "$bin" db check; then echo 'fresh schema check unexpectedly succeeded' >&2; e
 "$bin" db migrate
 "$bin" db check
 "$bin" db migrate
-# Simulate an installation at migration 1, then upgrade through the CLI.
-sql 'DROP TABLE login_challenges, login_lockouts, login_policy, audit_events, bootstrap_admin, user_role_grants, roles; DROP FUNCTION rs_bump_user_revision() CASCADE; DROP FUNCTION rs_bump_credential_revision() CASCADE; DROP INDEX credentials_one_password_per_user; ALTER TABLE credentials DROP COLUMN revision; DELETE FROM rs_schema_history WHERE version >= 2'
+# Build a v1 fixture, then upgrade it through the public CLI.
+sql 'DROP SCHEMA public CASCADE; CREATE SCHEMA public'
+docker exec -i "$container" psql -U postgres -d postgres -v ON_ERROR_STOP=1 -q < migrations/0001_initial.sql
+checksum=$(sha256sum migrations/0001_initial.sql)
+checksum=${checksum%% *}
+sql "CREATE TABLE rs_maintenance (singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton), active boolean NOT NULL); INSERT INTO rs_maintenance VALUES (true, false); CREATE TABLE rs_schema_history (version bigint PRIMARY KEY, checksum bytea NOT NULL, applied_at timestamptz NOT NULL DEFAULT CURRENT_TIMESTAMP); INSERT INTO rs_schema_history (version, checksum) VALUES (1, decode('$checksum', 'hex'))"
 if "$bin" db check; then echo 'old schema unexpectedly accepted' >&2; exit 1; fi
 "$bin" db migrate
 "$bin" db check
@@ -56,3 +60,5 @@ python3 tests/public/bootstrap_contract.py "$bin"
 [[ $(sql 'SELECT count(*) FROM bootstrap_admin') == 1 ]]
 [[ $(sql 'SELECT count(*) FROM user_role_grants') == 1 ]]
 [[ $(sql "SELECT count(*) FROM audit_events WHERE event_type = 'bootstrap_admin_created'") == 1 ]]
+python3 tests/public/lifecycle_contract.py "$bin"
+python3 tests/public/client_contract.py "$bin"

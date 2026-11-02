@@ -14,6 +14,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0001_initial.sql"),
     include_str!("../../../migrations/0002_bootstrap.sql"),
     include_str!("../../../migrations/0003_login.sql"),
+    include_str!("../../../migrations/0004_authorization.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -225,6 +226,34 @@ pub enum LoginOutcome {
     Denied,
 }
 
+/// Redirect details saved with an authorization request.
+pub struct AuthorizationRedirect {
+    /// Exact registered redirect URI.
+    pub redirect_uri: String,
+    /// Optional caller-supplied state.
+    pub state: Option<String>,
+}
+
+/// Identity and session bound to a consumed authorization code.
+pub struct CodeGrant {
+    /// Realm identifier.
+    pub realm_id: String,
+    /// User identifier.
+    pub user_id: String,
+    /// User session identifier.
+    pub session_id: String,
+    /// Internal client identifier.
+    pub client_id: String,
+    /// Public client identifier, used as token audience.
+    pub client_identifier: String,
+    /// Authorized scopes.
+    pub scope: String,
+    /// OIDC nonce supplied in the authorization request.
+    pub nonce: Option<String>,
+    /// Authentication time as Unix seconds.
+    pub auth_time: i64,
+}
+
 /// Separate bounded request and worker pools for primary-only access.
 pub struct Storage {
     request: PgPool,
@@ -406,6 +435,174 @@ impl Storage {
             .bind(limit).execute(tx.connection()).await?.rows_affected();
         tx.commit().await?;
         Ok(deleted)
+    }
+
+    /// Resolve an enabled realm's public name to its internal identifier.
+    pub async fn realm_id_by_name(&self, name: &str) -> Result<Option<String>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let id = sqlx::query_scalar("SELECT id FROM realms WHERE name = $1 AND enabled")
+            .bind(name)
+            .fetch_optional(tx.connection())
+            .await?;
+        tx.commit().await?;
+        Ok(id)
+    }
+
+    /// Register a public client and its exact redirect URI in an existing realm.
+    pub async fn create_public_client(
+        &self,
+        realm: &str,
+        client_id: &str,
+        client_identifier: &str,
+        redirect_uri: &str,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let inserted: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, public_client) VALUES ($1, $2, $3, true) ON CONFLICT (realm_id, client_id) DO NOTHING RETURNING id")
+            .bind(realm).bind(client_id).bind(client_identifier).fetch_optional(tx.connection()).await?;
+        if let Some(id) = inserted {
+            sqlx::query("INSERT INTO client_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3)")
+                .bind(realm).bind(id).bind(redirect_uri).execute(tx.connection()).await?;
+        } else {
+            let matches: bool = sqlx::query_scalar("SELECT c.public_client AND c.enabled AND EXISTS (SELECT 1 FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id AND d.redirect_uri = $3) FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 FOR UPDATE")
+                .bind(realm).bind(client_identifier).bind(redirect_uri).fetch_one(tx.connection()).await?;
+            if !matches {
+                return Err(StorageError::Conflict);
+            }
+        }
+        tx.commit().await
+    }
+
+    /// Persist an authorization request only for an enabled public client and exact redirect.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_authorization_request(
+        &self,
+        request_id: &str,
+        csrf_hash: &[u8],
+        realm: &str,
+        client_identifier: &str,
+        redirect_uri: &str,
+        pkce_s256: &[u8],
+        state: Option<&str>,
+        scope: &str,
+        nonce: Option<&str>,
+        ttl_seconds: i32,
+    ) -> Result<bool, StorageError> {
+        if !(1..=300).contains(&ttl_seconds)
+            || csrf_hash.len() != 32
+            || pkce_s256.len() != 32
+            || state.is_some_and(|s| s.len() > 2048)
+            || scope.is_empty()
+            || scope.len() > 2048
+            || nonce.is_some_and(|s| s.len() > 2048)
+        {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10) FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.public_client")
+            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?.rows_affected();
+        tx.commit().await?;
+        Ok(count == 1)
+    }
+
+    /// Resolve a live request to its realm and internal client after CSRF binding.
+    pub async fn authorization_request_client(
+        &self,
+        request_id: &str,
+        csrf_hash: &[u8],
+    ) -> Result<Option<(String, String)>, StorageError> {
+        if csrf_hash.len() != 32 {
+            return Ok(None);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let row = sqlx::query_as("SELECT a.realm_id, a.client_id FROM authorization_requests a JOIN realms r ON r.id = a.realm_id JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id WHERE a.id = $1 AND a.csrf_hash = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp() AND r.enabled AND c.enabled AND c.public_client")
+            .bind(request_id).bind(csrf_hash).fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(row)
+    }
+
+    /// Consume an authorization request and bind a hashed code to a live user and client session.
+    pub async fn issue_authorization_code(
+        &self,
+        request_id: &str,
+        csrf_hash: &[u8],
+        user_session_id: &str,
+        code_hash: &[u8],
+        ttl_seconds: i32,
+    ) -> Result<Option<AuthorizationRedirect>, StorageError> {
+        if !(1..=120).contains(&ttl_seconds) || csrf_hash.len() != 32 || code_hash.len() != 32 {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let req = sqlx::query("UPDATE authorization_requests SET consumed_at = clock_timestamp() WHERE id = $1 AND csrf_hash = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce")
+            .bind(request_id).bind(csrf_hash).fetch_optional(&mut *conn).await?;
+        let Some(req) = req else {
+            return Ok(None);
+        };
+        let realm: String = req.try_get("realm_id")?;
+        let client: String = req.try_get("client_id")?;
+        let valid = sqlx::query("SELECT 1 FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND us.id = $2 AND c.id = $3 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND u.enabled AND c.enabled AND c.public_client FOR SHARE OF us, u, r, cs, c")
+            .bind(&realm).bind(user_session_id).bind(&client).fetch_optional(&mut *conn).await?.is_some();
+        if !valid {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        sqlx::query("DELETE FROM authorization_codes WHERE code_hash IN (SELECT code_hash FROM authorization_codes WHERE expires_at <= clock_timestamp() - interval '1 day' ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
+        let redirect_uri: String = req.try_get("redirect_uri")?;
+        sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, user_session_id, pkce_s256, scope, nonce, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9))")
+            .bind(code_hash).bind(&realm).bind(&client).bind(&redirect_uri).bind(user_session_id).bind(req.try_get::<Vec<u8>, _>("pkce_s256")?).bind(req.try_get::<String, _>("scope")?).bind(req.try_get::<Option<String>, _>("nonce")?).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        let state = req.try_get("state")?;
+        tx.commit().await?;
+        Ok(Some(AuthorizationRedirect {
+            redirect_uri,
+            state,
+        }))
+    }
+
+    /// Atomically consume a code with exact realm, client, redirect and PKCE bindings.
+    pub async fn redeem_authorization_code(
+        &self,
+        code_hash: &[u8],
+        realm: &str,
+        client_identifier: &str,
+        redirect_uri: &str,
+        pkce_s256: &[u8],
+    ) -> Result<Option<CodeGrant>, StorageError> {
+        if code_hash.len() != 32 || pkce_s256.len() != 32 {
+            return Ok(None);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let code = sqlx::query("SELECT a.realm_id, a.client_id, a.user_session_id, us.user_id, c.client_id AS client_identifier, a.scope, a.nonce, EXTRACT(EPOCH FROM us.created_at)::bigint AS auth_time, a.consumed_at IS NOT NULL AS consumed FROM authorization_codes a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN realms r ON r.id = a.realm_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE a.code_hash = $1 AND a.realm_id = $2 AND c.client_id = $3 AND a.redirect_uri = $4 AND a.pkce_s256 = $5 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND c.enabled AND c.public_client AND u.enabled FOR UPDATE OF a, us FOR SHARE OF c, r, u, cs")
+            .bind(code_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).fetch_optional(&mut *conn).await?;
+        let Some(code) = code else {
+            return Ok(None);
+        };
+        if code.try_get::<bool, _>("consumed")? {
+            sqlx::query("UPDATE user_sessions SET revoked_at = clock_timestamp() WHERE realm_id = $1 AND id = $2 AND revoked_at IS NULL")
+                .bind(realm).bind(code.try_get::<String, _>("user_session_id")?).execute(&mut *conn).await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let count = sqlx::query("UPDATE authorization_codes SET consumed_at = clock_timestamp() WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > clock_timestamp()").bind(code_hash).execute(&mut *conn).await?.rows_affected();
+        if count != 1 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let result = CodeGrant {
+            realm_id: code.try_get("realm_id")?,
+            user_id: code.try_get("user_id")?,
+            session_id: code.try_get("user_session_id")?,
+            client_id: code.try_get("client_id")?,
+            client_identifier: code.try_get("client_identifier")?,
+            scope: code.try_get("scope")?,
+            nonce: code.try_get("nonce")?,
+            auth_time: code.try_get("auth_time")?,
+        };
+        tx.commit().await?;
+        Ok(Some(result))
     }
 
     /// Begin a guarded request transaction; non-auth requests share sixteen slots.
