@@ -9,4 +9,8 @@ The first production release must cover the full agreed API contract, pass secur
 - [Rust providers](RUST-PROVIDERS.md): custom login, policy and mapper support without Java or server-side JavaScript.
 - [Opportunities and review](OPPORTUNITIES.md): developer experience improvements and architecture gaps to resolve.
 
-Status: planning only; no server or compatibility tests have been built or run.
+Status: implementation in progress; this is not a complete Keycloak replacement or a production release. PostgreSQL migrations, bootstrap and client setup, management routes, bounded password work, PKCE validation and RSA signing primitives are implemented; public authentication and the full compatibility contract remain incomplete.
+
+Build with `cargo build --locked --workspace` using the pinned toolchain. Run `bash tests/public/run.sh` with Docker, Python 3 and OpenSSL available; the suite creates a disposable PostgreSQL container and checks public CLI behavior before Rust tests and lint checks. OpenSSL generates test keys in memory. These checks do not establish full HTTP compatibility or production readiness.
+
+See [implementation evidence](IMPLEMENTATION.md) for tested behavior and [the production plan](PLAN.md) for the required remaining scope.
