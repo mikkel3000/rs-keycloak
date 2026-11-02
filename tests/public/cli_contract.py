@@ -74,6 +74,22 @@ class CliContract(unittest.TestCase):
         })
         self.assertNotEqual(result.returncode, 0)
 
+    def test_database_url_cannot_override_checked_security_settings(self):
+        for query in (
+            "sslmode=verify-full&ssl-mode=disable",
+            "sslmode=disable&host=db.example.test",
+            "sslmode=disable&hostaddr=192.0.2.1",
+            "sslmode=verify-full&options=-c%20synchronous_commit%3Doff",
+            "sslmode=verify-full&options[synchronous_commit]=off",
+        ):
+            with self.subTest(query=query):
+                result = self.invoke("config", "check", settings={
+                    "RS_KEYCLOAK_DATABASE_URL": "postgresql://localhost/unused?" + query,
+                    "RS_KEYCLOAK_ISSUER": "https://login.example.test",
+                    "RS_KEYCLOAK_LOCAL_DEV": "true",
+                })
+                self.assertNotEqual(result.returncode, 0)
+
     def test_management_is_private_by_default(self):
         result = self.invoke("config", "check", settings={
             "RS_KEYCLOAK_DATABASE_URL": "postgresql://localhost/unused?sslmode=verify-full",

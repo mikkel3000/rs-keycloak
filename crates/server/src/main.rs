@@ -24,9 +24,31 @@ fn database_url() -> Result<String, &'static str> {
     let local_dev = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true");
     let host = parsed.host_str().unwrap_or_default();
     let local_host = matches!(host, "localhost" | "127.0.0.1" | "[::1]");
+    // SQLx accepts query overrides for authority and startup settings. Restrict
+    // this surface so the validated host, TLS and durability cannot change.
+    for (key, _) in parsed.query_pairs() {
+        if !matches!(
+            key.as_ref(),
+            "sslmode"
+                | "ssl-mode"
+                | "sslrootcert"
+                | "ssl-root-cert"
+                | "ssl-ca"
+                | "sslcert"
+                | "ssl-cert"
+                | "sslkey"
+                | "ssl-key"
+                | "application_name"
+                | "statement-cache-capacity"
+        ) {
+            return Err(
+                "Unsupported database URL query option; configure host and identity in the URL authority",
+            );
+        }
+    }
     let ssl_modes: Vec<_> = parsed
         .query_pairs()
-        .filter(|(key, _)| key == "sslmode")
+        .filter(|(key, _)| key == "sslmode" || key == "ssl-mode")
         .collect();
     if ssl_modes.len() > 1 {
         return Err("RS_KEYCLOAK_DATABASE_URL must specify sslmode at most once");
