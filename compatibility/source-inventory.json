@@ -1,0 +1,907 @@
+{
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "complete_route_inventory": false,
+  "note": "Source candidates only; inherited paths, subresource locators, providers and runtime routes require review. Not an operation or coverage count.",
+  "resource_source_candidates": [
+    {
+      "path": "federation/ldap/src/main/java/org/keycloak/services/resources/admin/LdapServerCapabilitiesRealmAdminProvider.java",
+      "git_blob_sha1": "2399d764f6323b28e7793b4334a48f9622a224d6",
+      "review_status": "pending"
+    },
+    {
+      "path": "federation/ldap/src/main/java/org/keycloak/services/resources/admin/LdapServerCapabilitiesResource.java",
+      "git_blob_sha1": "5a57d03d239e163ef3940c0e38497d049cd29765",
+      "review_status": "pending"
+    },
+    {
+      "path": "federation/ldap/src/main/java/org/keycloak/services/resources/admin/TestLdapConnectionRealmAdminProvider.java",
+      "git_blob_sha1": "6654df2b45ddfab77851fa354693be354cb6d8f6",
+      "review_status": "pending"
+    },
+    {
+      "path": "federation/ldap/src/main/java/org/keycloak/services/resources/admin/TestLdapConnectionResource.java",
+      "git_blob_sha1": "492a79538dd421c596e9d0497b221968d5e423cd",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearCrlCacheRealmAdminProvider.java",
+      "git_blob_sha1": "6f52ac508ed7da9c51ad590a470e0e0efb06c2fe",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearCrlCacheResource.java",
+      "git_blob_sha1": "b5a30771eb664b975f33f4b8ea712ce3ed6585dd",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearKeysCacheRealmAdminProvider.java",
+      "git_blob_sha1": "5a6b2b69251e54a5b7feca7b04deb1139a155388",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearKeysCacheResource.java",
+      "git_blob_sha1": "0a4ed0ff9a4c8e1b393c0a726a55b57c74863556",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearRealmCacheRealmAdminProvider.java",
+      "git_blob_sha1": "944025a46d943bccebec85369d5832899c8da209",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearRealmCacheResource.java",
+      "git_blob_sha1": "54d560cfce2454b7b0acab83b4ee61e8f6b9adde",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearUserCacheRealmAdminProvider.java",
+      "git_blob_sha1": "15625c6c0f104c9b4b3d22406521643d61497185",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/ClearUserCacheResource.java",
+      "git_blob_sha1": "6d9aa64863ea6651a6cf54ed53b2be93efe9e390",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/UserStorageProviderRealmAdminProvider.java",
+      "git_blob_sha1": "70af9b41e412584cf2d37bded855d7d60564044e",
+      "review_status": "pending"
+    },
+    {
+      "path": "model/storage-services/src/main/java/org/keycloak/services/resources/admin/UserStorageProviderResource.java",
+      "git_blob_sha1": "da3f425f3ef6aea6ddbc422b11735841e4b6f0e2",
+      "review_status": "pending"
+    },
+    {
+      "path": "quarkus/runtime/src/main/java/org/keycloak/quarkus/runtime/services/resources/ConstantsDebugHostname.java",
+      "git_blob_sha1": "48549b6671ff360c4f78fb1d52188b8d854d05bf",
+      "review_status": "pending"
+    },
+    {
+      "path": "quarkus/runtime/src/main/java/org/keycloak/quarkus/runtime/services/resources/DebugHostnameSettingsResource.java",
+      "git_blob_sha1": "d78abc16e1a56010ac5664285e86dac415ac926a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oid4vc/resources/admin/UserVerifiableCredentialResource.java",
+      "git_blob_sha1": "221f38ac6ebc09a52114293329effab30e8e9e14",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/AuthorizationEndpoint.java",
+      "git_blob_sha1": "aa09764608f09599546a4a0f043b9ba0ae6967b0",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/AuthorizationEndpointCheckProvider.java",
+      "git_blob_sha1": "ef7259784f5ee8ca06e10ac76d88a1c8c940090c",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/AuthorizationEndpointCheckProviderFactory.java",
+      "git_blob_sha1": "9ce2668802b11cb93497ff60596e8578499c5085",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/AuthorizationEndpointCheckSpi.java",
+      "git_blob_sha1": "acf8f48454f3a95f3aba65cd5b4bde4652526707",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/AuthorizationEndpointChecker.java",
+      "git_blob_sha1": "a492d298388a6791c0e0f70a5c1ed629b56560fd",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/IframeUtil.java",
+      "git_blob_sha1": "506acb835c5bd7bccc716f4d26a6f5b9b72795ec",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/LoginStatusIframeEndpoint.java",
+      "git_blob_sha1": "764ebcc29b4ed4d58eac92d48abf45aee43d49fb",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/LogoutEndpoint.java",
+      "git_blob_sha1": "6219c617f930d32d0a672b2fd8437dd27a1756d7",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/ThirdPartyCookiesIframeEndpoint.java",
+      "git_blob_sha1": "140a4b3bb47490d42b6b9d5d3cd7c2e5b6a87745",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/TokenEndpoint.java",
+      "git_blob_sha1": "e7df8d63d5118341d85ae148aa64ad440b50a97f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/TokenIntrospectionEndpoint.java",
+      "git_blob_sha1": "4fd683e86826ca7fbf00c8e84dac4ea06a208308",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/TokenRevocationEndpoint.java",
+      "git_blob_sha1": "ff03bf421091c612cfee760b1e9537d413dd2800",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/UserInfoEndpoint.java",
+      "git_blob_sha1": "9cf1504224c56d82a92619c31cb367fe60a84117",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/AuthorizationEndpointRequest.java",
+      "git_blob_sha1": "72ea72180574085d26b05024261d9ff73bb5b14b",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/AuthorizationEndpointRequestParserProcessor.java",
+      "git_blob_sha1": "ac4ad3cbc18474d187232a37759955e8c59d2cee",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/AuthzEndpointQueryStringParser.java",
+      "git_blob_sha1": "1d60d11fad6ed4547018afd0da691331d4af87be",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/AuthzEndpointRequestObjectParser.java",
+      "git_blob_sha1": "73a82ca19b4bbf929f5866a303a740e757b7a4f6",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/AuthzEndpointRequestParser.java",
+      "git_blob_sha1": "f1c95afc6500f281295ea92b490d14f5b87bed4d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/endpoints/request/RequestUriType.java",
+      "git_blob_sha1": "a779e2e02bfdc8ba4fa900216e2d986386bf20f8",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/AbstractCibaEndpoint.java",
+      "git_blob_sha1": "af36eedb400cf6b46af08468f01296078409fad1",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/BackchannelAuthenticationCallbackEndpoint.java",
+      "git_blob_sha1": "1044f572de71b6b6b8b3de479c60e780108d509f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/BackchannelAuthenticationEndpoint.java",
+      "git_blob_sha1": "05e4de1090c436bba00c39fb4460d643d0cf833b",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/CibaRootEndpoint.java",
+      "git_blob_sha1": "5666beadb45762c7393ed6001541f1b86f7a14f8",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/ClientNotificationEndpointRequest.java",
+      "git_blob_sha1": "c1d4f763058a60ddc3ba52f7ba3f7576b8a5ce35",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/request/BackchannelAuthenticationEndpointRequest.java",
+      "git_blob_sha1": "8077e9406c46fa0a3fb6c7144b46daac36bb0da0",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/request/BackchannelAuthenticationEndpointRequestBodyParser.java",
+      "git_blob_sha1": "d1131f6dc4168773d6bf152a9ac4ca70b699b429",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/request/BackchannelAuthenticationEndpointRequestParser.java",
+      "git_blob_sha1": "97427f06d2ac1c92d0d331b50ecf8dacd6d432fc",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/request/BackchannelAuthenticationEndpointRequestParserProcessor.java",
+      "git_blob_sha1": "59054a547a24461854e4cf06b740ed9fe23e46d9",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/ciba/endpoints/request/BackchannelAuthenticationEndpointSignedRequestParser.java",
+      "git_blob_sha1": "c9be61667e4a205640d2e52be19e6636139ed671",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/device/endpoints/DeviceEndpoint.java",
+      "git_blob_sha1": "f0a02fd462826f9b02d4096c8263be46a3569b5f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/grants/device/endpoints/DeviceEndpointFactory.java",
+      "git_blob_sha1": "45cce12856107e74eff3b1edd91ae5d6e37b7b01",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/AbstractParEndpoint.java",
+      "git_blob_sha1": "a05232c7f055092f77397d5ea3964f9629f71a49",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/ParEndpoint.java",
+      "git_blob_sha1": "35db8e41e3c90c8f65085314313f47088207ddde",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/ParRootEndpoint.java",
+      "git_blob_sha1": "3d0a392019d7826568c9d9e840d704fb8011e22b",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/request/AuthzEndpointParParser.java",
+      "git_blob_sha1": "ff4d760e6499019b459ca913ff1cb16e7e06f13a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/request/ParEndpointRequestObjectParser.java",
+      "git_blob_sha1": "f196d35faae15a10a48b898f747f00b3be9e2186",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/protocol/oidc/par/endpoints/request/ParEndpointRequestParserProcessor.java",
+      "git_blob_sha1": "1a852a77c80422d7f8259e6b47ed05c625801027",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/AbstractSecuredLocalService.java",
+      "git_blob_sha1": "3938d941496060b1e4d30535b11fef97b070f3e9",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/ClientsManagementService.java",
+      "git_blob_sha1": "49706d7b8aaa3f82e389c623dcc5aff70cef3b7f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/IdentityBrokerService.java",
+      "git_blob_sha1": "fcf2f5e28dfa307d33cecce8eda232a9992a097e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/KeycloakApplication.java",
+      "git_blob_sha1": "10744bcc3f0b8d3c6afe7ff07147cd1165049e79",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/KeycloakOpenAPI.java",
+      "git_blob_sha1": "6f32d5afeeedb0b78260bf23762c23263b3b9c8e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/LoadBalancerResource.java",
+      "git_blob_sha1": "d7ae8b2761e78d03aaf3a09bc8f8b0e3431eb7bb",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/LoginActionsService.java",
+      "git_blob_sha1": "f6bb88834c443d90625a8ea81b4ab7282c89a62a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/LoginActionsServiceChecks.java",
+      "git_blob_sha1": "1ee7e6a8ca91a7d6cc032a11e775da0fc5091ffe",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/LoginActionsServiceException.java",
+      "git_blob_sha1": "9399b8efdc338aeb04b33eaf6814fd91a69c6794",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/LogoutSessionCodeChecks.java",
+      "git_blob_sha1": "187abee1970f9264289a1212abe47422eaf6f186",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/PublicRealmResource.java",
+      "git_blob_sha1": "41184b0ad90bc1c9ada990bc89909dbc32037e1c",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/RealmsResource.java",
+      "git_blob_sha1": "ef6b3ebfd8fc241c72581192c1db87d5b352dfec",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/ServerMetadataResource.java",
+      "git_blob_sha1": "91c8eda921f3bee0b4ab1d32c2fcf090926fdb49",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/SessionCodeChecks.java",
+      "git_blob_sha1": "20612428aa90dcedbca0c57c1aa8b6c86da22035",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/ShutdownDelayInitiatedEvent.java",
+      "git_blob_sha1": "9b5f18e53993bcf8fb07d985d7e5e1207ad7c976",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/ThemeResource.java",
+      "git_blob_sha1": "f8702f0e8acf606e4e52c72f282b4ac23f689435",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/WelcomeResource.java",
+      "git_blob_sha1": "7f9d8e3fc5f3808549bc46a69c3d8f66e31cc364",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountConsole.java",
+      "git_blob_sha1": "5959223aa74912fecd28bb69127a6fa011d05ca3",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountConsoleFactory.java",
+      "git_blob_sha1": "de028ef7ac85726f1a0a0d52bd2cb1567299f503",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountCredentialResource.java",
+      "git_blob_sha1": "c67f97ab0224e05b310117d92f9363c873e192c2",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountIssuedVerifiableCredentialResource.java",
+      "git_blob_sha1": "41acbe4678a4d3232933129080cdd7fa206877ec",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountLoader.java",
+      "git_blob_sha1": "983240c8ef794edaf758dfae6d4c5d013d7ad779",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountRestService.java",
+      "git_blob_sha1": "4e0f1bab4d268b8d595b46fb983909b722b20261",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/AccountVerifiableCredentialResource.java",
+      "git_blob_sha1": "b66a21c9bd8de7457b49959e9d14b9b0d932ca85",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/Constants.java",
+      "git_blob_sha1": "635c8dddbff2d54c81f70b94aa983d37d7baea9b",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/CorsPreflightService.java",
+      "git_blob_sha1": "dd57e638a41c95c3cfb2f05c0e783288f5d46664",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/LinkedAccountsResource.java",
+      "git_blob_sha1": "483cdc4af5e74b4051e23d5d3c487c78b5faf121",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/OrganizationsResource.java",
+      "git_blob_sha1": "35be6e804ec5ac9608ea7cfd9d9291d0279e87c6",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/PasswordUtil.java",
+      "git_blob_sha1": "b17e89432ce5b074e137418ff81ee13850a1120d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/SessionResource.java",
+      "git_blob_sha1": "c075510a712fb6315974d7e2a1a3eeee6ffaa739",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/resources/AbstractResourceService.java",
+      "git_blob_sha1": "72989ffdb66d645ca0b2eb1b3926f878813f117a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/resources/ResourceService.java",
+      "git_blob_sha1": "7dd8afd0949f43c6d80f5cb074bcce4503242e7a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/account/resources/ResourcesService.java",
+      "git_blob_sha1": "9cea7c3e5e4a741601ecb1af7d518b595079675b",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminAuth.java",
+      "git_blob_sha1": "98d453830f8c98c9b8a4c1356ea550382e3b12fd",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminConsole.java",
+      "git_blob_sha1": "8be3ae16e058d6429110864d67e2f5b0a89a539a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminCorsPreflightService.java",
+      "git_blob_sha1": "47c102832bccafc83a2442a8210a813d7b66720e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminEventBuilder.java",
+      "git_blob_sha1": "a247344671dfe9be64d2deb14b7df5ce0015ae36",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminRoleTokenPostProcessor.java",
+      "git_blob_sha1": "1981733e1e4c36505a13797d2da81cc7605a2812",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminRoleTokenPostProcessorFactory.java",
+      "git_blob_sha1": "ce6cabb84f90476c3213214ff0ddde6f1e72b1a3",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AdminRoot.java",
+      "git_blob_sha1": "e1c7852af0806abded89c48f419d07ed5e16d98d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AttackDetectionResource.java",
+      "git_blob_sha1": "ce498ce55f8d51d7b4f272c7d190d3ca5d275510",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/AuthenticationManagementResource.java",
+      "git_blob_sha1": "046168c9c4015f2c602ac431a6b60960e28b4b3f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientAttributeCertificateResource.java",
+      "git_blob_sha1": "9d04cc2e21b93f2c653f4d7e48d3ed5d27a9092f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientInitialAccessResource.java",
+      "git_blob_sha1": "8add10fac17faa5d559e1319b3fed5c0a45eeb6d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientPoliciesResource.java",
+      "git_blob_sha1": "ad92e2f75e8d252c6937c50fd716fe9971289293",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientProfilesResource.java",
+      "git_blob_sha1": "27da4b9490177fc497b03ce79584c20a230f1c7e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientRegistrationPolicyResource.java",
+      "git_blob_sha1": "ddbcb18aca88c89b2c2860819e6a6f99cd95df46",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientResource.java",
+      "git_blob_sha1": "67333b5d8d325f5ccd0634aa845e365d60181fad",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientRoleMappingsResource.java",
+      "git_blob_sha1": "b4ece1bda5df48a5ce1fb72b0b8ed417d26b8353",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopeEvaluateResource.java",
+      "git_blob_sha1": "560bdc7a4d37dadd016975bccec126434a0647c5",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopeEvaluateScopeMappingsResource.java",
+      "git_blob_sha1": "5db438399544e611b4eab7f30a23e521cad652e8",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopeResource.java",
+      "git_blob_sha1": "92dd142d715a9aec5874015666d93e47dbe9e084",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientScopesResource.java",
+      "git_blob_sha1": "03cedfcffcee6e49fec9b8a85a770b6da3a2874f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientTypesResource.java",
+      "git_blob_sha1": "76a07fc2b6b2c6054e75425356ee7d5b7979bb5f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ClientsResource.java",
+      "git_blob_sha1": "6d5c41d7a79e5fddd3a8f0b443d401a084b3d230",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ComponentResource.java",
+      "git_blob_sha1": "feee3ded51b80e6fc89e27de84ac8f6344d60621",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/GroupResource.java",
+      "git_blob_sha1": "304f4811620cb9f32fc2d3aeeb0c0e68f4db091e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/GroupsResource.java",
+      "git_blob_sha1": "0460daf31f3e2b72093d2b10d2772222cd153664",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/IdentityProviderResource.java",
+      "git_blob_sha1": "682fda07f1d43474730e646c90df730f870d1b72",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/IdentityProvidersResource.java",
+      "git_blob_sha1": "1a7577b4b0b02a5b331459388c75152c6c86259e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/KeyResource.java",
+      "git_blob_sha1": "e0dc0f9131098b5aba2422ba34b12eb3f462bdfe",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ProtocolMappersResource.java",
+      "git_blob_sha1": "dd30848a166687cd0d2c04af541adcba0ce9b7a1",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RealmAdminResource.java",
+      "git_blob_sha1": "46da03b88770a9afa48a2027144c3510a0a279c7",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RealmLocalizationResource.java",
+      "git_blob_sha1": "cc5a3ed1ae1b8a926dc0dc6aa1808e43800f02eb",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RealmsAdminResource.java",
+      "git_blob_sha1": "d5ba8f42a77b0b6e64f5dc3ade36cc6472662ea2",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RealmsAdminResourcePreflight.java",
+      "git_blob_sha1": "393111084156cfa0ddf50d582b27b7f88bbba02c",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RoleByIdResource.java",
+      "git_blob_sha1": "2e4af56f87b4b9414f100043565cd65470e3edd7",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RoleContainerResource.java",
+      "git_blob_sha1": "a10e145edc63ffdbb8c76d146600c4576a39816d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RoleMapperResource.java",
+      "git_blob_sha1": "19a108bca87c52faf1738960a4c01855c34f2fe3",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/RoleResource.java",
+      "git_blob_sha1": "c39e98f4c3e1296620d4b414c66599281b148057",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ScopeMappedClientResource.java",
+      "git_blob_sha1": "3d8fb2d395fbc2bfb01058e5c42e54b28028509c",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ScopeMappedResource.java",
+      "git_blob_sha1": "42413adc64302bbcf56cdf66683dcce973abdb35",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/UserProfileResource.java",
+      "git_blob_sha1": "7847f6b6bc862ca9e710ec61428ae8c0d1ba67e7",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/UserResource.java",
+      "git_blob_sha1": "959bae561a025bdf773f90984764eac9d84c750c",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/UsersResource.java",
+      "git_blob_sha1": "9f116d6284759f73e1941a9c43f3e99b1f7c9c7a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ext/AdminRealmResourceProvider.java",
+      "git_blob_sha1": "440a91d4921ff2baa2b203eafea4a3f8b6af747d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ext/AdminRealmResourceProviderFactory.java",
+      "git_blob_sha1": "7e89d92d3d064522d5f23501c430912a25b915e5",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/ext/AdminRealmResourceSpi.java",
+      "git_blob_sha1": "93c2ca21a3520083931fc88e62c16f6518a1d1e0",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/AdminPermissionEvaluator.java",
+      "git_blob_sha1": "a7b453056c237d2d3354c794cabddd587ada004f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/AdminPermissionManagement.java",
+      "git_blob_sha1": "343b7a295af61527216105610fd66bf414c14bea",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/AdminPermissions.java",
+      "git_blob_sha1": "1e95bf5ae84283d42a66c20ae19f849c926f40c8",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/ClientPermissionEvaluator.java",
+      "git_blob_sha1": "6849ea43a7d314132aa4c4010d865c77412a7814",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/ClientPermissionManagement.java",
+      "git_blob_sha1": "5150624c1f407adaf1caa1c90a0fcfd5ebe24dee",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/ClientPermissions.java",
+      "git_blob_sha1": "b71e6ed8caf609bfe8a1fc15e94df9f613b09307",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/ClientPermissionsV2.java",
+      "git_blob_sha1": "2e9aa4bcc5bbf8a1f4f5dedb66082c568836f8ce",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/FineGrainedAdminPermissionEvaluator.java",
+      "git_blob_sha1": "f5d09672f6f691ca1e8aadda4d560fe6d49fd245",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/GroupPermissionEvaluator.java",
+      "git_blob_sha1": "6f8c125a52b0eda178eb784d040bfdd3caf79de2",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/GroupPermissionManagement.java",
+      "git_blob_sha1": "2a3dc5c67ee9207ec8c717579d948accf749797d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/GroupPermissions.java",
+      "git_blob_sha1": "0bf08daa8160a963599adb6177a14135b81c2f73",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/GroupPermissionsV2.java",
+      "git_blob_sha1": "e9467c85919639423d8009dfe1ded39d5476e28d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/Helper.java",
+      "git_blob_sha1": "d01dfbbc4d086c393320114d5674a992790792bb",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/IdentityProviderPermissionManagement.java",
+      "git_blob_sha1": "f7a883214e120b535f773394a2158e1436f5637f",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/IdentityProviderPermissions.java",
+      "git_blob_sha1": "77d36baaf926ee5e3159269451d5af4abfb2ab32",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/MgmtPermissions.java",
+      "git_blob_sha1": "425451240c9173f92c4a2f3503d5e187cf46d6c7",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/MgmtPermissionsV2.java",
+      "git_blob_sha1": "eaf7631e81af8674d6d9b3ff2b242432e66742be",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/ModelRecord.java",
+      "git_blob_sha1": "d9a1c3cc3185ad23cbdf9234b7d3c57ac1a9edb6",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/OrganizationPermissionEvaluator.java",
+      "git_blob_sha1": "9023c0486704b80be3b5ca6191ddf0c72e9992dc",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/OrganizationPermissions.java",
+      "git_blob_sha1": "d33fd45e78cd9248593e5f4a29e2ab8d56c6b2c4",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RealmAuth.java",
+      "git_blob_sha1": "18522c0277eb38562ee2364b284746cb236b8c58",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RealmPermissionEvaluator.java",
+      "git_blob_sha1": "2a2ca11ee79f0f42127a46abec2baa07b6efc46a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RealmPermissions.java",
+      "git_blob_sha1": "33fcd200699d878d9ff6a13da6ae6024092fb058",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RealmPermissionsV2.java",
+      "git_blob_sha1": "5221cd3715b7070a407ceaf681323ec95354a89e",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RealmsPermissionEvaluator.java",
+      "git_blob_sha1": "8932bbb858edbb0287161950fd47edeec4de1838",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RolePermissionEvaluator.java",
+      "git_blob_sha1": "05af1fcde288f81fac64f3ee7cdedfb7d78838ea",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RolePermissionManagement.java",
+      "git_blob_sha1": "66d3b17b7e48a5790db9e37530cae44d8dc310b6",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RolePermissions.java",
+      "git_blob_sha1": "a4a9ce3a13578aa9065ca80dd79cc1ac5037bbd1",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/RolePermissionsV2.java",
+      "git_blob_sha1": "7e40666e7482afc101bf9acdab6ff06d205e6ca8",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/UserPermissionEvaluator.java",
+      "git_blob_sha1": "ddf11bcadc544e2c594d1bf9066b204ff891830d",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/UserPermissionManagement.java",
+      "git_blob_sha1": "3b28ecb21445372dc649d2a34d66163594764978",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/UserPermissions.java",
+      "git_blob_sha1": "897a55862c9f0ca395a24cf4cf6a3e7bcb078dd1",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/fgap/UserPermissionsV2.java",
+      "git_blob_sha1": "0b0c110034b8481febfa2505dae32a35e90e671a",
+      "review_status": "pending"
+    },
+    {
+      "path": "services/src/main/java/org/keycloak/services/resources/admin/info/ServerInfoAdminResource.java",
+      "git_blob_sha1": "9afd2421f69dd10daa82f339ff5404acee27873d",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/AddSubjectRequest.java",
+      "git_blob_sha1": "9e34720a57a81dd9db0f5469b1d04f5af9e950a8",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/RemoveSubjectRequest.java",
+      "git_blob_sha1": "e9aa9124379ab1611270262c944dd2041b3e800d",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfStreamManagementResource.java",
+      "git_blob_sha1": "a351e18f5c18a309084cd1f9c5b792d97c31065d",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfStreamPollResource.java",
+      "git_blob_sha1": "0e9538b4e8a643f31a3382bc9715860a1b4490c5",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfStreamStatusResource.java",
+      "git_blob_sha1": "16b2e0b1f9d44ea606db3877a8d88918fe90f34f",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfStreamVerificationResource.java",
+      "git_blob_sha1": "97af2aacbe5e43b0a686661dee9ad660bb33cac0",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfSubjectManagementResource.java",
+      "git_blob_sha1": "d8082c09a95c2a7cf901d5208b1e70739a518dc1",
+      "review_status": "pending"
+    },
+    {
+      "path": "ssf/transmitter/src/main/java/org/keycloak/ssf/transmitter/resources/SsfTransmitterResource.java",
+      "git_blob_sha1": "1eee83a3f9ee9d08c6122010d8777d883486bbb6",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestApplicationResource.java",
+      "git_blob_sha1": "bad81dd09bb33c53289913bf60d12ba20d38f076",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestApplicationResourceUrls.java",
+      "git_blob_sha1": "984c804f81f1fc1eb50e8054bd468345f9576c38",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestExampleCompanyResource.java",
+      "git_blob_sha1": "b7b06af74a0abfbd534d6fc892a22eeb8235ae37",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestOIDCEndpointsApplicationResource.java",
+      "git_blob_sha1": "10a4c320042cbb33258f4083296a24aeba480aa7",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestSamlApplicationResource.java",
+      "git_blob_sha1": "f6536b19fccb0113a8285564209f82c4d60e4418",
+      "review_status": "pending"
+    },
+    {
+      "path": "testsuite/integration-arquillian/tests/base/src/main/java/org/keycloak/testsuite/client/resources/TestingResource.java",
+      "git_blob_sha1": "cbc361ee59ec53d43a2725a4070c461ac0284a2b",
+      "review_status": "pending"
+    }
+  ]
+}

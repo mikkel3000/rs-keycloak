@@ -1,0 +1,56 @@
+{
+  "format_version": 1,
+  "keycloak": {
+    "version": "26.8.1",
+    "source_repository": "https://github.com/keycloak/keycloak",
+    "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+    "image": "quay.io/keycloak/keycloak@sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332",
+    "manifest_sha256": "sha256:3f3c5f8e03c614774b4bd9173b88391fefa4153bfc010d8012d59ad825377332",
+    "kcadm_version": "26.8.1",
+    "java_admin_client_version": "26.0.12",
+    "browser_clients": {
+      "keycloak_js_version": "26.2.2",
+      "console_source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+      "dependency_lock": "source/pnpm-lock.yaml",
+      "runtime_tests": "not-run"
+    },
+    "java_admin_client_evidence": "https://repo.maven.apache.org/maven2/org/keycloak/keycloak-admin-client/26.0.12/keycloak-admin-client-26.0.12.pom",
+    "distribution": {
+      "url": "https://github.com/keycloak/keycloak/releases/download/26.8.1/keycloak-26.8.1.tar.gz",
+      "sha256": "4e2740b181faa2ea623a1c2ecf00855935311e546046e2f857615a47ed24cbe8",
+      "runtime": "OpenJDK 25.0.4+7-1-26.04-Ubuntu",
+      "runtime_scope": "isolated temporary development data and loopback listener; native host JVM, not production backend",
+      "validation": "public-smoke-passed"
+    }
+  },
+  "source_hashes": {
+    "source/pnpm-lock.yaml": "e6d95025710dca0dbbe017b2a0583e1efb83fee0d4a0062411fca87d54f975b5",
+    "source/pom.xml": "a7ffee473325d7ce5a83903686d229ede985c3a6b12846d792a98def5ac21fa7",
+    "source/keycloak-admin-client-26.0.12.pom": "9399b363535ddca9efc7cc9d027aa93feaeaded21bb221c6ca48221084e988e2",
+    "source/Profile.java": "93df273bd9b57b16d68baf26493f995e732d523bb34f18bd6b85162f7884ac68"
+  },
+  "postgresql": {
+    "major": 18,
+    "platform_images": {
+      "linux/amd64": "docker.io/library/postgres@sha256:f4b419e350fd98d4a8429603295208976dea4c8fb8326d818d346d3e29f1db6f",
+      "linux/arm/v5": "docker.io/library/postgres@sha256:8a97b339bd4371586d1bf3ff650f10f37a4897056ba8e8456f4d36576b74a87b",
+      "linux/arm/v7": "docker.io/library/postgres@sha256:f43742786609d7d67a9646a9d5c8dd6cf809d6745aa9f949b165f30e46d2a8a3",
+      "linux/arm64/v8": "docker.io/library/postgres@sha256:9a74990a5c776ff210361b67616b347750c66c36ea0dfbb4f575d19fcc3d8437",
+      "linux/386": "docker.io/library/postgres@sha256:a7026df7681ce3d59a682ccf6155cf94ca377615c0170012dac2d6ce1e3fd22c",
+      "linux/ppc64le": "docker.io/library/postgres@sha256:aa3d38a0d475996221327e363c4b9a1cbdfc895512793129de7589f2f3560d03",
+      "linux/riscv64": "docker.io/library/postgres@sha256:9b81e779bd80a6d03443d159399af9f6135a59320707db32dd5cf54f6fa53d25",
+      "linux/s390x": "docker.io/library/postgres@sha256:a06f308845c73aa6203c1f3f054aece0b8ea1e2f084921d0038ceac9970fed0d"
+    },
+    "status": "resolved-from-docker-manifest-inspect-not-runtime-tested"
+  },
+  "qualification": {
+    "step_0_complete": false,
+    "baseline_performance": "not-run",
+    "operation_inventory": "634-source-declared-http-methods-public-route-resolution-pending",
+    "reference_public_smoke": "passed-native-distribution-fallback"
+  },
+  "source_archive": {
+    "url": "https://api.github.com/repos/keycloak/keycloak/tarball/24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+    "sha256": "1e2ff1d7dc008515e15ed072eccd32c2c836e0ca0eb251591018f334ade60794"
+  }
+}

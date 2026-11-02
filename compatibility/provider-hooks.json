@@ -1,0 +1,11 @@
+{
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "source": "RUST-PROVIDERS.md",
+  "execution_authoring_exception": "No Java binary loading or JavaScript execution; active source dependencies require verified Rust mappings before import mutation.",
+  "hooks": [
+    {"family": "authenticator", "rust_contract": "Authenticator", "effects": ["challenge", "flow transition", "required action", "session state"], "paired_tests": [], "status": "planned"},
+    {"family": "authorization-policy", "rust_contract": "AuthorizationPolicy", "effects": ["grant", "deny", "abstain", "policy composition"], "paired_tests": [], "status": "planned"},
+    {"family": "oidc-mapper", "rust_contract": "OidcMapper", "effects": ["claim name", "claim JSON type", "audience", "token placement"], "paired_tests": [], "status": "planned"},
+    {"family": "saml-mapper", "rust_contract": "SamlMapper", "effects": ["attribute name", "name format", "attribute values"], "paired_tests": [], "status": "planned"}
+  ]
+}
