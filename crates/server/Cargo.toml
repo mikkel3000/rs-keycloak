@@ -1,0 +1,20 @@
+[package]
+name = "rs-keycloak-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rs-keycloak"
+path = "src/main.rs"
+
+[dependencies]
+axum.workspace = true
+rs-keycloak-http = { path = "../http" }
+rs-keycloak-storage-postgres = { path = "../storage-postgres" }
+tokio.workspace = true
+url.workspace = true
+rs-keycloak-crypto = { path = "../crypto" }
+uuid = { version = "=1.18.1", features = ["v4"] }
+zeroize = "=1.9.1"

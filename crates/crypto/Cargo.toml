@@ -1,0 +1,10 @@
+[package]
+name = "rs-keycloak-crypto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+argon2 = { version = "=0.5.3", features = ["std"] }
+getrandom = "=0.2.17"
