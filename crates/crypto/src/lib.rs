@@ -45,3 +45,5 @@ pub fn verify_password(password: &[u8], encoded: &str) -> Result<bool, PasswordE
         Err(_) => Err(PasswordError),
     }
 }
+
+pub mod signing;

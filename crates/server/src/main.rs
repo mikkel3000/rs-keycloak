@@ -7,7 +7,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|version>";
+const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|version>";
 
 struct Config {
     database_url: String,
@@ -165,6 +165,10 @@ async fn run() -> Result<(), &'static str> {
                 "Bootstrap admin record created; sign-in and admin handover are not implemented"
             );
         }
+        ["client", "add-public", realm, client_id, redirect_uri] => {
+            add_public_client(realm, client_id, redirect_uri).await?;
+            println!("Public client registered");
+        }
         ["serve"] => {
             let config = config()?;
             rs_keycloak_storage_postgres::check(&config.database_url)
@@ -262,5 +266,49 @@ async fn bootstrap_admin(username: &str) -> Result<(), &'static str> {
             }
             _ => "Bootstrap admin creation failed",
         })?;
+    Ok(())
+}
+
+async fn add_public_client(
+    realm: &str,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<(), &'static str> {
+    if realm.is_empty() || realm.len() > 255 || client_id.is_empty() || client_id.len() > 255 {
+        return Err("Realm and client ID must be 1-255 bytes");
+    }
+    let redirect = Url::parse(redirect_uri).map_err(|_| "Redirect URI is invalid")?;
+    let local = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true")
+        && matches!(
+            redirect.host_str(),
+            Some("localhost" | "127.0.0.1" | "[::1]")
+        );
+    if !(redirect.scheme() == "https" || (redirect.scheme() == "http" && local))
+        || redirect.host_str().is_none()
+        || !redirect.username().is_empty()
+        || redirect.password().is_some()
+        || redirect.fragment().is_some()
+    {
+        return Err(
+            "Redirect URI must use HTTPS without credentials or a fragment; HTTP is allowed only for local development",
+        );
+    }
+    let storage = rs_keycloak_storage_postgres::Storage::connect(&database_url()?)
+        .await
+        .map_err(|_| "Database check failed")?;
+    let realm_id = storage
+        .realm_id_by_name(realm)
+        .await
+        .map_err(|_| "Realm lookup failed")?
+        .ok_or("Realm is missing or disabled")?;
+    storage
+        .create_public_client(
+            &realm_id,
+            &Uuid::new_v4().to_string(),
+            client_id,
+            redirect_uri,
+        )
+        .await
+        .map_err(|_| "Public client registration failed")?;
     Ok(())
 }
