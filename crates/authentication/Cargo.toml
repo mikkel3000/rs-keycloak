@@ -1,0 +1,13 @@
+[package]
+name = "rs-keycloak-authentication"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+rs-keycloak-crypto = { path = "../crypto" }
+rs-keycloak-storage-postgres = { path = "../storage-postgres" }
+tokio.workspace = true
+uuid = { version = "=1.18.1", features = ["v4"] }
+zeroize = "=1.9.1"

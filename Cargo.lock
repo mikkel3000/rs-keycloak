@@ -931,6 +931,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rs-keycloak-authentication"
+version = "0.1.0"
+dependencies = [
+ "rs-keycloak-crypto",
+ "rs-keycloak-storage-postgres",
+ "tokio",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "rs-keycloak-crypto"
 version = "0.1.0"
 dependencies = [
@@ -943,6 +954,15 @@ name = "rs-keycloak-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+]
+
+[[package]]
+name = "rs-keycloak-protocols"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "sha2",
+ "subtle",
 ]
 
 [[package]]

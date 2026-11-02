@@ -30,7 +30,7 @@ if "$bin" db check; then echo 'fresh schema check unexpectedly succeeded' >&2; e
 "$bin" db check
 "$bin" db migrate
 # Simulate an installation at migration 1, then upgrade through the CLI.
-sql 'DROP TABLE audit_events, bootstrap_admin, user_role_grants, roles; DELETE FROM rs_schema_history WHERE version = 2'
+sql 'DROP TABLE login_challenges, login_lockouts, login_policy, audit_events, bootstrap_admin, user_role_grants, roles; DROP FUNCTION rs_bump_user_revision() CASCADE; DROP FUNCTION rs_bump_credential_revision() CASCADE; DROP INDEX credentials_one_password_per_user; ALTER TABLE credentials DROP COLUMN revision; DELETE FROM rs_schema_history WHERE version >= 2'
 if "$bin" db check; then echo 'old schema unexpectedly accepted' >&2; exit 1; fi
 "$bin" db migrate
 "$bin" db check

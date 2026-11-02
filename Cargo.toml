@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/server", "crates/http", "crates/storage-postgres", "crates/crypto"]
+members = ["crates/server", "crates/http", "crates/storage-postgres", "crates/crypto", "crates/authentication", "crates/protocols"]
 resolver = "3"
 
 [workspace.package]
@@ -10,5 +10,5 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 axum = "=0.8.9"
-tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 url = "=2.5.8"

@@ -13,6 +13,7 @@ const LOCK_KEY: i64 = 0x72736b6579636c;
 const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0001_initial.sql"),
     include_str!("../../../migrations/0002_bootstrap.sql"),
+    include_str!("../../../migrations/0003_login.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -40,6 +41,9 @@ pub enum StorageError {
     /// The master realm or bootstrap admin already exists.
     #[error("master realm or bootstrap admin already exists")]
     AlreadyBootstrapped,
+    /// The requested lifetime is outside the supported bounds.
+    #[error("invalid login lifetime")]
+    InvalidInput,
     /// The configured database timeout or admission budget elapsed.
     #[error("database capacity or timeout exceeded")]
     Timeout,
@@ -202,6 +206,25 @@ async fn migrate_inner(database_url: &str) -> Result<(), StorageError> {
     Ok(())
 }
 
+/// A stored password hash and revisions to recheck after verification.
+/// Password hashes must not be logged or returned to a client.
+pub struct LoginCredential {
+    /// Stored password hash in PHC format.
+    pub phc: Vec<u8>,
+    /// User revision observed when the challenge was created.
+    pub user_revision: i64,
+    /// Credential revision observed when the challenge was created.
+    pub credential_revision: i64,
+}
+
+/// Result of completing a single-use login challenge.
+pub enum LoginOutcome {
+    /// Password and current account state permitted session creation.
+    Authenticated,
+    /// The challenge, account, client, password, or lockout did not permit login.
+    Denied,
+}
+
 /// Separate bounded request and worker pools for primary-only access.
 pub struct Storage {
     request: PgPool,
@@ -266,6 +289,123 @@ impl Storage {
             .await?;
         sqlx::query("INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ('master', $1, 'bootstrap_admin_created')").bind(user_id).execute(&mut *conn).await?;
         tx.commit().await
+    }
+
+    /// Create a short-lived login challenge and return the password hash for verification.
+    /// The caller must use opaque, unpredictable challenge IDs and equalize external failure behavior.
+    pub async fn start_login(
+        &self,
+        realm_id: &str,
+        client_id: &str,
+        username_normalized: &str,
+        challenge_id: &str,
+        ttl_seconds: i32,
+    ) -> Result<Option<LoginCredential>, StorageError> {
+        if !(1..=300).contains(&ttl_seconds) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        // Amortize expiry cleanup without waiting for rows held by other requests.
+        sqlx::query("DELETE FROM login_challenges WHERE id IN (SELECT id FROM login_challenges WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)")
+            .execute(&mut *conn).await?;
+        let row = sqlx::query("SELECT u.id AS user_id, u.revision AS user_revision, c.id AS credential_id, c.revision AS credential_revision, c.secret_data FROM users u JOIN realms r ON r.id = u.realm_id JOIN clients cl ON cl.realm_id = u.realm_id AND cl.id = $2 JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'password' WHERE u.realm_id = $1 AND u.username_normalized = $3 AND u.enabled AND r.enabled AND cl.enabled FOR SHARE OF r, cl FOR UPDATE OF u, c")
+            .bind(realm_id).bind(client_id).bind(username_normalized).fetch_optional(&mut *conn).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let user_id: String = row.try_get("user_id")?;
+        sqlx::query(
+            "INSERT INTO login_lockouts (realm_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
+        )
+        .bind(realm_id)
+        .bind(&user_id)
+        .execute(&mut *conn)
+        .await?;
+        let locked: bool = sqlx::query_scalar("SELECT COALESCE(locked_until > clock_timestamp(), false) FROM login_lockouts WHERE realm_id = $1 AND user_id = $2 FOR UPDATE").bind(realm_id).bind(&user_id).fetch_one(&mut *conn).await?;
+        if locked {
+            return Ok(None);
+        }
+        let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM login_challenges WHERE realm_id = $1 AND user_id = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp()")
+            .bind(realm_id).bind(&user_id).fetch_one(&mut *conn).await?;
+        if pending >= 5 {
+            return Ok(None);
+        }
+        sqlx::query("INSERT INTO login_challenges (id, realm_id, user_id, client_id, credential_id, user_revision, credential_revision, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, clock_timestamp() + make_interval(secs => $8))")
+            .bind(challenge_id).bind(realm_id).bind(&user_id).bind(client_id).bind(row.try_get::<String, _>("credential_id")?).bind(row.try_get::<i64, _>("user_revision")?).bind(row.try_get::<i64, _>("credential_revision")?).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        let credential = LoginCredential {
+            phc: row.try_get("secret_data")?,
+            user_revision: row.try_get("user_revision")?,
+            credential_revision: row.try_get("credential_revision")?,
+        };
+        tx.commit().await?;
+        Ok(Some(credential))
+    }
+
+    /// Consume a challenge once and create a session only after rechecking revisions and policy.
+    /// The caller verifies the hash outside the transaction and supplies an unpredictable session ID.
+    pub async fn finish_login(
+        &self,
+        challenge_id: &str,
+        user_revision: i64,
+        credential_revision: i64,
+        password_valid: bool,
+        session_id: &str,
+        session_ttl_seconds: i32,
+    ) -> Result<LoginOutcome, StorageError> {
+        if !(1..=86400).contains(&session_ttl_seconds) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let challenge = sqlx::query("UPDATE login_challenges SET consumed_at = CURRENT_TIMESTAMP WHERE id = $1 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, user_id, client_id, credential_id, user_revision, credential_revision")
+            .bind(challenge_id).fetch_optional(&mut *conn).await?;
+        let Some(challenge) = challenge else {
+            return Ok(LoginOutcome::Denied);
+        };
+        let realm: String = challenge.try_get("realm_id")?;
+        let user: String = challenge.try_get("user_id")?;
+        let client: String = challenge.try_get("client_id")?;
+        let credential: String = challenge.try_get("credential_id")?;
+        let row = sqlx::query("SELECT u.revision AS user_revision, c.revision AS credential_revision, u.enabled AND r.enabled AND cl.enabled AS enabled FROM users u JOIN realms r ON r.id = u.realm_id JOIN clients cl ON cl.realm_id = u.realm_id AND cl.id = $3 JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.id = $4 AND c.credential_type = 'password' WHERE u.realm_id = $1 AND u.id = $2 FOR SHARE OF r, cl FOR UPDATE OF u, c")
+            .bind(&realm).bind(&user).bind(&client).bind(&credential).fetch_optional(&mut *conn).await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(LoginOutcome::Denied);
+        };
+        let locked: bool = sqlx::query_scalar("SELECT COALESCE(locked_until > clock_timestamp(), false) FROM login_lockouts WHERE realm_id = $1 AND user_id = $2 FOR UPDATE").bind(&realm).bind(&user).fetch_one(&mut *conn).await?;
+        let current = challenge.try_get::<i64, _>("user_revision")? == user_revision
+            && challenge.try_get::<i64, _>("credential_revision")? == credential_revision
+            && row.try_get::<bool, _>("enabled")?
+            && row.try_get::<i64, _>("user_revision")? == user_revision
+            && row.try_get::<i64, _>("credential_revision")? == credential_revision;
+        if !current || locked {
+            tx.commit().await?;
+            return Ok(LoginOutcome::Denied);
+        }
+        if !password_valid {
+            sqlx::query("UPDATE login_lockouts l SET failures = CASE WHEN l.locked_until <= CURRENT_TIMESTAMP THEN 1 ELSE l.failures + 1 END, locked_until = CASE WHEN (CASE WHEN l.locked_until <= CURRENT_TIMESTAMP THEN 1 ELSE l.failures + 1 END) >= COALESCE(p.max_failures, 5) THEN CURRENT_TIMESTAMP + make_interval(secs => COALESCE(p.lock_seconds, 60)) ELSE NULL END FROM realms r LEFT JOIN login_policy p ON p.realm_id = r.id WHERE l.realm_id = r.id AND l.realm_id = $1 AND l.user_id = $2")
+                .bind(&realm).bind(&user).execute(&mut *conn).await?;
+            tx.commit().await?;
+            return Ok(LoginOutcome::Denied);
+        }
+        sqlx::query("UPDATE login_lockouts SET failures = 0, locked_until = NULL WHERE realm_id = $1 AND user_id = $2").bind(&realm).bind(&user).execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4))").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO client_sessions (realm_id, id, user_session_id, client_id) VALUES ($1, $2, $2, $3)").bind(&realm).bind(session_id).bind(&client).execute(&mut *conn).await?;
+        tx.commit().await?;
+        Ok(LoginOutcome::Authenticated)
+    }
+
+    /// Delete at most `limit` expired login challenges using the worker pool.
+    pub async fn cleanup_expired_login_challenges(&self, limit: i64) -> Result<u64, StorageError> {
+        if !(1..=1000).contains(&limit) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_worker().await?;
+        let deleted = sqlx::query("DELETE FROM login_challenges WHERE id IN (SELECT id FROM login_challenges WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT $1 FOR UPDATE SKIP LOCKED)")
+            .bind(limit).execute(tx.connection()).await?.rows_affected();
+        tx.commit().await?;
+        Ok(deleted)
     }
 
     /// Begin a guarded request transaction; non-auth requests share sixteen slots.
