@@ -16,6 +16,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0003_login.sql"),
     include_str!("../../../migrations/0004_authorization.sql"),
     include_str!("../../../migrations/0005_code_replay_retention.sql"),
+    include_str!("../../../migrations/0006_refresh.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -253,6 +254,44 @@ pub struct CodeGrant {
     pub nonce: Option<String>,
     /// Authentication time as Unix seconds.
     pub auth_time: i64,
+}
+
+/// Current identity and session state read from the primary.
+pub struct ActiveSession {
+    /// Realm identifier.
+    pub realm_id: String,
+    /// User identifier.
+    pub user_id: String,
+    /// Current username.
+    pub username: String,
+    /// Session identifier.
+    pub session_id: String,
+    /// Internal client identifier.
+    pub client_id: String,
+    /// Public client identifier.
+    pub client_identifier: String,
+    /// Original authentication time as Unix seconds.
+    pub auth_time: i64,
+}
+
+fn active_session_row(row: &PgRow) -> Result<ActiveSession, StorageError> {
+    Ok(ActiveSession {
+        realm_id: row.try_get("realm_id")?,
+        user_id: row.try_get("user_id")?,
+        username: row.try_get("username")?,
+        session_id: row.try_get("session_id")?,
+        client_id: row.try_get("client_id")?,
+        client_identifier: row.try_get("client_identifier")?,
+        auth_time: row.try_get("auth_time")?,
+    })
+}
+
+/// Rotated session and the scopes granted to its refresh family.
+pub struct RefreshGrant {
+    /// Current authoritative session state.
+    pub session: ActiveSession,
+    /// Scope granted to the family.
+    pub scope: String,
 }
 
 /// Separate bounded request and worker pools for primary-only access.
@@ -601,6 +640,114 @@ impl Storage {
             scope: code.try_get("scope")?,
             nonce: code.try_get("nonce")?,
             auth_time: code.try_get("auth_time")?,
+        };
+        tx.commit().await?;
+        Ok(Some(result))
+    }
+
+    /// Read current user and session state from the writable primary.
+    pub async fn active_session(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        session_id: &str,
+        user_id: &str,
+    ) -> Result<Option<ActiveSession>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled")
+            .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).fetch_optional(tx.connection()).await?;
+        let result = row.as_ref().map(active_session_row).transpose()?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Create an initial refresh token family for an enabled client and live session.
+    /// The caller enforces grant and scope policy and stores only an unpredictable token's SHA-256 hash.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_refresh_family(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        session_id: &str,
+        family_id: &str,
+        token_hash: &[u8],
+        scope: &str,
+        ttl_seconds: i32,
+    ) -> Result<bool, StorageError> {
+        if token_hash.len() != 32
+            || scope.is_empty()
+            || scope.len() > 2048
+            || !(1..=86400).contains(&ttl_seconds)
+        {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let row = sqlx::query("SELECT c.id FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
+            .bind(realm).bind(client_identifier).bind(session_id).fetch_optional(&mut *conn).await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let client: String = row.try_get("id")?;
+        sqlx::query("DELETE FROM refresh_families WHERE id IN (SELECT id FROM refresh_families WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at) VALUES ($1, $2, $3, $4, $5, LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4)))")
+            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        sqlx::query(
+            "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, 0)",
+        )
+        .bind(token_hash)
+        .bind(family_id)
+        .execute(&mut *conn)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Rotate a refresh token once; correctly bound replay revokes its family and session.
+    pub async fn rotate_refresh_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        token_hash: &[u8],
+        next_token_hash: &[u8],
+    ) -> Result<Option<RefreshGrant>, StorageError> {
+        if token_hash.len() != 32 || next_token_hash.len() != 32 || token_hash == next_token_hash {
+            return Ok(None);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
+            .bind(token_hash).bind(realm).bind(client_identifier).fetch_optional(&mut *conn).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let family: String = row.try_get("family_id")?;
+        let session: String = row.try_get("session_id")?;
+        if row.try_get::<bool, _>("consumed")?
+            || row.try_get::<i64, _>("token_generation")?
+                != row.try_get::<i64, _>("family_generation")?
+        {
+            sqlx::query("UPDATE refresh_families SET revoked_at = clock_timestamp() WHERE id = $1")
+                .bind(&family)
+                .execute(&mut *conn)
+                .await?;
+            sqlx::query("UPDATE user_sessions SET revoked_at = clock_timestamp() WHERE realm_id = $1 AND id = $2").bind(realm).bind(session).execute(&mut *conn).await?;
+            tx.commit().await?;
+            return Ok(None);
+        }
+        sqlx::query("UPDATE refresh_tokens SET consumed_at = clock_timestamp() WHERE token_hash = $1 AND consumed_at IS NULL").bind(token_hash).execute(&mut *conn).await?;
+        let next: i64 = sqlx::query_scalar("UPDATE refresh_families SET generation = generation + 1 WHERE id = $1 AND expires_at > clock_timestamp() AND revoked_at IS NULL RETURNING generation").bind(&family).fetch_one(&mut *conn).await?;
+        sqlx::query(
+            "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, $3)",
+        )
+        .bind(next_token_hash)
+        .bind(&family)
+        .bind(next)
+        .execute(&mut *conn)
+        .await?;
+        let result = RefreshGrant {
+            session: active_session_row(&row)?,
+            scope: row.try_get("scope")?,
         };
         tx.commit().await?;
         Ok(Some(result))
