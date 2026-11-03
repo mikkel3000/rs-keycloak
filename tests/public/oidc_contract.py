@@ -54,6 +54,16 @@ def run(binary, username, password):
         capture_output=True, timeout=10, check=False,
     )
     assert setup.returncode == 0, "OAuth client setup failed"
+    public_client = client
+    confidential_client = client + "-confidential"
+    client_secret = secrets.token_urlsafe(40) + ":+%/"
+    for _ in range(2):
+        setup = subprocess.run(
+            [binary, "client", "add-confidential", "master", confidential_client, redirect],
+            input=client_secret.encode(), capture_output=True, timeout=10, check=False,
+        )
+        assert setup.returncode == 0, "Confidential client setup was not idempotent"
+        assert client_secret.encode() not in setup.stdout + setup.stderr
     pem = subprocess.run(
         ["openssl", "genpkey", "-algorithm", "RSA", "-pkeyopt", "rsa_keygen_bits:2048"],
         capture_output=True, timeout=15, check=True,
@@ -78,13 +88,15 @@ def run(binary, username, password):
         [binary, "serve"], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
 
-    def request(method, path, data=None, cookie=None, bearer=None):
+    def request(method, path, data=None, cookie=None, bearer=None, authorization=None):
         headers = {}
         if data is not None:
             data = urllib.parse.urlencode(data)
             headers["Content-Type"] = "application/x-www-form-urlencoded"
         if cookie:
             headers["Cookie"] = cookie
+        if authorization:
+            headers["Authorization"] = authorization
         if bearer:
             headers["Authorization"] = "Bearer " + bearer
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -121,7 +133,24 @@ def run(binary, username, password):
             assert status == 400, "Token input error used the wrong HTTP status"
             assert json.loads(body)["error"] == error
             assert headers.get("cache-control") == "no-store"
-        for replay_kind in ("code", "refresh", "refresh_race"):
+        for mode, replay_kind in (
+            ("public", "code"), ("public", "refresh"), ("public", "refresh_race"),
+            ("basic", "refresh"), ("post", "refresh"),
+        ):
+            client = public_client if mode == "public" else confidential_client
+
+            def token_request(data):
+                data = dict(data)
+                authorization = None
+                if mode == "basic":
+                    if data.get("client_id") == client:
+                        del data["client_id"]
+                    credentials = urllib.parse.quote_plus(client) + ":" + urllib.parse.quote_plus(client_secret)
+                    authorization = "Basic " + base64.b64encode(credentials.encode()).decode()
+                elif mode == "post":
+                    data["client_secret"] = client_secret
+                return request("POST", token_path, data, authorization=authorization)
+
             verifier = secrets.token_urlsafe(48)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
             state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
@@ -150,10 +179,19 @@ def run(binary, username, password):
             token_form = {
                 "grant_type": "authorization_code", "code": params["code"][0],
                 "client_id": client, "redirect_uri": redirect, "code_verifier": verifier,
-                    "unrecognized_extension": "ignored",
+                "unrecognized_extension": "ignored",
             }
             token_path = "/realms/master/protocol/openid-connect/token"
-            status, headers, body = request("POST", token_path, token_form)
+            if mode != "public":
+                for rejected in (token_form, dict(token_form, client_secret="incorrect")):
+                    status, _, body = request("POST", token_path, rejected)
+                    assert status == 401 and json.loads(body)["error"] == "unauthorized_client", "Client authentication error differs from Keycloak"
+                wrong_basic = base64.b64encode((urllib.parse.quote_plus(client) + ":incorrect").encode()).decode()
+                status, headers, body = request("POST", token_path, token_form, authorization="Basic " + wrong_basic)
+                assert status == 401 and json.loads(body)["error"] == "unauthorized_client"
+                # Pinned Keycloak omits the challenge even for Basic failures.
+                assert "www-authenticate" not in headers, "Basic failure differs from pinned Keycloak"
+            status, headers, body = token_request(token_form)
             assert status == 200, "Code exchange failed"
             assert headers.get("cache-control") == "no-store"
             tokens = json.loads(body)
@@ -168,23 +206,39 @@ def run(binary, username, password):
             userinfo = "/realms/master/protocol/openid-connect/userinfo"
             status, _, body = request("GET", userinfo, bearer=tokens["access_token"])
             assert status == 200 and json.loads(body)["sub"] == claims["sub"]
+            if mode != "public":
+                previous_secret = client_secret
+                client_secret = secrets.token_urlsafe(40) + ":+%/"
+                rotated_secret = subprocess.run(
+                    [binary, "client", "rotate-secret", "master", client],
+                    input=(previous_secret + "\n" + client_secret + "\n").encode(),
+                    capture_output=True, timeout=10, check=False,
+                )
+                assert rotated_secret.returncode == 0, "Client secret rotation failed"
+                for secret in (previous_secret, client_secret):
+                    assert secret.encode() not in rotated_secret.stdout + rotated_secret.stderr
+                status, _, body = request("POST", token_path, {
+                    "grant_type": "refresh_token", "client_id": client,
+                    "client_secret": previous_secret, "refresh_token": tokens["refresh_token"],
+                })
+                assert status == 401 and json.loads(body)["error"] == "unauthorized_client", "Old secret survived rotation"
             if replay_kind == "code":
-                status, _, body = request("POST", token_path, token_form)
+                status, _, body = token_request(token_form)
                 assert status == 400 and json.loads(body)["error"] == "invalid_grant", "Code replay accepted"
             else:
                 refresh = {"grant_type": "refresh_token", "client_id": client, "refresh_token": tokens["refresh_token"]}
                 # An unrelated client and scope expansion must not consume the token.
-                status, _, _ = request("POST", token_path, dict(refresh, client_id=client + "-other"))
-                assert status == 400
-                status, _, body = request("POST", token_path, dict(refresh, scope="openid admin"))
+                status, _, _ = token_request(dict(refresh, client_id=client + "-other"))
+                assert status in (400, 401)
+                status, _, body = token_request(dict(refresh, scope="openid admin"))
                 assert status == 400 and json.loads(body)["error"] == "invalid_scope"
                 if replay_kind == "refresh_race":
                     with ThreadPoolExecutor(max_workers=2) as executor:
-                        replies = list(executor.map(lambda _: request("POST", token_path, refresh), range(2)))
+                        replies = list(executor.map(lambda _: token_request(refresh), range(2)))
                     assert sorted(reply[0] for reply in replies) == [200, 400], "Concurrent refresh had multiple winners"
                     rotated = json.loads(next(reply[2] for reply in replies if reply[0] == 200))
                 else:
-                    status, _, body = request("POST", token_path, refresh)
+                    status, _, body = token_request(refresh)
                     assert status == 200, "Refresh rotation failed"
                     rotated = json.loads(body)
                     assert rotated["refresh_token"] != tokens["refresh_token"]
@@ -192,9 +246,9 @@ def run(binary, username, password):
                     assert refreshed_id["sub"] == claims["sub"] and refreshed_id["auth_time"] == claims["auth_time"]
                     status, _, _ = request("GET", userinfo, bearer=rotated["access_token"])
                     assert status == 200
-                    status, _, body = request("POST", token_path, refresh)
+                    status, _, body = token_request(refresh)
                     assert status == 400 and json.loads(body)["error"] == "invalid_grant", "Refresh replay accepted"
-                status, _, _ = request("POST", token_path, dict(refresh, refresh_token=rotated["refresh_token"]))
+                status, _, _ = token_request(dict(refresh, refresh_token=rotated["refresh_token"]))
                 assert status == 400, "Refresh replay left its successor usable"
                 status, _, _ = request("GET", userinfo, bearer=rotated["access_token"])
                 assert status == 401, "Refresh replay left new access token active"
@@ -204,6 +258,7 @@ def run(binary, username, password):
         stdout, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, "OAuth shutdown failed"
         assert password.encode() not in stdout + stderr, "Password appeared in server output"
+        assert client_secret.encode() not in stdout + stderr, "Client secret appeared in server output"
         print("Public OAuth login, PKCE, refresh rotation and replay race checks passed")
     finally:
         if process.poll() is None:
