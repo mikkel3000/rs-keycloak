@@ -296,30 +296,43 @@ async fn authenticate(
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TokenForm {
-    grant_type: String,
-    code: String,
-    redirect_uri: String,
-    client_id: String,
-    code_verifier: String,
+#[serde(tag = "grant_type", deny_unknown_fields)]
+enum TokenForm {
+    #[serde(rename = "authorization_code")]
+    Code {
+        code: String,
+        redirect_uri: String,
+        client_id: String,
+        code_verifier: String,
+    },
+    #[serde(rename = "refresh_token")]
+    Refresh {
+        refresh_token: String,
+        client_id: String,
+        scope: Option<String>,
+    },
 }
+
+fn invalid_grant() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({"error":"invalid_grant"})),
+    )
+        .into_response()
+}
+
 async fn token(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Form(q): Form<TokenForm>,
 ) -> Response {
-    if !valid_realm(&realm)
-        || q.grant_type != "authorization_code"
-        || q.code.len() != 64
-        || q.client_id.len() > 255
-        || q.redirect_uri.len() > 2048
-    {
+    if !valid_realm(&realm) {
         return failure();
     }
-    let Some(verifier) = pkce::verifier_digest(&q.code_verifier) else {
-        return failure();
-    };
     let realm_id = match s.storage.realm_id_by_name(&realm).await {
         Ok(Some(id)) => id,
         Ok(None) => return failure(),
@@ -329,26 +342,96 @@ async fn token(
         Ok(permit) => permit,
         Err(_) => return unavailable(),
     };
-    let grant = match s
-        .storage
-        .redeem_authorization_code(
-            &digest(&q.code),
-            &realm_id,
-            &q.client_id,
-            &q.redirect_uri,
-            &verifier,
-        )
-        .await
-    {
-        Ok(Some(grant)) => grant,
-        Ok(None) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error":"invalid_grant"})),
-            )
-                .into_response();
+    let refresh_token = Zeroizing::new(random_token());
+    let grant = match q {
+        TokenForm::Code {
+            code,
+            redirect_uri,
+            client_id,
+            code_verifier,
+        } => {
+            if code.len() != 64 || client_id.len() > 255 || redirect_uri.len() > 2048 {
+                return failure();
+            }
+            let Some(verifier) = pkce::verifier_digest(&code_verifier) else {
+                return failure();
+            };
+            let grant = match s
+                .storage
+                .redeem_authorization_code(
+                    &digest(&code),
+                    &realm_id,
+                    &client_id,
+                    &redirect_uri,
+                    &verifier,
+                )
+                .await
+            {
+                Ok(Some(grant)) => grant,
+                Ok(None) => return invalid_grant(),
+                Err(_) => return unavailable(),
+            };
+            match s
+                .storage
+                .create_refresh_family(
+                    &realm_id,
+                    &client_id,
+                    &grant.session_id,
+                    &random_token(),
+                    &digest(&refresh_token),
+                    &grant.scope,
+                    1800,
+                )
+                .await
+            {
+                Ok(true) => grant,
+                Ok(false) => return invalid_grant(),
+                Err(_) => return unavailable(),
+            }
         }
-        Err(_) => return unavailable(),
+        TokenForm::Refresh {
+            refresh_token: previous,
+            client_id,
+            scope,
+        } => {
+            let previous = Zeroizing::new(previous);
+            if previous.len() != 64 || client_id.len() > 255 {
+                return invalid_grant();
+            }
+            // Only openid is currently grantable; reject expansion before
+            // consuming the supplied token so errors do not revoke a session.
+            if scope.as_deref().is_some_and(|value| value != "openid") {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({"error":"invalid_scope"})),
+                )
+                    .into_response();
+            }
+            let refreshed = match s
+                .storage
+                .rotate_refresh_token(
+                    &realm_id,
+                    &client_id,
+                    &digest(&previous),
+                    &digest(&refresh_token),
+                )
+                .await
+            {
+                Ok(Some(grant)) => grant,
+                Ok(None) => return invalid_grant(),
+                Err(_) => return unavailable(),
+            };
+            rs_keycloak_storage_postgres::CodeGrant {
+                realm_id: refreshed.session.realm_id,
+                user_id: refreshed.session.user_id,
+                session_id: refreshed.session.session_id,
+                client_id: refreshed.session.client_id,
+                client_identifier: refreshed.session.client_identifier,
+                scope: refreshed.scope,
+                nonce: None,
+                auth_time: refreshed.session.auth_time,
+            }
+        }
     };
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => now.as_secs(),
@@ -388,7 +471,7 @@ async fn token(
     let Ok(Some((access_token, id_token))) = tokens else {
         return unavailable();
     };
-    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid"}))).into_response()
+    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid","refresh_token":refresh_token.as_str()}))).into_response()
 }
 
 async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
@@ -411,7 +494,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"scopes_supported":["openid"]})).into_response()
 }
 
 async fn userinfo(

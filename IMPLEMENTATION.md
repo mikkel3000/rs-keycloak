@@ -34,3 +34,20 @@ Delegation resumed with Sol and Terra after the usage limit cleared. Public auth
 `tests/public/lifecycle_contract.py` passed through the `serve` command against the isolated database: liveness 200, readiness 503 while authentication is incomplete, wrong-method 405, no public realm route on the management port, clean SIGTERM exit and socket release. This test is committed as `18fde34`.
 
 Database URL security regression checks reject alternate TLS query aliases, host overrides and connection options that bypass durability policy (`6c760e1`). Guarded password login state and RFC 7636 S256 validation are committed (`c327817`); neither proves a complete public OAuth flow.
+
+## Public OAuth evidence (2026-11-03)
+
+The public PostgreSQL-backed fixture now passes browser-form password login with
+cookie binding, code/S256 exchange, independent RS256 verification against JWKS,
+nonce/issuer/audience checks, session-checked userinfo, code replay rejection,
+refresh rotation, refresh replay revocation, and a two-request refresh race with
+exactly one success. It checks both old and newly issued access tokens become
+unusable at userinfo after refresh replay. The fixture uses local HTTP transport
+behind the configured HTTPS issuer; it does not prove browser-engine behavior,
+TLS proxy deployment, complete Keycloak parity or production readiness.
+
+Refresh currently supports public clients and the openid scope, with fixed
+session lifetime and mandatory rotation; configurable Keycloak refresh policy,
+confidential clients, offline sessions and full scope handling remain required.
+All three delegated agents stopped at a usage limit; changes are saved and the
+coordinator is continuing locally.
