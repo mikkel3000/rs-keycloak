@@ -23,6 +23,11 @@ impl Challenge {
         Ok(Self(bytes))
     }
 
+    /// Returns the decoded SHA-256 challenge for storage.
+    pub fn digest(&self) -> &[u8; 32] {
+        &self.0
+    }
+
     /// Checks the verifier using the S256 transform and constant-time comparison.
     pub fn verify(&self, verifier: &str) -> bool {
         if !(43..=128).contains(&verifier.len())
@@ -35,6 +40,18 @@ impl Challenge {
         let digest = Sha256::digest(verifier.as_bytes());
         bool::from(self.0.ct_eq(digest.as_slice()))
     }
+}
+
+/// Computes the S256 digest for a syntactically valid verifier.
+pub fn verifier_digest(verifier: &str) -> Option<[u8; 32]> {
+    if !(43..=128).contains(&verifier.len())
+        || !verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~'))
+    {
+        return None;
+    }
+    Some(Sha256::digest(verifier.as_bytes()).into())
 }
 
 #[cfg(test)]

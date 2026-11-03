@@ -997,6 +997,18 @@ name = "rs-keycloak-http"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
+ "rs-keycloak-authentication",
+ "rs-keycloak-crypto",
+ "rs-keycloak-protocols",
+ "rs-keycloak-storage-postgres",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
@@ -1013,6 +1025,7 @@ name = "rs-keycloak-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "rs-keycloak-crypto",
  "rs-keycloak-http",
  "rs-keycloak-storage-postgres",

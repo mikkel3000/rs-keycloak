@@ -4,8 +4,10 @@
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ring::rand::SystemRandom;
-use ring::signature::{KeyPair, RSA_PKCS1_SHA256, RsaKeyPair};
-use serde::Serialize;
+use ring::signature::{
+    KeyPair, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RsaKeyPair, UnparsedPublicKey,
+};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Signing or key parsing failed without disclosing key material.
@@ -49,8 +51,51 @@ pub struct TokenClaims<'a> {
     pub jti: &'a str,
     /// Authorized client ID.
     pub azp: &'a str,
+    /// Session identifier.
+    pub sid: &'a str,
     /// Granted scopes.
     pub scope: &'a str,
+}
+
+/// ID token values bound to an authorized OpenID Connect session.
+#[derive(Serialize)]
+pub struct IdTokenClaims<'a> {
+    /// Issuer URL.
+    pub iss: &'a str,
+    /// Stable user ID.
+    pub sub: &'a str,
+    /// Client audience.
+    pub aud: &'a str,
+    /// Token creation time.
+    pub iat: u64,
+    /// Token expiration time.
+    pub exp: u64,
+    /// Session authentication time.
+    pub auth_time: i64,
+    /// Client-provided OIDC nonce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nonce: Option<&'a str>,
+}
+
+/// Verified access token claims; callers must check issuer, time and session state.
+#[derive(Deserialize)]
+pub struct VerifiedAccessToken {
+    /// Issuer URL.
+    pub iss: String,
+    /// User subject.
+    pub sub: String,
+    /// Intended client audience.
+    pub aud: String,
+    /// Issue time.
+    pub iat: u64,
+    /// Expiry time.
+    pub exp: u64,
+    /// Authorized client.
+    pub azp: String,
+    /// Session ID.
+    pub sid: String,
+    /// Granted scopes.
+    pub scope: String,
 }
 
 impl SigningKey {
@@ -80,8 +125,52 @@ impl SigningKey {
         }
     }
 
+    /// Verifies a compact access token against this key and its exact header.
+    pub fn verify_access_token(&self, token: &str) -> Result<VerifiedAccessToken, SigningError> {
+        if token.len() > 8192 {
+            return Err(SigningError);
+        }
+        let mut parts = token.split('.');
+        let (Some(header), Some(payload), Some(signature), None) =
+            (parts.next(), parts.next(), parts.next(), parts.next())
+        else {
+            return Err(SigningError);
+        };
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Header {
+            alg: String,
+            typ: String,
+            kid: String,
+        }
+        let parsed: Header =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(header).map_err(|_| SigningError)?)
+                .map_err(|_| SigningError)?;
+        if parsed.alg != "RS256" || parsed.typ != "JWT" || parsed.kid != self.key_id {
+            return Err(SigningError);
+        }
+        let signature = URL_SAFE_NO_PAD
+            .decode(signature)
+            .map_err(|_| SigningError)?;
+        let message = format!("{header}.{payload}");
+        UnparsedPublicKey::new(&RSA_PKCS1_2048_8192_SHA256, self.key.public_key().as_ref())
+            .verify(message.as_bytes(), &signature)
+            .map_err(|_| SigningError)?;
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).map_err(|_| SigningError)?)
+            .map_err(|_| SigningError)
+    }
+
     /// Signs validated claims as a compact RS256 JWT.
     pub fn sign(&self, claims: &TokenClaims<'_>) -> Result<String, SigningError> {
+        self.sign_claims(claims)
+    }
+
+    /// Signs a validated OpenID Connect ID token.
+    pub fn sign_id_token(&self, claims: &IdTokenClaims<'_>) -> Result<String, SigningError> {
+        self.sign_claims(claims)
+    }
+
+    fn sign_claims(&self, claims: &impl Serialize) -> Result<String, SigningError> {
         #[derive(Serialize)]
         struct Header<'a> {
             alg: &'static str,

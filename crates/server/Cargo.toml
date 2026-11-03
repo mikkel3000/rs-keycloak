@@ -18,3 +18,4 @@ url.workspace = true
 rs-keycloak-crypto = { path = "../crypto" }
 uuid = { version = "=1.18.1", features = ["v4"] }
 zeroize = "=1.9.1"
+base64 = "=0.22.1"

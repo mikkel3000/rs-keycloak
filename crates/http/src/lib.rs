@@ -14,3 +14,5 @@ pub fn management_router() -> Router {
             get(|| async { StatusCode::SERVICE_UNAVAILABLE }),
         )
 }
+
+pub mod oidc;

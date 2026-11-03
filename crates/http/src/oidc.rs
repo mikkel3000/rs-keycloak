@@ -1,0 +1,490 @@
+//! OIDC authorization-code request handling.
+
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{Html, IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
+use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims};
+use rs_keycloak_protocols::pkce::{self, Challenge};
+use rs_keycloak_storage_postgres::Storage;
+use serde::Deserialize;
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
+use url::Url;
+use uuid::Uuid;
+use zeroize::Zeroizing;
+
+/// Shared state for a single configured issuer.
+#[derive(Clone)]
+pub struct OidcState {
+    storage: Arc<Storage>,
+    login: Arc<LoginService>,
+    signer: Arc<SigningKey>,
+    signing_slots: Arc<Semaphore>,
+    issuer_base: String,
+}
+
+impl OidcState {
+    /// Creates state after storage, issuer, and persistent key validation.
+    pub async fn new(
+        storage: Arc<Storage>,
+        signer: SigningKey,
+        issuer_base: String,
+    ) -> Result<Self, PasswordWorkError> {
+        let login = LoginService::new(Arc::clone(&storage)).await?;
+        Ok(Self {
+            storage,
+            login: Arc::new(login),
+            signer: Arc::new(signer),
+            signing_slots: Arc::new(Semaphore::new(2)),
+            issuer_base,
+        })
+    }
+}
+
+/// Builds the public OIDC router with bounded request bodies.
+pub fn router(state: OidcState) -> Router {
+    Router::new()
+        .route(
+            "/realms/{realm}/protocol/openid-connect/auth",
+            get(authorize),
+        )
+        .route(
+            "/realms/{realm}/login-actions/authenticate/{request_id}",
+            post(authenticate),
+        )
+        .route("/realms/{realm}/protocol/openid-connect/token", post(token))
+        .route("/realms/{realm}/protocol/openid-connect/certs", get(certs))
+        .route(
+            "/realms/{realm}/protocol/openid-connect/userinfo",
+            get(userinfo).post(userinfo),
+        )
+        .route(
+            "/realms/{realm}/.well-known/openid-configuration",
+            get(discovery),
+        )
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .with_state(state)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorizationQuery {
+    client_id: String,
+    redirect_uri: String,
+    response_type: String,
+    scope: String,
+    code_challenge: String,
+    code_challenge_method: String,
+    state: Option<String>,
+    nonce: Option<String>,
+}
+
+fn random_token() -> String {
+    format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
+}
+fn digest(value: &str) -> [u8; 32] {
+    Sha256::digest(value.as_bytes()).into()
+}
+fn valid_realm(realm: &str) -> bool {
+    !realm.is_empty()
+        && realm.len() <= 255
+        && realm
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+}
+fn failure() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [(header::CACHE_CONTROL, "no-store")],
+        "Invalid request",
+    )
+        .into_response()
+}
+fn unavailable() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(header::CACHE_CONTROL, "no-store")],
+        "Service unavailable",
+    )
+        .into_response()
+}
+
+async fn authorize(
+    State(s): State<OidcState>,
+    Path(realm): Path<String>,
+    Query(q): Query<AuthorizationQuery>,
+) -> Response {
+    if !valid_realm(&realm)
+        || q.response_type != "code"
+        || q.code_challenge_method != "S256"
+        || q.scope != "openid"
+        || q.client_id.len() > 255
+        || q.redirect_uri.len() > 2048
+    {
+        return failure();
+    }
+    let Ok(challenge) = Challenge::parse(&q.code_challenge) else {
+        return failure();
+    };
+    let realm_id = match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(id)) => id,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    let csrf = random_token();
+    let request_id = random_token();
+    match s
+        .storage
+        .create_authorization_request(
+            &request_id,
+            &digest(&csrf),
+            &realm_id,
+            &q.client_id,
+            &q.redirect_uri,
+            challenge.digest(),
+            q.state.as_deref(),
+            &q.scope,
+            q.nonce.as_deref(),
+            300,
+        )
+        .await
+    {
+        Ok(true) => (),
+        Ok(false) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head><body><h1>Sign in</h1><form method=\"post\" action=\"/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form></body></html>"
+    );
+    let mut response = Html(html).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; form-action 'self'; frame-ancestors 'none'"),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    let cookie = format!(
+        "rs_auth={csrf}; Path=/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
+    );
+    if let Ok(value) = HeaderValue::from_str(&cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    } else {
+        return unavailable();
+    }
+    response
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LoginForm {
+    username: String,
+    password: String,
+}
+fn csrf(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::COOKIE)?
+        .to_str()
+        .ok()?
+        .split(';')
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix("rs_auth="))
+}
+
+async fn authenticate(
+    State(s): State<OidcState>,
+    Path((realm, request_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<LoginForm>,
+) -> Response {
+    if !valid_realm(&realm)
+        || request_id.len() != 64
+        || form.username.len() > 255
+        || form.password.len() > 1024
+    {
+        return failure();
+    }
+    let Some(csrf) = csrf(&headers) else {
+        return failure();
+    };
+    if csrf.len() != 64 {
+        return failure();
+    }
+    let csrf_hash = digest(csrf);
+    let (realm_id, client_id) = match s
+        .storage
+        .authorization_request_client(&request_id, &csrf_hash)
+        .await
+    {
+        Ok(Some(binding)) => binding,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(id)) if id == realm_id => (),
+        Ok(_) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let password = Zeroizing::new(form.password.into_bytes());
+    let result = s
+        .login
+        .authenticate(
+            &realm_id,
+            &client_id,
+            &form.username.to_lowercase(),
+            password,
+        )
+        .await;
+    let session_id = match result {
+        Ok(LoginResult::Authenticated { session_id }) => session_id,
+        Ok(LoginResult::Denied) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                [(header::CACHE_CONTROL, "no-store")],
+                "Invalid credentials",
+            )
+                .into_response();
+        }
+        Err(_) => return unavailable(),
+    };
+    let code = random_token();
+    let redirect = match s
+        .storage
+        .issue_authorization_code(&request_id, &csrf_hash, &session_id, &digest(&code), 60)
+        .await
+    {
+        Ok(Some(redirect)) => redirect,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    let Ok(mut url) = Url::parse(&redirect.redirect_uri) else {
+        return unavailable();
+    };
+    {
+        let mut query = url.query_pairs_mut();
+        query.append_pair("code", &code);
+        if let Some(state) = redirect.state {
+            query.append_pair("state", &state);
+        }
+    }
+    let Ok(location) = HeaderValue::from_str(url.as_str()) else {
+        return unavailable();
+    };
+    let mut response = StatusCode::FOUND.into_response();
+    response.headers_mut().insert(header::LOCATION, location);
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let clear_cookie = format!(
+        "rs_auth=; Path=/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+    );
+    if let Ok(value) = HeaderValue::from_str(&clear_cookie) {
+        response.headers_mut().insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TokenForm {
+    grant_type: String,
+    code: String,
+    redirect_uri: String,
+    client_id: String,
+    code_verifier: String,
+}
+async fn token(
+    State(s): State<OidcState>,
+    Path(realm): Path<String>,
+    Form(q): Form<TokenForm>,
+) -> Response {
+    if !valid_realm(&realm)
+        || q.grant_type != "authorization_code"
+        || q.code.len() != 64
+        || q.client_id.len() > 255
+        || q.redirect_uri.len() > 2048
+    {
+        return failure();
+    }
+    let Some(verifier) = pkce::verifier_digest(&q.code_verifier) else {
+        return failure();
+    };
+    let realm_id = match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(id)) => id,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    let permit = match Arc::clone(&s.signing_slots).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return unavailable(),
+    };
+    let grant = match s
+        .storage
+        .redeem_authorization_code(
+            &digest(&q.code),
+            &realm_id,
+            &q.client_id,
+            &q.redirect_uri,
+            &verifier,
+        )
+        .await
+    {
+        Ok(Some(grant)) => grant,
+        Ok(None) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error":"invalid_grant"})),
+            )
+                .into_response();
+        }
+        Err(_) => return unavailable(),
+    };
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(now) => now.as_secs(),
+        Err(_) => return unavailable(),
+    };
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    let signer = Arc::clone(&s.signer);
+    let tokens = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let jti = random_token();
+        let claims = TokenClaims {
+            iss: &issuer,
+            sub: &grant.user_id,
+            aud: &grant.client_identifier,
+            iat: now,
+            exp: now + 300,
+            jti: &jti,
+            azp: &grant.client_identifier,
+            sid: &grant.session_id,
+            scope: &grant.scope,
+        };
+        let id_claims = IdTokenClaims {
+            iss: &issuer,
+            sub: &grant.user_id,
+            aud: &grant.client_identifier,
+            iat: now,
+            exp: now + 300,
+            auth_time: grant.auth_time,
+            nonce: grant.nonce.as_deref(),
+        };
+        Some((
+            signer.sign(&claims).ok()?,
+            signer.sign_id_token(&id_claims).ok()?,
+        ))
+    })
+    .await;
+    let Ok(Some((access_token, id_token))) = tokens else {
+        return unavailable();
+    };
+    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid"}))).into_response()
+}
+
+async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
+    if !valid_realm(&realm) {
+        return failure();
+    }
+    match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(_)) => Json(json!({"keys":[s.signer.public_jwk()]})).into_response(),
+        Ok(None) => failure(),
+        Err(_) => unavailable(),
+    }
+}
+async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
+    if !valid_realm(&realm) {
+        return failure();
+    }
+    match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(_)) => (),
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"scopes_supported":["openid"]})).into_response()
+}
+
+async fn userinfo(
+    State(s): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !valid_realm(&realm) {
+        return failure();
+    }
+    let invalid = || {
+        (
+            StatusCode::UNAUTHORIZED,
+            [
+                (header::WWW_AUTHENTICATE, "Bearer error=\"invalid_token\""),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+        )
+            .into_response()
+    };
+    let Some(token) = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+    else {
+        return invalid();
+    };
+    if token.len() > 8192 {
+        return invalid();
+    }
+    let permit = match Arc::clone(&s.signing_slots).try_acquire_owned() {
+        Ok(permit) => permit,
+        Err(_) => return unavailable(),
+    };
+    let signer = Arc::clone(&s.signer);
+    let token = Zeroizing::new(token.to_owned());
+    let claims = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        signer.verify_access_token(&token)
+    })
+    .await;
+    let Ok(Ok(claims)) = claims else {
+        return invalid();
+    };
+    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(now) => now.as_secs(),
+        Err(_) => return unavailable(),
+    };
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    if claims.iss != issuer
+        || claims.iat > now
+        || claims.exp <= now
+        || claims.aud != claims.azp
+        || claims.scope != "openid"
+    {
+        return invalid();
+    }
+    let realm_id = match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(id)) => id,
+        Ok(None) => return invalid(),
+        Err(_) => return unavailable(),
+    };
+    match s
+        .storage
+        .active_session(&realm_id, &claims.azp, &claims.sid, &claims.sub)
+        .await
+    {
+        Ok(Some(_)) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({"sub":claims.sub})),
+        )
+            .into_response(),
+        Ok(None) => invalid(),
+        Err(_) => unavailable(),
+    }
+}

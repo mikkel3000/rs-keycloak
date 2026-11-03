@@ -44,6 +44,7 @@ fn rs256_jwt_verifies_with_published_jwk() {
         exp: 200,
         jti: "token",
         azp: "client",
+        sid: "session",
         scope: "openid",
     };
     let token = signing.sign(&claims).unwrap();

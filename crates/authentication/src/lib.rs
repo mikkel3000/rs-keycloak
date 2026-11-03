@@ -78,14 +78,14 @@ pub enum LoginResult {
 
 /// Coordinates password work with guarded database state transitions.
 pub struct LoginService {
-    storage: rs_keycloak_storage_postgres::Storage,
+    storage: Arc<rs_keycloak_storage_postgres::Storage>,
     verifier: PasswordVerifier,
 }
 
 impl LoginService {
     /// Creates the service after the storage and schema checks have succeeded.
     pub async fn new(
-        storage: rs_keycloak_storage_postgres::Storage,
+        storage: Arc<rs_keycloak_storage_postgres::Storage>,
     ) -> Result<Self, PasswordWorkError> {
         Ok(Self {
             storage,

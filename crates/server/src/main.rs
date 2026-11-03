@@ -1,7 +1,12 @@
 use std::env;
+use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Read};
 use std::net::SocketAddr;
 use std::process::ExitCode;
+use std::sync::Arc;
+
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 
 use url::Url;
 use uuid::Uuid;
@@ -12,6 +17,8 @@ const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|
 struct Config {
     database_url: String,
     management_listen: SocketAddr,
+    http_listen: SocketAddr,
+    issuer_base: String,
 }
 
 fn database_url() -> Result<String, &'static str> {
@@ -74,6 +81,8 @@ fn config() -> Result<Config, &'static str> {
                     | "RS_KEYCLOAK_MANAGEMENT_LISTEN"
                     | "RS_KEYCLOAK_LOCAL_DEV"
                     | "RS_KEYCLOAK_ALLOW_REMOTE_MANAGEMENT"
+                    | "RS_KEYCLOAK_HTTP_LISTEN"
+                    | "RS_KEYCLOAK_SIGNING_KEY_PKCS8"
             )
         {
             return Err("Unknown RS_KEYCLOAK_ environment variable");
@@ -116,9 +125,15 @@ fn config() -> Result<Config, &'static str> {
     {
         return Err("Remote management binding requires RS_KEYCLOAK_ALLOW_REMOTE_MANAGEMENT=true");
     }
+    let http_listen = env::var("RS_KEYCLOAK_HTTP_LISTEN")
+        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
+        .parse::<SocketAddr>()
+        .map_err(|_| "RS_KEYCLOAK_HTTP_LISTEN must be an IP address and port")?;
     Ok(Config {
         database_url,
         management_listen,
+        http_listen,
+        issuer_base: issuer.to_string(),
     })
 }
 
@@ -177,13 +192,61 @@ async fn run() -> Result<(), &'static str> {
             let listener = tokio::net::TcpListener::bind(config.management_listen)
                 .await
                 .map_err(|_| "Management listener failed")?;
-            eprintln!(
-                "Management listener started; authentication is not implemented and readiness remains closed"
-            );
-            axum::serve(listener, rs_keycloak_http::management_router())
-                .with_graceful_shutdown(shutdown_signal())
-                .await
-                .map_err(|_| "Management server failed")?;
+            eprintln!("Management listener started; readiness remains closed");
+            if let Ok(key) = env::var("RS_KEYCLOAK_SIGNING_KEY_PKCS8") {
+                let key = Zeroizing::new(key);
+                if key.len() > 16_384 {
+                    return Err("Signing key is invalid");
+                }
+                let der = Zeroizing::new(
+                    STANDARD
+                        .decode(key.as_bytes())
+                        .map_err(|_| "Signing key is invalid")?,
+                );
+                let signer = rs_keycloak_crypto::signing::SigningKey::from_pkcs8(&der)
+                    .map_err(|_| "Signing key is invalid")?;
+                let storage = Arc::new(
+                    rs_keycloak_storage_postgres::Storage::connect(&config.database_url)
+                        .await
+                        .map_err(|_| "Database check failed")?,
+                );
+                let state =
+                    rs_keycloak_http::oidc::OidcState::new(storage, signer, config.issuer_base)
+                        .await
+                        .map_err(|_| "Authentication startup failed")?;
+                let http_listener = tokio::net::TcpListener::bind(config.http_listen)
+                    .await
+                    .map_err(|_| "HTTP listener failed")?;
+                let (stop, signal) = tokio::sync::watch::channel(false);
+                let mut public_signal = signal.clone();
+                let mut management_signal = signal;
+                let public = axum::serve(http_listener, rs_keycloak_http::oidc::router(state))
+                    .with_graceful_shutdown(async move {
+                        let _ = public_signal.changed().await;
+                    });
+                let management = axum::serve(listener, rs_keycloak_http::management_router())
+                    .with_graceful_shutdown(async move {
+                        let _ = management_signal.changed().await;
+                    });
+                let public = public.into_future();
+                let management = management.into_future();
+                tokio::pin!(public, management);
+                tokio::select! {
+                    result = &mut public => result.map_err(|_| "HTTP server failed")?,
+                    result = &mut management => result.map_err(|_| "Management server failed")?,
+                    _ = shutdown_signal() => {
+                        let _ = stop.send(true);
+                        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                            tokio::try_join!(&mut public, &mut management)
+                        }).await.map_err(|_| "Server shutdown timed out")?.map_err(|_| "Server shutdown failed")?;
+                    },
+                }
+            } else {
+                axum::serve(listener, rs_keycloak_http::management_router())
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await
+                    .map_err(|_| "Management server failed")?;
+            }
         }
         _ => return Err(USAGE),
     }
@@ -283,6 +346,12 @@ async fn add_public_client(
             redirect.host_str(),
             Some("localhost" | "127.0.0.1" | "[::1]")
         );
+    if redirect
+        .query_pairs()
+        .any(|(key, _)| key == "code" || key == "state")
+    {
+        return Err("Redirect URI must not contain code or state query parameters");
+    }
     if !(redirect.scheme() == "https" || (redirect.scheme() == "http" && local))
         || redirect.host_str().is_none()
         || !redirect.username().is_empty()
