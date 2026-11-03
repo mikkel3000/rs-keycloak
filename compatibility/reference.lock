@@ -46,11 +46,17 @@
   "qualification": {
     "step_0_complete": false,
     "baseline_performance": "not-run",
-    "operation_inventory": "634-source-declared-http-methods-public-route-resolution-pending",
-    "reference_public_smoke": "passed-native-distribution-fallback"
+    "operation_inventory": "768-source-resolved-route-variants-758-method-path-pairs-21-unresolved-no-runtime-parity",
+    "reference_public_smoke": "passed-native-distribution-fallback",
+    "reference_oauth": "public-and-confidential-code-pkce-refresh-userinfo-signature-and-denial-checks-passed"
   },
   "source_archive": {
     "url": "https://api.github.com/repos/keycloak/keycloak/tarball/24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
     "sha256": "1e2ff1d7dc008515e15ed072eccd32c2c836e0ca0eb251591018f334ade60794"
+  },
+  "inventory_tools": {
+    "tree-sitter": "0.25.2",
+    "tree-sitter-java": "0.23.5",
+    "operations_sha256": "6e1b27b370d299fed98863736a9a4c622cc9ca5623f147655c5024556ab0918b"
   }
 }

@@ -6,7 +6,7 @@
 
 `source-inventory.json` lists 180 tagged resource/endpoint Java source candidates; the list is not a complete HTTP inventory because inherited routes, subresource locators, provider-generated paths and browser routes need review.
 
-`operations.json` records 634 source-declared HTTP methods with file/line/hash evidence, with unresolved public paths and planned status; no reviewed operations are claimed; the full route/method/profile matrix, permission/schema/effect mapping, exclusions with evidence, browser/client pins, PostgreSQL runtime validation, threat model, dependency audit and performance baseline remain release blockers.
+`operations.json` records 768 source-resolved route variants (758 unique method/path pairs) with file/line/hash, inherited annotations, locator chains and registered-provider bindings; 21 unresolved source entries and all lifecycle/schema/permission/parity reviews remain open; the full route/method/profile matrix, permission/schema/effect mapping, exclusions with evidence, browser/client pins, PostgreSQL runtime validation, threat model, dependency audit and performance baseline remain release blockers.
 
 ## Public reference checks
 
@@ -35,7 +35,11 @@ The official 26.8.1 distribution then passed the public smoke check on OpenJDK 2
 
 To reproduce the distribution fallback, fetch the exact URL in `reference.lock`, run `tests/reference/reference.sh start-distribution /path/to/keycloak-26.8.1.tar.gz` in one terminal, and run the standard `check` command in another terminal; the launcher checks the archive SHA-256 before extraction and deletes temporary data on exit.
 
-To regenerate source-declared operations from the exact source archive, use `python3 compatibility/inventory.py --source /path/to/extracted/source --output compatibility/operations.json`; a semantic route/profile/permission review is still required, and a generated count is not a coverage result.
+To regenerate the source inventory, install the development-only Python packages from `compatibility/requirements.txt` into an isolated environment and run `python3 compatibility/inventory.py --archive /path/to/source.tar.gz --output compatibility/operations.json`; the CLI verifies the source archive SHA-256 against `reference.lock` before parsing and never executes Java source.
+
+The parser resolves literal/constant paths, method annotation inheritance, typed locators and built-in factories from tagged `META-INF/services` descriptors; route variants retain overloaded methods and provider binding evidence, while conditional dispatch, plugin resources, recursive locators and unreached declarations remain explicit unresolved records.
+
+Generated paths are source evidence, not a completed route/profile/permission review or runtime coverage result; profiles and schema/permission/effect fields stay unclassified, and all operation statuses remain planned.
 
 The Java admin client is independently released as 26.0.12, evidenced by the Maven Central POM, while the tagged console dependency lock resolves `keycloak-js` to 26.2.2; neither client has passed runtime qualification here.
 
@@ -46,3 +50,5 @@ Run `tests/reference/oauth.py --archive /path/to/keycloak-26.8.1.tar.gz` with Py
 The fixture imports synthetic realm/client/user data through Admin REST and exercises HTTP login forms/cookies, authorization code with S256 PKCE, nonce/state/issuer/audience/time binding, public JWKS signature verification through OpenSSL, userinfo, refresh and replay/wrong-verifier denial; child logs are suppressed and secrets/tokens/signatures stay in memory and anonymous pipes.
 
 The HTTP form client is not browser-engine automation, uses loopback-specific secure-cookie handling and is not an independent OIDC client library; signature checks currently cover the fixture's RS256 algorithm, and no paired target parity is claimed.
+
+The OAuth fixture also runs confidential clients with `client_secret_post` code/refresh requests, `client_secret_basic` service grants, and missing/wrong-secret denial; Keycloak 26.8.1 reports `unauthorized_client` for missing/wrong secrets, rather than `invalid_client`.
