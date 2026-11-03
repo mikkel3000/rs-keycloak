@@ -45,7 +45,7 @@ class Redirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def request(url, data=None, token=None, opener=None, method=None, expected=200):
+def request(url, data=None, token=None, opener=None, method=None, expected=200, basic=None):
     headers = {}
     if isinstance(data, dict):
         headers['Content-Type'] = 'application/json'
@@ -55,6 +55,9 @@ def request(url, data=None, token=None, opener=None, method=None, expected=200):
         data = urllib.parse.urlencode(data).encode()
     if token:
         headers['Authorization'] = 'Bearer ' + token
+    if basic:
+        credentials = ':'.join(urllib.parse.quote(value, safe='') for value in basic).encode()
+        headers['Authorization'] = 'Basic ' + base64.b64encode(credentials).decode()
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         response = (opener or urllib.request.build_opener()).open(req, timeout=15)
@@ -111,13 +114,14 @@ def verify_token(token, issuer):
     return json.loads(unbase64(payload))
 
 
-def run(base, client_secret):
+def run(base, client_secret, confidential=False):
     _, body = request(base + '/realms/master/protocol/openid-connect/token', [('grant_type', 'client_credentials'), ('client_id', 'reference-bootstrap'), ('client_secret', client_secret)])
     admin = json.loads(body)['access_token']
     realm = 'reference-' + secrets.token_hex(6)
     password = secrets.token_urlsafe(32)
+    browser_secret = secrets.token_urlsafe(40) if confidential else None
     redirect = base + '/callback'
-    fixture = {'realm': realm, 'enabled': True, 'sslRequired': 'none', 'clients': [{'clientId': 'reference-browser', 'publicClient': True, 'standardFlowEnabled': True, 'directAccessGrantsEnabled': False, 'redirectUris': [redirect], 'attributes': {'pkce.code.challenge.method': 'S256'}}], 'users': [{'username': 'reference-user', 'enabled': True, 'emailVerified': True, 'firstName': 'Reference', 'lastName': 'User', 'email': 'reference@example.invalid', 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]}]}
+    fixture = {'realm': realm, 'enabled': True, 'sslRequired': 'none', 'clients': [{'clientId': 'reference-browser', 'publicClient': not confidential, 'secret': browser_secret, 'serviceAccountsEnabled': confidential, 'standardFlowEnabled': True, 'directAccessGrantsEnabled': False, 'redirectUris': [redirect], 'attributes': {'pkce.code.challenge.method': 'S256'}}], 'users': [{'username': 'reference-user', 'enabled': True, 'emailVerified': True, 'firstName': 'Reference', 'lastName': 'User', 'email': 'reference@example.invalid', 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]}]}
     request(base + '/admin/realms', fixture, admin, expected=201)
     try:
         issuer = base + '/realms/' + realm
@@ -143,6 +147,23 @@ def run(base, client_secret):
         assert result['state'] == [state] and result['iss'] == [issuer], 'callback binding'
         code = result['code'][0]
         grant = [('grant_type', 'authorization_code'), ('client_id', 'reference-browser'), ('redirect_uri', redirect), ('code', code), ('code_verifier', verifier)]
+        failure_responses = {}
+        if confidential:
+            headers, body = request(token_url, grant, expected=401)
+            failure_responses['missing_secret'] = {'status': 401, 'error': json.loads(body)['error'], 'error_description': json.loads(body).get('error_description'), 'www_authenticate': headers.get('WWW-Authenticate')}
+            assert json.loads(body)['error'] == 'unauthorized_client', 'missing confidential credentials'
+            headers, body = request(token_url, grant + [('client_secret', secrets.token_urlsafe(40))], expected=401)
+            failure_responses['wrong_secret'] = {'status': 401, 'error': json.loads(body)['error'], 'error_description': json.loads(body).get('error_description'), 'www_authenticate': headers.get('WWW-Authenticate')}
+            assert json.loads(body)['error'] == 'unauthorized_client', 'wrong confidential credentials'
+            headers, body = request(token_url, [('grant_type', 'client_credentials'), ('client_id', 'reference-client-does-not-exist'), ('client_secret', secrets.token_urlsafe(40))], expected=401)
+            failure_responses['unknown_client'] = {'status': 401, 'error': json.loads(body)['error'], 'error_description': json.loads(body).get('error_description'), 'www_authenticate': headers.get('WWW-Authenticate')}
+            assert json.loads(body)['error'] == 'invalid_client', 'unknown confidential client'
+            assert all(response['www_authenticate'] is None and response['error_description'] == 'Invalid client or Invalid client credentials' for response in failure_responses.values()), 'confidential error response shape'
+            for label, identity, expected_error in [('wrong_basic_secret', 'reference-browser', 'unauthorized_client'), ('unknown_basic_client', 'reference-client-does-not-exist', 'invalid_client')]:
+                headers, body = request(token_url, [('grant_type', 'client_credentials')], basic=(identity, secrets.token_urlsafe(40)), expected=401)
+                failure_responses[label] = {'status': 401, 'error': json.loads(body)['error'], 'error_description': json.loads(body).get('error_description'), 'www_authenticate': headers.get('WWW-Authenticate')}
+                assert json.loads(body)['error'] == expected_error, 'Basic client denial'
+            grant.append(('client_secret', browser_secret))
         _, body = request(token_url, grant)
         tokens = json.loads(body)
         claims = verify_token(tokens['id_token'], issuer)
@@ -160,7 +181,7 @@ def run(base, client_secret):
         assert claims['exp'] > time.time() and claims['iat'] <= time.time() + 5, 'ID token times'
         _, body = request(issuer + '/protocol/openid-connect/userinfo', token=tokens['access_token'])
         assert json.loads(body)['sub'] == claims['sub'], 'userinfo subject'
-        _, body = request(token_url, [('grant_type', 'refresh_token'), ('client_id', 'reference-browser'), ('refresh_token', tokens['refresh_token'])])
+        _, body = request(token_url, [('grant_type', 'refresh_token'), ('client_id', 'reference-browser'), ('refresh_token', tokens['refresh_token'])] + ([('client_secret', browser_secret)] if confidential else []))
         assert json.loads(body)['access_token'], 'refresh response'
         _, body = request(token_url, grant, expected=400)
         assert json.loads(body)['error'] == 'invalid_grant', 'code replay'
@@ -171,9 +192,15 @@ def run(base, client_secret):
         assert form.action and form.action.startswith(issuer + '/login-actions/'), 'second login form'
         headers, _ = request(form.action, list((form.fields | {'username': 'reference-user', 'password': password, 'credentialId': ''}).items()), opener=browser, expected=302)
         denied_code = urllib.parse.parse_qs(urllib.parse.urlparse(headers['Location']).query)['code'][0]
-        _, body = request(token_url, [('grant_type', 'authorization_code'), ('client_id', 'reference-browser'), ('redirect_uri', redirect), ('code', denied_code), ('code_verifier', secrets.token_urlsafe(48))], expected=400)
+        _, body = request(token_url, [('grant_type', 'authorization_code'), ('client_id', 'reference-browser'), ('redirect_uri', redirect), ('code', denied_code), ('code_verifier', secrets.token_urlsafe(48))] + ([('client_secret', browser_secret)] if confidential else []), expected=400)
         assert json.loads(body)['error'] == 'invalid_grant', 'wrong PKCE verifier'
-        return {'public_login_code_pkce': 'passed', 'checks': ['public realm import', 'login form and cookies', 'S256 PKCE exchange', 'JWKS signature and tampering checks', 'state issuer nonce audience expiry binding', 'userinfo subject', 'code replay rejection', 'wrong PKCE verifier rejection', 'refresh'], 'paired': False, 'signature_verification': 'OpenSSL RS256 against public JWKS', 'browser_engine': 'HTTP form client, not browser automation'}
+        if confidential:
+            _, body = request(token_url, [('grant_type', 'client_credentials')], basic=('reference-browser', browser_secret))
+            service = json.loads(body)
+            access = verify_token(service['access_token'], issuer)
+            assert access['iss'] == issuer and access['azp'] == 'reference-browser', 'service token client binding'
+            assert 'refresh_token' not in service, 'service token refresh default'
+        return {'client_auth_failures': failure_responses, 'client_type': 'confidential' if confidential else 'public', 'confidential_checks': ['missing secret denial', 'wrong secret denial', 'unknown client denial', 'wrong and unknown Basic client denial', 'client_secret_post code/refresh', 'client_secret_basic service grant'] if confidential else [], 'public_login_code_pkce': 'passed', 'checks': ['public realm import', 'login form and cookies', 'S256 PKCE exchange', 'JWKS signature and tampering checks', 'state issuer nonce audience expiry binding', 'userinfo subject', 'code replay rejection', 'wrong PKCE verifier rejection', 'refresh'], 'paired': False, 'signature_verification': 'OpenSSL RS256 against public JWKS', 'browser_engine': 'HTTP form client, not browser automation'}
     finally:
         request(base + '/admin/realms/' + realm, token=admin, method='DELETE', expected=204)
 
@@ -206,7 +233,7 @@ def main():
                     time.sleep(1)
             else:
                 raise RuntimeError('reference readiness deadline')
-            print(json.dumps(run(base, client_secret)))
+            print(json.dumps({'cases': [run(base, client_secret), run(base, client_secret, confidential=True)], 'paired': False}))
         finally:
             process.terminate()
             try:
