@@ -14,7 +14,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
-use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedAccessToken};
+use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedToken};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::Storage;
 use serde::Deserialize;
@@ -478,12 +478,21 @@ async fn token(
     };
     let client_id = client.client_id;
     let client_revision = client.revision;
+    let previous_jti = if let TokenForm::Refresh { refresh_token, .. } = &q {
+        match verified_refresh(&s, &realm, refresh_token).await {
+            Ok(Some(claims)) if claims.azp == client_id => Some(claims.jti),
+            Ok(_) => return invalid_grant(),
+            Err(_) => return unavailable(),
+        }
+    } else {
+        None
+    };
     let permit = match Arc::clone(&s.signing_slots).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return unavailable(),
     };
-    let refresh_token = Zeroizing::new(random_token());
-    let grant = match q {
+    let refresh_jti = Zeroizing::new(random_token());
+    let (grant, refresh_expiry) = match q {
         TokenForm::Code {
             code,
             redirect_uri,
@@ -518,15 +527,15 @@ async fn token(
                     &client_id,
                     &grant.session_id,
                     &random_token(),
-                    &digest(&refresh_token),
+                    &digest(&refresh_jti),
                     &grant.scope,
                     1800,
                     client_revision,
                 )
                 .await
             {
-                Ok(true) => grant,
-                Ok(false) => return invalid_grant(),
+                Ok(Some(expiry)) => (grant, expiry),
+                Ok(None) => return invalid_grant(),
                 Err(_) => return unavailable(),
             }
         }
@@ -535,7 +544,7 @@ async fn token(
             scope,
         } => {
             let previous = Zeroizing::new(previous);
-            if previous.len() != 64 || client_id.len() > 255 {
+            if previous.len() > 8192 || client_id.len() > 255 {
                 return invalid_grant();
             }
             // Only openid is currently grantable; reject expansion before
@@ -543,13 +552,16 @@ async fn token(
             if scope.as_deref().is_some_and(|value| value != "openid") {
                 return token_error("invalid_scope");
             }
+            let Some(previous_jti) = previous_jti else {
+                return invalid_grant();
+            };
             let refreshed = match s
                 .storage
                 .rotate_refresh_token(
                     &realm_id,
                     &client_id,
-                    &digest(&previous),
-                    &digest(&refresh_token),
+                    &digest(&previous_jti),
+                    &digest(&refresh_jti),
                     client_revision,
                 )
                 .await
@@ -558,22 +570,30 @@ async fn token(
                 Ok(None) => return invalid_grant(),
                 Err(_) => return unavailable(),
             };
-            rs_keycloak_storage_postgres::CodeGrant {
-                realm_id: refreshed.session.realm_id,
-                user_id: refreshed.session.user_id,
-                session_id: refreshed.session.session_id,
-                client_id: refreshed.session.client_id,
-                client_identifier: refreshed.session.client_identifier,
-                scope: refreshed.scope,
-                nonce: None,
-                auth_time: refreshed.session.auth_time,
-            }
+            let expiry = refreshed.expires_at;
+            (
+                rs_keycloak_storage_postgres::CodeGrant {
+                    realm_id: refreshed.session.realm_id,
+                    user_id: refreshed.session.user_id,
+                    session_id: refreshed.session.session_id,
+                    client_id: refreshed.session.client_id,
+                    client_identifier: refreshed.session.client_identifier,
+                    scope: refreshed.scope,
+                    nonce: None,
+                    auth_time: refreshed.session.auth_time,
+                },
+                expiry,
+            )
         }
     };
     let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(now) => now.as_secs(),
         Err(_) => return unavailable(),
     };
+    let Ok(refresh_expiry) = u64::try_from(refresh_expiry) else {
+        return unavailable();
+    };
+    let refresh_expires_in = refresh_expiry.saturating_sub(now);
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
     let tokens = tokio::task::spawn_blocking(move || {
@@ -599,16 +619,28 @@ async fn token(
             auth_time: grant.auth_time,
             nonce: grant.nonce.as_deref(),
         };
+        let refresh_claims = TokenClaims {
+            iss: &issuer,
+            sub: &grant.user_id,
+            aud: &issuer,
+            iat: now,
+            exp: refresh_expiry,
+            jti: &refresh_jti,
+            azp: &grant.client_identifier,
+            sid: &grant.session_id,
+            scope: &grant.scope,
+        };
         Some((
             signer.sign(&claims).ok()?,
             signer.sign_id_token(&id_claims).ok()?,
+            signer.sign_refresh_token(&refresh_claims).ok()?,
         ))
     })
     .await;
-    let Ok(Some((access_token, id_token))) = tokens else {
+    let Ok(Some((access_token, id_token, refresh_token))) = tokens else {
         return unavailable();
     };
-    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid","refresh_token":refresh_token.as_str()}))).into_response()
+    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid","refresh_token":refresh_token,"refresh_expires_in":refresh_expires_in}))).into_response()
 }
 
 async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
@@ -697,7 +729,7 @@ async fn verified_access(
     s: &OidcState,
     realm: &str,
     token: &str,
-) -> Result<Option<VerifiedAccessToken>, ()> {
+) -> Result<Option<VerifiedToken>, ()> {
     if token.len() > 8192 {
         return Ok(None);
     }
@@ -722,6 +754,42 @@ async fn verified_access(
         || claims.iat > now
         || claims.exp <= now
         || claims.aud != claims.azp
+        || claims.scope != "openid"
+    {
+        return Ok(None);
+    }
+    Ok(Some(claims))
+}
+
+async fn verified_refresh(
+    s: &OidcState,
+    realm: &str,
+    token: &str,
+) -> Result<Option<VerifiedToken>, ()> {
+    if token.len() > 8192 {
+        return Ok(None);
+    }
+    let permit = Arc::clone(&s.signing_slots)
+        .try_acquire_owned()
+        .map_err(|_| ())?;
+    let signer = Arc::clone(&s.signer);
+    let token = Zeroizing::new(token.to_owned());
+    let claims = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        signer.verify_refresh_token(&token)
+    })
+    .await
+    .map_err(|_| ())?;
+    let Ok(claims) = claims else { return Ok(None) };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs();
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    if claims.iss != issuer
+        || claims.iat > now
+        || claims.exp <= now
+        || claims.aud != issuer
         || claims.scope != "openid"
     {
         return Ok(None);

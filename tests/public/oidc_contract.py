@@ -12,6 +12,8 @@ import secrets
 import socket
 import subprocess
 import time
+import tempfile
+import urllib.request
 import urllib.parse
 
 
@@ -43,6 +45,19 @@ def verify_jwt(token, keys):
     expected = b"\x00\x01" + b"\xff" * (width - len(digest_info) - 3) + b"\x00" + digest_info
     assert encoded == expected, "JWT signature did not match published JWKS"
     return json.loads(decode(payload))
+
+
+def adapter_source():
+    source = Path(tempfile.gettempdir()) / "rs-keycloak-js-26.2.2.mjs"
+    expected = "af74b351e2aca48ab26c0e681e3ee5e056aef7faee1dc6f383f2d9611ac6870f"
+    if not source.exists():
+        url = "https://raw.githubusercontent.com/keycloak/keycloak-js/26.2.2/lib/keycloak.js"
+        with urllib.request.urlopen(url, timeout=20) as response:
+            data = response.read(512 * 1024)
+        assert hashlib.sha256(data).hexdigest() == expected, "Adapter source digest differs"
+        source.write_bytes(data)
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == expected, "Cached adapter digest differs"
+    return source
 
 
 def run(binary, username, password, prefix=""):
@@ -134,7 +149,7 @@ def run(binary, username, password, prefix=""):
             assert json.loads(body)["error"] == error
             assert headers.get("cache-control") == "no-store"
         for mode, replay_kind in (
-            ("public", "code"), ("public", "refresh"), ("public", "refresh_race"),
+            ("public", "code"), ("public", "refresh"), ("public", "refresh_race"), ("public", "adapter"),
             ("basic", "refresh"), ("post", "refresh"),
         ):
             client = public_client if mode == "public" else confidential_client
@@ -199,9 +214,22 @@ def run(binary, username, password, prefix=""):
             status, _, body = request("GET", "/realms/master/protocol/openid-connect/certs")
             assert status == 200
             keys = json.loads(body)["keys"]
+            refresh_claims = verify_jwt(tokens["refresh_token"], keys)
+            assert refresh_claims["typ"] == "Refresh" and refresh_claims["aud"] == issuer
+            assert refresh_claims["azp"] == client and refresh_claims["exp"] > refresh_claims["iat"]
+            assert 0 < tokens["refresh_expires_in"] <= 1800
             claims = verify_jwt(tokens["id_token"], keys)
             access = verify_jwt(tokens["access_token"], keys)
             assert access["sub"] == claims["sub"] and access["iss"] == issuer
+            assert access["typ"] == "Bearer" and refresh_claims["sub"] == claims["sub"]
+            status, _, _ = token_request({"grant_type": "refresh_token", "client_id": client, "refresh_token": tokens["access_token"]})
+            assert status == 400, "Access token accepted as refresh token"
+            tampered = tokens["refresh_token"].split(".")
+            tampered[2] = ("A" if tampered[2][0] != "A" else "B") + tampered[2][1:]
+            status, _, _ = token_request({"grant_type": "refresh_token", "client_id": client, "refresh_token": ".".join(tampered)})
+            assert status == 400, "Tampered refresh signature accepted"
+
+
             assert claims["iss"] == issuer and claims["aud"] == client
             assert claims["nonce"] == nonce and claims["exp"] > claims["iat"]
             introspection = token_path + "/introspect"
@@ -227,6 +255,8 @@ def run(binary, username, password, prefix=""):
                 status, _, body = request("POST", introspection, {"client_id": confidential_client, "client_secret": client_secret, "token": tokens["access_token"]})
                 assert status == 200 and json.loads(body) == {"active": False}, "Wrong audience introspected token"
             userinfo = "/realms/master/protocol/openid-connect/userinfo"
+            status, _, _ = request("GET", userinfo, bearer=tokens["refresh_token"])
+            assert status == 401, "Refresh token accepted as access token"
             status, _, body = request("GET", userinfo, bearer=tokens["access_token"])
             assert status == 200 and json.loads(body)["sub"] == claims["sub"]
             if mode != "public":
@@ -255,7 +285,18 @@ def run(binary, username, password, prefix=""):
                 assert status in (400, 401)
                 status, _, body = token_request(dict(refresh, scope="openid admin"))
                 assert status == 400 and json.loads(body)["error"] == "invalid_scope"
-                if replay_kind == "refresh_race":
+                if replay_kind == "adapter":
+                    adapter = subprocess.run(
+                        ["node", str(Path(__file__).with_name("keycloak_adapter.mjs")), str(adapter_source())],
+                        input=json.dumps({"tokens": tokens, "client": client, "prefix": prefix, "transport": f"http://127.0.0.1:{port}"}).encode(),
+                        capture_output=True, timeout=15, check=False,
+                    )
+                    assert adapter.returncode == 0, "Pinned Keycloak JS init/refresh failed"
+                    rotated = json.loads(adapter.stdout)
+                    verify_jwt(rotated["refresh_token"], keys)
+                    status, _, body = token_request(refresh)
+                    assert status == 400 and json.loads(body)["error"] == "invalid_grant"
+                elif replay_kind == "refresh_race":
                     with ThreadPoolExecutor(max_workers=2) as executor:
                         replies = list(executor.map(lambda _: token_request(refresh), range(2)))
                     assert sorted(reply[0] for reply in replies) == [200, 400], "Concurrent refresh had multiple winners"
@@ -265,6 +306,10 @@ def run(binary, username, password, prefix=""):
                     assert status == 200, "Refresh rotation failed"
                     rotated = json.loads(body)
                     assert rotated["refresh_token"] != tokens["refresh_token"]
+                    next_refresh = verify_jwt(rotated["refresh_token"], keys)
+                    assert next_refresh["jti"] != refresh_claims["jti"]
+                    assert next_refresh["exp"] == refresh_claims["exp"], "Rotation extended the fixed family lifetime"
+
                     refreshed_id = verify_jwt(rotated["id_token"], keys)
                     assert refreshed_id["sub"] == claims["sub"] and refreshed_id["auth_time"] == claims["auth_time"]
                     status, _, _ = request("GET", userinfo, bearer=rotated["access_token"])
@@ -287,7 +332,7 @@ def run(binary, username, password, prefix=""):
         assert process.returncode == 0, "OAuth shutdown failed"
         assert password.encode() not in stdout + stderr, "Password appeared in server output"
         assert client_secret.encode() not in stdout + stderr, "Client secret appeared in server output"
-        print("Public OAuth login, PKCE, refresh rotation and replay race checks passed")
+        print("Public OAuth, introspection, refresh replay and pinned adapter checks passed")
     finally:
         if process.poll() is None:
             process.kill()

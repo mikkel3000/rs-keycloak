@@ -77,9 +77,11 @@ pub struct IdTokenClaims<'a> {
     pub nonce: Option<&'a str>,
 }
 
-/// Verified access token claims; callers must check issuer, time and session state.
+/// Verified token claims; callers must check issuer, audience, time and session state.
 #[derive(Deserialize)]
-pub struct VerifiedAccessToken {
+pub struct VerifiedToken {
+    #[serde(rename = "typ")]
+    token_type: String,
     /// Issuer URL.
     pub iss: String,
     /// User subject.
@@ -128,7 +130,24 @@ impl SigningKey {
     }
 
     /// Verifies a compact access token against this key and its exact header.
-    pub fn verify_access_token(&self, token: &str) -> Result<VerifiedAccessToken, SigningError> {
+    pub fn verify_access_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
+        let claims = self.verify_token(token)?;
+        if claims.token_type != "Bearer" {
+            return Err(SigningError);
+        }
+        Ok(claims)
+    }
+
+    /// Verifies a signed refresh token and rejects other token types.
+    pub fn verify_refresh_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
+        let claims = self.verify_token(token)?;
+        if claims.token_type != "Refresh" {
+            return Err(SigningError);
+        }
+        Ok(claims)
+    }
+
+    fn verify_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
         if token.len() > 8192 {
             return Err(SigningError);
         }
@@ -164,7 +183,26 @@ impl SigningKey {
 
     /// Signs validated claims as a compact RS256 JWT.
     pub fn sign(&self, claims: &TokenClaims<'_>) -> Result<String, SigningError> {
-        self.sign_claims(claims)
+        self.sign_typed_claims(claims, "Bearer")
+    }
+
+    /// Signs refresh claims bound to a persisted refresh family.
+    pub fn sign_refresh_token(&self, claims: &TokenClaims<'_>) -> Result<String, SigningError> {
+        self.sign_typed_claims(claims, "Refresh")
+    }
+
+    fn sign_typed_claims(
+        &self,
+        claims: &TokenClaims<'_>,
+        typ: &str,
+    ) -> Result<String, SigningError> {
+        #[derive(Serialize)]
+        struct TypedClaims<'a, 'b> {
+            typ: &'a str,
+            #[serde(flatten)]
+            claims: &'a TokenClaims<'b>,
+        }
+        self.sign_claims(&TypedClaims { typ, claims })
     }
 
     /// Signs a validated OpenID Connect ID token.

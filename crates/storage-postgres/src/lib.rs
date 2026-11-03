@@ -293,6 +293,8 @@ fn active_session_row(row: &PgRow) -> Result<ActiveSession, StorageError> {
 
 /// Rotated session and the scopes granted to its refresh family.
 pub struct RefreshGrant {
+    /// Fixed refresh family expiry as Unix seconds.
+    pub expires_at: i64,
     /// Current authoritative session state.
     pub session: ActiveSession,
     /// Scope granted to the family.
@@ -801,7 +803,7 @@ impl Storage {
     }
 
     /// Create an initial refresh token family for an enabled client and live session.
-    /// The caller enforces grant and scope policy and stores only an unpredictable token's SHA-256 hash.
+    /// The caller verifies JWT signatures and stores only the unpredictable token ID's SHA-256 hash.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_refresh_family(
         &self,
@@ -813,7 +815,7 @@ impl Storage {
         scope: &str,
         ttl_seconds: i32,
         client_revision: Option<i64>,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<i64>, StorageError> {
         if token_hash.len() != 32
             || scope.is_empty()
             || scope.len() > 2048
@@ -826,12 +828,12 @@ impl Storage {
         let row = sqlx::query("SELECT c.id FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
             .bind(realm).bind(client_identifier).bind(session_id).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
-            return Ok(false);
+            return Ok(None);
         };
         let client: String = row.try_get("id")?;
         sqlx::query("DELETE FROM refresh_families WHERE id IN (SELECT id FROM refresh_families WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        sqlx::query("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at) VALUES ($1, $2, $3, $4, $5, LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4)))")
-            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at) VALUES ($1, $2, $3, $4, $5, LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4))) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
+            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).fetch_one(&mut *conn).await?;
         sqlx::query(
             "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, 0)",
         )
@@ -840,7 +842,7 @@ impl Storage {
         .execute(&mut *conn)
         .await?;
         tx.commit().await?;
-        Ok(true)
+        Ok(Some(expires_at))
     }
 
     /// Rotate a refresh token once; correctly bound replay revokes its family and session.
@@ -857,7 +859,7 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, floor(EXTRACT(EPOCH FROM f.expires_at))::bigint AS expires_at, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
             .bind(token_hash).bind(realm).bind(client_identifier).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             return Ok(None);
@@ -887,6 +889,7 @@ impl Storage {
         .execute(&mut *conn)
         .await?;
         let result = RefreshGrant {
+            expires_at: row.try_get("expires_at")?,
             session: active_session_row(&row)?,
             scope: row.try_get("scope")?,
         };
@@ -1018,6 +1021,7 @@ impl Storage {
             None => None,
             Some(row) => Some(RefreshIntrospection {
                 grant: RefreshGrant {
+                    expires_at: row.try_get("expires_at")?,
                     session: active_session_row(&row)?,
                     scope: row.try_get("scope")?,
                 },

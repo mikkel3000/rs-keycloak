@@ -11,6 +11,6 @@ The first production release must cover the full agreed API contract, pass secur
 
 Status: implementation in progress; this is not a complete Keycloak replacement or a production release. PostgreSQL migrations, bootstrap and client setup, management routes, bounded password work, PKCE validation and RSA signing primitives are implemented; public authentication and the full compatibility contract remain incomplete.
 
-Build with `cargo build --locked --workspace` using the pinned toolchain. Run `bash tests/public/run.sh` with Docker, Python 3 and OpenSSL available; the suite creates a disposable PostgreSQL container and checks public CLI behavior before Rust tests and lint checks. OpenSSL generates test keys in memory. These checks do not establish full HTTP compatibility or production readiness.
+Build with `cargo build --locked --workspace` using the pinned toolchain. Run `bash tests/public/run.sh` with Docker, Python 3, Node.js 22 or later and OpenSSL available; the suite creates a disposable PostgreSQL container and checks public CLI behavior before Rust tests and lint checks. OpenSSL generates test keys in memory. The adapter fixture downloads and checks the digest of keycloak-js 26.2.2, then uses Node only as a test client with in-memory browser stubs. These checks do not establish full HTTP compatibility or production readiness.
 
 See [implementation evidence](IMPLEMENTATION.md) for tested behavior and [the production plan](PLAN.md) for the required remaining scope.

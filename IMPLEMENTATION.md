@@ -75,9 +75,16 @@ unsupported hints and failed confidential authentication, at both issuer paths.
 The handler follows the pinned TokenIntrospectionEndpoint source for the covered
 cases; complete upstream claim/mapper parity is not yet proved.
 
-Blocking adapter gap: refresh tokens are still opaque random strings, while
-[keycloak-js 26.2.2](https://github.com/keycloak/keycloak-js/blob/26.2.2/lib/keycloak.js#L1426)
-decodes each refresh token as a JWT in `#setToken`; login with that adapter cannot
-work yet. Replace the wire format with signed, type-bound refresh JWTs while
-preserving atomic rotation/replay storage, then run the pinned adapter itself.
-The access-token verifier must reject refresh JWTs to prevent token confusion.
+The opaque refresh-token gap is fixed: refresh tokens are signed RS256 JWTs
+with a Refresh type, issuer audience, client/session binding, unique jti and the
+stored family's fixed expiry. Storage hashes token IDs only after JWT validation;
+rotation and replay remain atomic. Access and refresh verifiers require distinct
+types. Public tests check independent refresh signatures, type substitution,
+unchanged expiry across rotation and rejection of revoked sessions.
+
+The digest-pinned keycloak-js 26.2.2 adapter now loads issued tokens and performs
+real HTTP refreshes against both issuer paths in the Node client harness.
+Credentials stay in private pipes and memory. This proves adapter token loading
+and refresh only: login callback handling (including response_mode=fragment),
+iframe/session checks, CORS and full browser behavior still need implementation
+and browser-engine qualification.

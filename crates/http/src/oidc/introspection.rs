@@ -12,7 +12,9 @@ use zeroize::Zeroizing;
 
 use crate::client_auth::{self, ClientAuthResult};
 
-use super::{OidcState, digest, unavailable, unknown_client, valid_realm, verified_access};
+use super::{
+    OidcState, digest, unavailable, unknown_client, valid_realm, verified_access, verified_refresh,
+};
 
 fn reply(status: StatusCode, body: Value) -> Response {
     (
@@ -116,15 +118,21 @@ pub(super) async fn handle(
         );
     }
     let inactive = || reply(StatusCode::OK, json!({"active":false}));
-    // The current refresh format is opaque; it is never parsed as a JWT.
-    if token.len() == 64 && token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    let refresh_claims = match verified_refresh(&state, &realm, &token).await {
+        Ok(claims) => claims,
+        Err(_) => return unavailable(),
+    };
+    if let Some(claims) = refresh_claims {
+        if claims.azp != client.client_id {
+            return inactive();
+        }
         let grant = match state
             .storage
             .introspect_refresh_token(
                 &realm_id,
                 &client.client_id,
                 client.revision,
-                &digest(&token),
+                &digest(&claims.jti),
             )
             .await
         {
@@ -132,6 +140,10 @@ pub(super) async fn handle(
             Ok(None) => return inactive(),
             Err(_) => return unavailable(),
         };
+        if claims.sid != grant.grant.session.session_id || claims.sub != grant.grant.session.user_id
+        {
+            return inactive();
+        }
         return reply(
             StatusCode::OK,
             json!({
@@ -139,7 +151,8 @@ pub(super) async fn handle(
                 "client_id":grant.grant.session.client_identifier,
                 "username":grant.grant.session.username, "scope":grant.grant.scope,
                 "exp":grant.expires_at, "sid":grant.grant.session.session_id,
-                "token_type":"Refresh",
+                "token_type":"Refresh", "typ":"Refresh", "iss":claims.iss,
+                "iat":claims.iat, "jti":claims.jti, "azp":claims.azp, "aud":claims.aud,
             }),
         );
     }
@@ -176,7 +189,7 @@ pub(super) async fn handle(
             "active":true, "iss":claims.iss, "sub":claims.sub, "aud":claims.aud,
             "iat":claims.iat, "exp":claims.exp, "jti":claims.jti,
             "azp":claims.azp, "client_id":client.client_id, "sid":claims.sid,
-            "scope":claims.scope, "username":session.username, "token_type":"Bearer",
+            "scope":claims.scope, "username":session.username, "token_type":"Bearer", "typ":"Bearer",
         }),
     )
 }
