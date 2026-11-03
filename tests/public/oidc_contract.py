@@ -110,6 +110,17 @@ def run(binary, username, password):
             time.sleep(0.05)
         issuer = "https://login.example.test/realms/master"
         assert json.loads(body)["issuer"] == issuer
+        token_path = "/realms/master/protocol/openid-connect/token"
+        for malformed, error in (
+            ({}, "invalid_request"),
+            ({"grant_type": "unknown_grant"}, "unsupported_grant_type"),
+            ({"grant_type": "authorization_code"}, "invalid_request"),
+            ([("grant_type", "refresh_token"), ("client_id", client), ("client_id", client), ("refresh_token", "x" * 64)], "invalid_request"),
+        ):
+            status, headers, body = request("POST", token_path, malformed)
+            assert status == 400, "Token input error used the wrong HTTP status"
+            assert json.loads(body)["error"] == error
+            assert headers.get("cache-control") == "no-store"
         for replay_kind in ("code", "refresh", "refresh_race"):
             verifier = secrets.token_urlsafe(48)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -117,7 +128,7 @@ def run(binary, username, password):
             query = urllib.parse.urlencode({
                 "client_id": client, "redirect_uri": redirect, "response_type": "code",
                 "scope": "openid", "code_challenge_method": "S256", "code_challenge": challenge,
-                "state": state, "nonce": nonce,
+                "state": state, "nonce": nonce, "unrecognized_extension": "ignored",
             })
             status, headers, body = request("GET", "/realms/master/protocol/openid-connect/auth?" + query)
             assert status == 200, "Authorization request failed"
@@ -139,6 +150,7 @@ def run(binary, username, password):
             token_form = {
                 "grant_type": "authorization_code", "code": params["code"][0],
                 "client_id": client, "redirect_uri": redirect, "code_verifier": verifier,
+                    "unrecognized_extension": "ignored",
             }
             token_path = "/realms/master/protocol/openid-connect/token"
             status, headers, body = request("POST", token_path, token_form)

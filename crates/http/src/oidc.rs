@@ -1,8 +1,10 @@
 //! OIDC authorization-code request handling.
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use axum::extract::rejection::FormRejection;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
@@ -74,7 +76,6 @@ pub fn router(state: OidcState) -> Router {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct AuthorizationQuery {
     client_id: String,
     redirect_uri: String,
@@ -295,17 +296,13 @@ async fn authenticate(
     response
 }
 
-#[derive(Deserialize)]
-#[serde(tag = "grant_type", deny_unknown_fields)]
 enum TokenForm {
-    #[serde(rename = "authorization_code")]
     Code {
         code: String,
         redirect_uri: String,
         client_id: String,
         code_verifier: String,
     },
-    #[serde(rename = "refresh_token")]
     Refresh {
         refresh_token: String,
         client_id: String,
@@ -313,25 +310,64 @@ enum TokenForm {
     },
 }
 
-fn invalid_grant() -> Response {
+fn token_error(error: &'static str) -> Response {
     (
         StatusCode::BAD_REQUEST,
         [
             (header::CACHE_CONTROL, "no-store"),
             (header::PRAGMA, "no-cache"),
         ],
-        Json(json!({"error":"invalid_grant"})),
+        Json(json!({"error":error})),
     )
         .into_response()
+}
+
+fn invalid_grant() -> Response {
+    token_error("invalid_grant")
+}
+
+// Keep duplicate detection before dropping empty values or unknown extensions.
+// RFC 6749 section 3.2 requires ignoring unknown and empty parameters.
+fn token_form(pairs: Vec<(String, String)>) -> Result<TokenForm, &'static str> {
+    let mut fields = BTreeMap::new();
+    for (name, value) in pairs {
+        if fields.insert(name, value).is_some() {
+            return Err("invalid_request");
+        }
+    }
+    fields.retain(|_, value| !value.is_empty());
+    let mut required = |name| fields.remove(name).ok_or("invalid_request");
+    match required("grant_type")?.as_str() {
+        "authorization_code" => Ok(TokenForm::Code {
+            code: required("code")?,
+            redirect_uri: required("redirect_uri")?,
+            client_id: required("client_id")?,
+            code_verifier: required("code_verifier")?,
+        }),
+        "refresh_token" => Ok(TokenForm::Refresh {
+            refresh_token: required("refresh_token")?,
+            client_id: required("client_id")?,
+            scope: fields.remove("scope"),
+        }),
+        _ => Err("unsupported_grant_type"),
+    }
 }
 
 async fn token(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
-    Form(q): Form<TokenForm>,
+    form: Result<Form<Vec<(String, String)>>, FormRejection>,
 ) -> Response {
+    let pairs = match form {
+        Ok(Form(pairs)) => pairs,
+        Err(_) => return token_error("invalid_request"),
+    };
+    let q = match token_form(pairs) {
+        Ok(q) => q,
+        Err(error) => return token_error(error),
+    };
     if !valid_realm(&realm) {
-        return failure();
+        return token_error("invalid_request");
     }
     let realm_id = match s.storage.realm_id_by_name(&realm).await {
         Ok(Some(id)) => id,
@@ -351,10 +387,10 @@ async fn token(
             code_verifier,
         } => {
             if code.len() != 64 || client_id.len() > 255 || redirect_uri.len() > 2048 {
-                return failure();
+                return token_error("invalid_request");
             }
             let Some(verifier) = pkce::verifier_digest(&code_verifier) else {
-                return failure();
+                return token_error("invalid_request");
             };
             let grant = match s
                 .storage
@@ -364,6 +400,7 @@ async fn token(
                     &client_id,
                     &redirect_uri,
                     &verifier,
+                    None,
                 )
                 .await
             {
@@ -381,6 +418,7 @@ async fn token(
                     &digest(&refresh_token),
                     &grant.scope,
                     1800,
+                    None,
                 )
                 .await
             {
@@ -401,11 +439,7 @@ async fn token(
             // Only openid is currently grantable; reject expansion before
             // consuming the supplied token so errors do not revoke a session.
             if scope.as_deref().is_some_and(|value| value != "openid") {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(json!({"error":"invalid_scope"})),
-                )
-                    .into_response();
+                return token_error("invalid_scope");
             }
             let refreshed = match s
                 .storage
@@ -414,6 +448,7 @@ async fn token(
                     &client_id,
                     &digest(&previous),
                     &digest(&refresh_token),
+                    None,
                 )
                 .await
             {
