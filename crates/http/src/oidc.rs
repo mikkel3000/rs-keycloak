@@ -1,5 +1,7 @@
 //! OIDC authorization-code request handling.
 
+mod introspection;
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -85,6 +87,10 @@ pub fn router(state: OidcState) -> Router {
             post(authenticate),
         )
         .route("/realms/{realm}/protocol/openid-connect/token", post(token))
+        .route(
+            "/realms/{realm}/protocol/openid-connect/token/introspect",
+            post(introspection::handle),
+        )
         .route("/realms/{realm}/protocol/openid-connect/certs", get(certs))
         .route(
             "/realms/{realm}/protocol/openid-connect/userinfo",
@@ -625,7 +631,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
 async fn userinfo(

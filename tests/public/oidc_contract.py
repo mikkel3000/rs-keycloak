@@ -139,7 +139,7 @@ def run(binary, username, password, prefix=""):
         ):
             client = public_client if mode == "public" else confidential_client
 
-            def token_request(data):
+            def token_request(data, path=token_path):
                 data = dict(data)
                 authorization = None
                 if mode == "basic":
@@ -149,7 +149,7 @@ def run(binary, username, password, prefix=""):
                     authorization = "Basic " + base64.b64encode(credentials.encode()).decode()
                 elif mode == "post":
                     data["client_secret"] = client_secret
-                return request("POST", token_path, data, authorization=authorization)
+                return request("POST", path, data, authorization=authorization)
 
             verifier = secrets.token_urlsafe(48)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
@@ -204,6 +204,28 @@ def run(binary, username, password, prefix=""):
             assert access["sub"] == claims["sub"] and access["iss"] == issuer
             assert claims["iss"] == issuer and claims["aud"] == client
             assert claims["nonce"] == nonce and claims["exp"] > claims["iat"]
+            introspection = token_path + "/introspect"
+            for inspected in (tokens["access_token"], tokens["refresh_token"]):
+                status, inspection_headers, body = token_request({"token": inspected, "client_id": client}, path=introspection)
+                if mode == "public":
+                    assert status == 403 and json.loads(body)["error"] == "invalid_request", "Public client introspection allowed"
+                else:
+                    metadata = json.loads(body)
+                    assert status == 200 and metadata["active"] is True
+                    assert metadata["sub"] == claims["sub"] and metadata["client_id"] == client
+                    assert inspection_headers.get("cache-control") == "no-store"
+            if mode != "public":
+                status, _, body = token_request({"token": "unknown", "client_id": client}, path=introspection)
+                assert status == 200 and json.loads(body) == {"active": False}
+                status, _, body = token_request({"client_id": client}, path=introspection)
+                assert status == 400 and json.loads(body)["error_description"] == "Token not provided."
+                status, _, body = token_request({"client_id": client, "token": tokens["access_token"], "token_type_hint": "unknown"}, path=introspection)
+                assert status == 400 and json.loads(body)["error_description"] == "Unsupported token type."
+                status, _, body = request("POST", introspection, {"client_id": client, "client_secret": "wrong", "token": tokens["access_token"]})
+                assert status == 401 and json.loads(body)["error"] == "invalid_client"
+            else:
+                status, _, body = request("POST", introspection, {"client_id": confidential_client, "client_secret": client_secret, "token": tokens["access_token"]})
+                assert status == 200 and json.loads(body) == {"active": False}, "Wrong audience introspected token"
             userinfo = "/realms/master/protocol/openid-connect/userinfo"
             status, _, body = request("GET", userinfo, bearer=tokens["access_token"])
             assert status == 200 and json.loads(body)["sub"] == claims["sub"]
@@ -255,6 +277,11 @@ def run(binary, username, password, prefix=""):
                 assert status == 401, "Refresh replay left new access token active"
             status, _, _ = request("GET", userinfo, bearer=tokens["access_token"])
             assert status == 401, "Replay did not revoke userinfo access"
+            if mode != "public":
+                for inspected in (tokens["access_token"], tokens["refresh_token"]):
+                    status, _, body = token_request({"token": inspected, "client_id": client}, path=introspection)
+                    assert status == 200 and json.loads(body) == {"active": False}, "Revoked session still introspects active"
+
         process.terminate()
         stdout, stderr = process.communicate(timeout=5)
         assert process.returncode == 0, "OAuth shutdown failed"

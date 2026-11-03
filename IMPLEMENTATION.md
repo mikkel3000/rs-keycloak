@@ -66,3 +66,18 @@ repeat CLI setup, exact pinned authentication failures, and CLI secret rotation:
 the old secret fails while the new secret can refresh an existing grant.
 Per-token revocation storage is committed; userinfo reads it, but revocation and
 introspection HTTP endpoints and their full reference checks remain unfinished.
+
+## Introspection and adapter gap
+
+Public HTTP tests pass introspection of current access/refresh tokens, unknown
+and revoked tokens, public-client denial, wrong-audience denial, missing token,
+unsupported hints and failed confidential authentication, at both issuer paths.
+The handler follows the pinned TokenIntrospectionEndpoint source for the covered
+cases; complete upstream claim/mapper parity is not yet proved.
+
+Blocking adapter gap: refresh tokens are still opaque random strings, while
+[keycloak-js 26.2.2](https://github.com/keycloak/keycloak-js/blob/26.2.2/lib/keycloak.js#L1426)
+decodes each refresh token as a JWT in `#setToken`; login with that adapter cannot
+work yet. Replace the wire format with signed, type-bound refresh JWTs while
+preserving atomic rotation/replay storage, then run the pinned adapter itself.
+The access-token verifier must reject refresh JWTs to prevent token confusion.
