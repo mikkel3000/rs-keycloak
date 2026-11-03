@@ -1,3 +1,5 @@
+mod client_provision;
+
 use std::env;
 use std::future::IntoFuture;
 use std::io::{self, IsTerminal, Read};
@@ -12,7 +14,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|version>";
+const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|client add-confidential <realm> <client-id> <redirect-uri>|client rotate-secret <realm> <client-id>|version>";
 
 struct Config {
     database_url: String,
@@ -180,6 +182,14 @@ async fn run() -> Result<(), &'static str> {
                 "Bootstrap admin record created; sign-in and admin handover are not implemented"
             );
         }
+        ["client", "rotate-secret", realm, client_id] => {
+            client_provision::rotate_client_secret(realm, client_id).await?;
+            println!("Client secret rotated");
+        }
+        ["client", "add-confidential", realm, client_id, redirect_uri] => {
+            client_provision::add_confidential_client(realm, client_id, redirect_uri).await?;
+            println!("Confidential client registered");
+        }
         ["client", "add-public", realm, client_id, redirect_uri] => {
             add_public_client(realm, client_id, redirect_uri).await?;
             println!("Public client registered");
@@ -337,6 +347,32 @@ async fn add_public_client(
     client_id: &str,
     redirect_uri: &str,
 ) -> Result<(), &'static str> {
+    validate_client_input(realm, client_id, redirect_uri)?;
+    let storage = rs_keycloak_storage_postgres::Storage::connect(&database_url()?)
+        .await
+        .map_err(|_| "Database check failed")?;
+    let realm_id = storage
+        .realm_id_by_name(realm)
+        .await
+        .map_err(|_| "Realm lookup failed")?
+        .ok_or("Realm is missing or disabled")?;
+    storage
+        .create_public_client(
+            &realm_id,
+            &Uuid::new_v4().to_string(),
+            client_id,
+            redirect_uri,
+        )
+        .await
+        .map_err(|_| "Public client registration failed")?;
+    Ok(())
+}
+
+fn validate_client_input(
+    realm: &str,
+    client_id: &str,
+    redirect_uri: &str,
+) -> Result<(), &'static str> {
     if realm.is_empty() || realm.len() > 255 || client_id.is_empty() || client_id.len() > 255 {
         return Err("Realm and client ID must be 1-255 bytes");
     }
@@ -362,22 +398,5 @@ async fn add_public_client(
             "Redirect URI must use HTTPS without credentials or a fragment; HTTP is allowed only for local development",
         );
     }
-    let storage = rs_keycloak_storage_postgres::Storage::connect(&database_url()?)
-        .await
-        .map_err(|_| "Database check failed")?;
-    let realm_id = storage
-        .realm_id_by_name(realm)
-        .await
-        .map_err(|_| "Realm lookup failed")?
-        .ok_or("Realm is missing or disabled")?;
-    storage
-        .create_public_client(
-            &realm_id,
-            &Uuid::new_v4().to_string(),
-            client_id,
-            redirect_uri,
-        )
-        .await
-        .map_err(|_| "Public client registration failed")?;
     Ok(())
 }

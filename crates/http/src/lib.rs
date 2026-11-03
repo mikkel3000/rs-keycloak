@@ -16,3 +16,5 @@ pub fn management_router() -> Router {
 }
 
 pub mod oidc;
+
+pub mod client_auth;

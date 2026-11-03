@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::client_auth::{self, ClientAuthResult, ClientAuthenticator};
 use axum::extract::rejection::FormRejection;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -27,6 +28,7 @@ use zeroize::Zeroizing;
 pub struct OidcState {
     storage: Arc<Storage>,
     login: Arc<LoginService>,
+    client_auth: Arc<ClientAuthenticator>,
     signer: Arc<SigningKey>,
     signing_slots: Arc<Semaphore>,
     issuer_base: String,
@@ -40,9 +42,11 @@ impl OidcState {
         issuer_base: String,
     ) -> Result<Self, PasswordWorkError> {
         let login = LoginService::new(Arc::clone(&storage)).await?;
+        let client_auth = ClientAuthenticator::new(Arc::clone(&storage)).await?;
         Ok(Self {
             storage,
             login: Arc::new(login),
+            client_auth: Arc::new(client_auth),
             signer: Arc::new(signer),
             signing_slots: Arc::new(Semaphore::new(2)),
             issuer_base,
@@ -300,12 +304,10 @@ enum TokenForm {
     Code {
         code: String,
         redirect_uri: String,
-        client_id: String,
         code_verifier: String,
     },
     Refresh {
         refresh_token: String,
-        client_id: String,
         scope: Option<String>,
     },
 }
@@ -322,13 +324,60 @@ fn token_error(error: &'static str) -> Response {
         .into_response()
 }
 
+fn invalid_client(basic: bool) -> Response {
+    if basic {
+        (
+            StatusCode::UNAUTHORIZED,
+            [
+                (header::WWW_AUTHENTICATE, "Basic realm=\"token\""),
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
+            Json(json!({"error":"invalid_client", "error_description":"Invalid client or Invalid client credentials"})),
+        )
+            .into_response()
+    } else {
+        token_error("invalid_client")
+    }
+}
+
+fn unknown_client() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({"error":"invalid_client", "error_description":"Invalid client or Invalid client credentials"})),
+    )
+        .into_response()
+}
+
+fn unauthorized_client() -> Response {
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({"error":"unauthorized_client", "error_description":"Invalid client or Invalid client credentials"})),
+    )
+        .into_response()
+}
+
 fn invalid_grant() -> Response {
     token_error("invalid_grant")
 }
 
+struct ParsedTokenForm {
+    grant: TokenForm,
+    client_id: Option<String>,
+    client_secret: Option<Zeroizing<String>>,
+}
+
 // Keep duplicate detection before dropping empty values or unknown extensions.
 // RFC 6749 section 3.2 requires ignoring unknown and empty parameters.
-fn token_form(pairs: Vec<(String, String)>) -> Result<TokenForm, &'static str> {
+fn token_form(pairs: Vec<(String, String)>) -> Result<ParsedTokenForm, &'static str> {
     let mut fields = BTreeMap::new();
     for (name, value) in pairs {
         if fields.insert(name, value).is_some() {
@@ -336,33 +385,43 @@ fn token_form(pairs: Vec<(String, String)>) -> Result<TokenForm, &'static str> {
         }
     }
     fields.retain(|_, value| !value.is_empty());
+    let client_id = fields.remove("client_id");
+    let client_secret = fields.remove("client_secret").map(Zeroizing::new);
     let mut required = |name| fields.remove(name).ok_or("invalid_request");
-    match required("grant_type")?.as_str() {
+    let grant = match required("grant_type")?.as_str() {
         "authorization_code" => Ok(TokenForm::Code {
             code: required("code")?,
             redirect_uri: required("redirect_uri")?,
-            client_id: required("client_id")?,
             code_verifier: required("code_verifier")?,
         }),
         "refresh_token" => Ok(TokenForm::Refresh {
             refresh_token: required("refresh_token")?,
-            client_id: required("client_id")?,
             scope: fields.remove("scope"),
         }),
         _ => Err("unsupported_grant_type"),
-    }
+    }?;
+    Ok(ParsedTokenForm {
+        grant,
+        client_id,
+        client_secret,
+    })
 }
 
 async fn token(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
+    headers: HeaderMap,
     form: Result<Form<Vec<(String, String)>>, FormRejection>,
 ) -> Response {
     let pairs = match form {
         Ok(Form(pairs)) => pairs,
         Err(_) => return token_error("invalid_request"),
     };
-    let q = match token_form(pairs) {
+    let ParsedTokenForm {
+        grant: q,
+        client_id,
+        client_secret,
+    } = match token_form(pairs) {
         Ok(q) => q,
         Err(error) => return token_error(error),
     };
@@ -374,6 +433,18 @@ async fn token(
         Ok(None) => return failure(),
         Err(_) => return unavailable(),
     };
+    let credentials = match client_auth::parse(&headers, client_id, client_secret) {
+        Ok(credentials) => credentials,
+        Err(_) => return invalid_client(headers.contains_key(header::AUTHORIZATION)),
+    };
+    let client = match s.client_auth.authenticate(&realm_id, credentials).await {
+        Ok(ClientAuthResult::Authenticated(client)) => client,
+        Ok(ClientAuthResult::Unknown) => return unknown_client(),
+        Ok(ClientAuthResult::Unauthorized) => return unauthorized_client(),
+        Err(_) => return unavailable(),
+    };
+    let client_id = client.client_id;
+    let client_revision = client.revision;
     let permit = match Arc::clone(&s.signing_slots).try_acquire_owned() {
         Ok(permit) => permit,
         Err(_) => return unavailable(),
@@ -383,7 +454,6 @@ async fn token(
         TokenForm::Code {
             code,
             redirect_uri,
-            client_id,
             code_verifier,
         } => {
             if code.len() != 64 || client_id.len() > 255 || redirect_uri.len() > 2048 {
@@ -400,7 +470,7 @@ async fn token(
                     &client_id,
                     &redirect_uri,
                     &verifier,
-                    None,
+                    client_revision,
                 )
                 .await
             {
@@ -418,7 +488,7 @@ async fn token(
                     &digest(&refresh_token),
                     &grant.scope,
                     1800,
-                    None,
+                    client_revision,
                 )
                 .await
             {
@@ -429,7 +499,6 @@ async fn token(
         }
         TokenForm::Refresh {
             refresh_token: previous,
-            client_id,
             scope,
         } => {
             let previous = Zeroizing::new(previous);
@@ -448,7 +517,7 @@ async fn token(
                     &client_id,
                     &digest(&previous),
                     &digest(&refresh_token),
-                    None,
+                    client_revision,
                 )
                 .await
             {
@@ -529,7 +598,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
 async fn userinfo(
