@@ -18,6 +18,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0005_code_replay_retention.sql"),
     include_str!("../../../migrations/0006_refresh.sql"),
     include_str!("../../../migrations/0007_client_auth.sql"),
+    include_str!("../../../migrations/0008_token_revocation.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -48,6 +49,9 @@ pub enum StorageError {
     /// The requested lifetime is outside the supported bounds.
     #[error("invalid login lifetime")]
     InvalidInput,
+    /// The client authentication snapshot is invalid or no longer current.
+    #[error("client authentication failed")]
+    ClientAuth,
     /// The configured database timeout or admission budget elapsed.
     #[error("database capacity or timeout exceeded")]
     Timeout,
@@ -320,6 +324,37 @@ pub enum ConfidentialRegistration {
         /// Existing client revision.
         revision: i64,
     },
+}
+
+/// Active refresh-token metadata for an authenticated introspection request.
+pub struct RefreshIntrospection {
+    /// Current session and granted scopes.
+    pub grant: RefreshGrant,
+    /// Refresh-family expiry as Unix seconds.
+    pub expires_at: i64,
+}
+
+async fn authenticated_client(
+    connection: &mut PgConnection,
+    realm: &str,
+    client_identifier: &str,
+    client_revision: Option<i64>,
+) -> Result<String, StorageError> {
+    sqlx::query_scalar("SELECT c.id FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled AND ((c.public_client AND $3::bigint IS NULL) OR (NOT c.public_client AND c.revision = $3)) FOR SHARE OF c, r")
+        .bind(realm).bind(client_identifier).bind(client_revision).fetch_optional(connection).await?.ok_or(StorageError::ClientAuth)
+}
+
+async fn lookup_access_token(
+    connection: &mut PgConnection,
+    realm: &str,
+    client_identifier: &str,
+    session_id: &str,
+    user_id: &str,
+    jti_hash: &[u8],
+) -> Result<Option<ActiveSession>, StorageError> {
+    let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled AND NOT EXISTS (SELECT 1 FROM revoked_access_tokens a WHERE a.realm_id = us.realm_id AND a.jti_hash = $5 AND a.expires_at > clock_timestamp())")
+        .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).bind(jti_hash).fetch_optional(connection).await?;
+    row.as_ref().map(active_session_row).transpose()
 }
 
 /// Separate bounded request and worker pools for primary-only access.
@@ -857,6 +892,140 @@ impl Storage {
         };
         tx.commit().await?;
         Ok(Some(result))
+    }
+
+    /// Check a verified access token against current session state and token revocations.
+    pub async fn active_access_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        session_id: &str,
+        user_id: &str,
+        jti_hash: &[u8],
+    ) -> Result<Option<ActiveSession>, StorageError> {
+        if jti_hash.len() != 32 {
+            return Ok(None);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let result = lookup_access_token(
+            tx.connection(),
+            realm,
+            client_identifier,
+            session_id,
+            user_id,
+            jti_hash,
+        )
+        .await?;
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Introspect a verified access token after rechecking the calling client's authentication.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn introspect_access_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        client_revision: Option<i64>,
+        session_id: &str,
+        user_id: &str,
+        jti_hash: &[u8],
+    ) -> Result<Option<ActiveSession>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        authenticated_client(tx.connection(), realm, client_identifier, client_revision).await?;
+        let result = if jti_hash.len() == 32 {
+            lookup_access_token(
+                tx.connection(),
+                realm,
+                client_identifier,
+                session_id,
+                user_id,
+                jti_hash,
+            )
+            .await?
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Revoke a verified access token without disclosing whether it belongs to the client.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn revoke_access_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        client_revision: Option<i64>,
+        session_id: &str,
+        user_id: &str,
+        jti_hash: &[u8],
+        expires_at: i64,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let client_id =
+            authenticated_client(tx.connection(), realm, client_identifier, client_revision)
+                .await?;
+        let conn = tx.connection();
+        if jti_hash.len() == 32 {
+            sqlx::query("DELETE FROM revoked_access_tokens WHERE (realm_id, jti_hash) IN (SELECT realm_id, jti_hash FROM revoked_access_tokens WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
+            sqlx::query("INSERT INTO revoked_access_tokens (realm_id, jti_hash, session_id, expires_at) SELECT us.realm_id, $5, us.id, LEAST(to_timestamp($6::double precision), us.expires_at) FROM user_sessions us JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id WHERE us.realm_id = $1 AND cs.client_id = $2 AND us.id = $3 AND us.user_id = $4 AND to_timestamp($6::double precision) > clock_timestamp() AND us.expires_at > clock_timestamp() ON CONFLICT DO NOTHING")
+                .bind(realm).bind(client_id).bind(session_id).bind(user_id).bind(jti_hash).bind(expires_at as f64).execute(&mut *conn).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Revoke the bound refresh family; unknown or other-client tokens have the same result.
+    pub async fn revoke_refresh_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        client_revision: Option<i64>,
+        token_hash: &[u8],
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let client_id =
+            authenticated_client(tx.connection(), realm, client_identifier, client_revision)
+                .await?;
+        if token_hash.len() == 32 {
+            sqlx::query("UPDATE refresh_families f SET revoked_at = COALESCE(f.revoked_at, clock_timestamp()) FROM refresh_tokens t WHERE t.token_hash = $1 AND t.family_id = f.id AND f.realm_id = $2 AND f.client_id = $3")
+                .bind(token_hash).bind(realm).bind(client_id).execute(tx.connection()).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Introspect an unconsumed refresh token bound to an authenticated client.
+    pub async fn introspect_refresh_token(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        client_revision: Option<i64>,
+        token_hash: &[u8],
+    ) -> Result<Option<RefreshIntrospection>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let client_id =
+            authenticated_client(tx.connection(), realm, client_identifier, client_revision)
+                .await?;
+        if token_hash.len() != 32 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.scope, floor(EXTRACT(EPOCH FROM f.expires_at))::bigint AS expires_at FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND f.client_id = $3 AND t.consumed_at IS NULL AND t.generation = f.generation AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled")
+            .bind(token_hash).bind(realm).bind(client_id).fetch_optional(tx.connection()).await?;
+        let result = match row {
+            None => None,
+            Some(row) => Some(RefreshIntrospection {
+                grant: RefreshGrant {
+                    session: active_session_row(&row)?,
+                    scope: row.try_get("scope")?,
+                },
+                expires_at: row.try_get("expires_at")?,
+            }),
+        };
+        tx.commit().await?;
+        Ok(result)
     }
 
     /// Begin a guarded request transaction; non-auth requests share sixteen slots.
