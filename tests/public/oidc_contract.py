@@ -45,7 +45,7 @@ def verify_jwt(token, keys):
     return json.loads(decode(payload))
 
 
-def run(binary, username, password):
+def run(binary, username, password, prefix=""):
     binary = str(Path(binary).resolve())
     client = "oauth-" + secrets.token_hex(8)
     redirect = "https://client.example.test/callback"
@@ -81,7 +81,7 @@ def run(binary, username, password):
     environment.update({
         "RS_KEYCLOAK_HTTP_LISTEN": f"127.0.0.1:{port}",
         "RS_KEYCLOAK_MANAGEMENT_LISTEN": f"127.0.0.1:{management}",
-        "RS_KEYCLOAK_ISSUER": "https://login.example.test",
+        "RS_KEYCLOAK_ISSUER": "https://login.example.test" + prefix,
         "RS_KEYCLOAK_SIGNING_KEY_PKCS8": base64.b64encode(der).decode(),
     })
     process = subprocess.Popen(
@@ -101,7 +101,7 @@ def run(binary, username, password):
             headers["Authorization"] = "Bearer " + bearer
         connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         try:
-            connection.request(method, path, data, headers)
+            connection.request(method, prefix + path if not path.startswith(prefix + "/realms/") else path, data, headers)
             response = connection.getresponse()
             return response.status, dict(response.getheaders()), response.read()
         finally:
@@ -120,7 +120,7 @@ def run(binary, username, password):
                 pass
             assert time.monotonic() < deadline, "OAuth server did not start"
             time.sleep(0.05)
-        issuer = "https://login.example.test/realms/master"
+        issuer = "https://login.example.test" + prefix + "/realms/master"
         assert json.loads(body)["issuer"] == issuer
         token_path = "/realms/master/protocol/openid-connect/token"
         for malformed, error in (
@@ -165,7 +165,8 @@ def run(binary, username, password):
             assert all(flag in cookie for flag in ("Secure", "HttpOnly", "SameSite="))
             form = LoginForm()
             form.feed(body.decode())
-            assert form.action, "Login form missing"
+            assert form.action and form.action.startswith(prefix + "/realms/"), "Login form has wrong context path"
+            assert "Path=" + prefix + "/realms/master/login-actions/" in cookie
             # Explicit cookie transport models the HTTPS proxy without weakening
             # Secure-cookie policy or persisting the password in a browser profile.
             status, _, _ = request("POST", form.action, {"username": username, "password": password})

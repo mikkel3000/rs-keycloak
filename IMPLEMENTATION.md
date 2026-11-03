@@ -51,3 +51,18 @@ session lifetime and mandatory rotation; configurable Keycloak refresh policy,
 confidential clients, offline sessions and full scope handling remain required.
 All three delegated agents stopped at a usage limit; changes are saved and the
 coordinator is continuing locally.
+
+## Issuer path and confidential-client checks
+
+Public tests now exercise both the root issuer and `/auth/tenant`, including
+discovery, login form targets, cookie paths, signed claims, token exchange,
+refresh and userinfo. The prefix test first failed because the router ignored
+the configured path. Routing now mounts below that prefix and generated login
+actions and cookies use it. Invalid raw cookie/routing delimiters fail config
+validation instead of reaching router construction.
+
+The same HTTP fixture checks confidential clients with Basic and form secrets,
+repeat CLI setup, exact pinned authentication failures, and CLI secret rotation:
+the old secret fails while the new secret can refresh an existing grant.
+Per-token revocation storage is committed; userinfo reads it, but revocation and
+introspection HTTP endpoints and their full reference checks remain unfinished.

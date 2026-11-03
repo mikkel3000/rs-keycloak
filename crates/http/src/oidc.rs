@@ -12,7 +12,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
-use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims};
+use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedAccessToken};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::Storage;
 use serde::Deserialize;
@@ -32,6 +32,7 @@ pub struct OidcState {
     signer: Arc<SigningKey>,
     signing_slots: Arc<Semaphore>,
     issuer_base: String,
+    path_prefix: String,
 }
 
 impl OidcState {
@@ -41,6 +42,7 @@ impl OidcState {
         signer: SigningKey,
         issuer_base: String,
     ) -> Result<Self, PasswordWorkError> {
+        let path_prefix = issuer_path_prefix(&issuer_base).ok_or(PasswordWorkError)?;
         let login = LoginService::new(Arc::clone(&storage)).await?;
         let client_auth = ClientAuthenticator::new(Arc::clone(&storage)).await?;
         Ok(Self {
@@ -50,13 +52,30 @@ impl OidcState {
             signer: Arc::new(signer),
             signing_slots: Arc::new(Semaphore::new(2)),
             issuer_base,
+            path_prefix,
         })
     }
 }
 
+/// Extracts a literal issuer path safe for routing and cookie scoping.
+/// Reserved routing and cookie delimiters must be percent-encoded in the URL.
+pub fn issuer_path_prefix(issuer: &str) -> Option<String> {
+    let issuer = Url::parse(issuer).ok()?;
+    let prefix = issuer.path().trim_end_matches('/');
+    if prefix.contains(['{', '}', ';'])
+        || prefix
+            .split('/')
+            .any(|segment| segment.starts_with([':', '*']))
+    {
+        return None;
+    }
+    Some(prefix.to_owned())
+}
+
 /// Builds the public OIDC router with bounded request bodies.
 pub fn router(state: OidcState) -> Router {
-    Router::new()
+    let prefix = state.path_prefix.clone();
+    let routes = Router::new()
         .route(
             "/realms/{realm}/protocol/openid-connect/auth",
             get(authorize),
@@ -76,7 +95,12 @@ pub fn router(state: OidcState) -> Router {
             get(discovery),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
-        .with_state(state)
+        .with_state(state);
+    if prefix.is_empty() {
+        routes
+    } else {
+        Router::new().nest(&prefix, routes)
+    }
 }
 
 #[derive(Deserialize)]
@@ -165,8 +189,9 @@ async fn authorize(
         Ok(false) => return failure(),
         Err(_) => return unavailable(),
     }
+    let path_prefix = s.path_prefix.replace('&', "&amp;");
     let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head><body><h1>Sign in</h1><form method=\"post\" action=\"/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form></body></html>"
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head><body><h1>Sign in</h1><form method=\"post\" action=\"{path_prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form></body></html>"
     );
     let mut response = Html(html).into_response();
     response
@@ -180,8 +205,9 @@ async fn authorize(
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
+    let path_prefix = &s.path_prefix;
     let cookie = format!(
-        "rs_auth={csrf}; Path=/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
+        "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
     );
     if let Ok(value) = HeaderValue::from_str(&cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
@@ -291,8 +317,9 @@ async fn authenticate(
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    let path_prefix = &s.path_prefix;
     let clear_cookie = format!(
-        "rs_auth=; Path=/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+        "rs_auth=; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
     );
     if let Ok(value) = HeaderValue::from_str(&clear_cookie) {
         response.headers_mut().insert(header::SET_COOKIE, value);
@@ -629,33 +656,11 @@ async fn userinfo(
     if token.len() > 8192 {
         return invalid();
     }
-    let permit = match Arc::clone(&s.signing_slots).try_acquire_owned() {
-        Ok(permit) => permit,
-        Err(_) => return unavailable(),
+    let claims = match verified_access(&s, &realm, token).await {
+        Ok(Some(claims)) => claims,
+        Ok(None) => return invalid(),
+        Err(()) => return unavailable(),
     };
-    let signer = Arc::clone(&s.signer);
-    let token = Zeroizing::new(token.to_owned());
-    let claims = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        signer.verify_access_token(&token)
-    })
-    .await;
-    let Ok(Ok(claims)) = claims else {
-        return invalid();
-    };
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(now) => now.as_secs(),
-        Err(_) => return unavailable(),
-    };
-    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    if claims.iss != issuer
-        || claims.iat > now
-        || claims.exp <= now
-        || claims.aud != claims.azp
-        || claims.scope != "openid"
-    {
-        return invalid();
-    }
     let realm_id = match s.storage.realm_id_by_name(&realm).await {
         Ok(Some(id)) => id,
         Ok(None) => return invalid(),
@@ -663,7 +668,13 @@ async fn userinfo(
     };
     match s
         .storage
-        .active_session(&realm_id, &claims.azp, &claims.sid, &claims.sub)
+        .active_access_token(
+            &realm_id,
+            &claims.azp,
+            &claims.sid,
+            &claims.sub,
+            &digest(&claims.jti),
+        )
         .await
     {
         Ok(Some(_)) => (
@@ -674,4 +685,40 @@ async fn userinfo(
         Ok(None) => invalid(),
         Err(_) => unavailable(),
     }
+}
+
+async fn verified_access(
+    s: &OidcState,
+    realm: &str,
+    token: &str,
+) -> Result<Option<VerifiedAccessToken>, ()> {
+    if token.len() > 8192 {
+        return Ok(None);
+    }
+    let permit = Arc::clone(&s.signing_slots)
+        .try_acquire_owned()
+        .map_err(|_| ())?;
+    let signer = Arc::clone(&s.signer);
+    let token = Zeroizing::new(token.to_owned());
+    let claims = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        signer.verify_access_token(&token)
+    })
+    .await
+    .map_err(|_| ())?;
+    let Ok(claims) = claims else { return Ok(None) };
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| ())?
+        .as_secs();
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    if claims.iss != issuer
+        || claims.iat > now
+        || claims.exp <= now
+        || claims.aud != claims.azp
+        || claims.scope != "openid"
+    {
+        return Ok(None);
+    }
+    Ok(Some(claims))
 }

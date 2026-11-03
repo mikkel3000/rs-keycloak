@@ -90,6 +90,15 @@ class CliContract(unittest.TestCase):
                 })
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_issuer_path_rejects_unescaped_route_and_cookie_delimiters(self):
+        for path in ("/:tenant", "/*tenant", "/auth;path"):
+            with self.subTest(path=path):
+                result = self.invoke("config", "check", settings={
+                    "RS_KEYCLOAK_DATABASE_URL": "postgresql://localhost/unused?sslmode=verify-full",
+                    "RS_KEYCLOAK_ISSUER": "https://login.example.test" + path,
+                })
+                self.assertNotEqual(result.returncode, 0)
+
     def test_management_is_private_by_default(self):
         result = self.invoke("config", "check", settings={
             "RS_KEYCLOAK_DATABASE_URL": "postgresql://localhost/unused?sslmode=verify-full",

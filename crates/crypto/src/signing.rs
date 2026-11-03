@@ -90,6 +90,8 @@ pub struct VerifiedAccessToken {
     pub iat: u64,
     /// Expiry time.
     pub exp: u64,
+    /// Unique token identifier.
+    pub jti: String,
     /// Authorized client.
     pub azp: String,
     /// Session ID.

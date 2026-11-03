@@ -115,6 +115,9 @@ fn config() -> Result<Config, &'static str> {
             "RS_KEYCLOAK_ISSUER must be an HTTPS URL without credentials, query, or fragment",
         );
     }
+    if rs_keycloak_http::oidc::issuer_path_prefix(issuer.as_str()).is_none() {
+        return Err("Issuer path routing and cookie delimiters must be percent-encoded");
+    }
     let management_listen = env::var("RS_KEYCLOAK_MANAGEMENT_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:9000".to_owned())
         .parse::<SocketAddr>()

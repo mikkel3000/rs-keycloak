@@ -30,3 +30,5 @@ assert password not in repeat.stdout + repeat.stderr, "Password leaked in repeat
 print("Concurrent bootstrap and repeat rejection passed")
 winner = ("first-admin", "second-admin")[next(i for i, result in enumerate(results) if result.returncode == 0)]
 oidc_contract.run(binary, winner, password)
+
+oidc_contract.run(binary, winner, password, prefix="/auth/tenant")
