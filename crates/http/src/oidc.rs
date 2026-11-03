@@ -1,5 +1,6 @@
 //! OIDC authorization-code request handling.
 
+mod authorization_response;
 mod introspection;
 
 use std::collections::BTreeMap;
@@ -111,6 +112,7 @@ pub fn router(state: OidcState) -> Router {
 
 #[derive(Deserialize)]
 struct AuthorizationQuery {
+    response_mode: Option<String>,
     client_id: String,
     redirect_uri: String,
     response_type: String,
@@ -165,6 +167,14 @@ async fn authorize(
     {
         return failure();
     }
+    let response_mode = q
+        .response_mode
+        .as_deref()
+        .filter(|mode| !mode.is_empty())
+        .unwrap_or("query");
+    if !matches!(response_mode, "query" | "fragment" | "form_post") {
+        return failure();
+    }
     let Ok(challenge) = Challenge::parse(&q.code_challenge) else {
         return failure();
     };
@@ -188,6 +198,7 @@ async fn authorize(
             &q.scope,
             q.nonce.as_deref(),
             300,
+            response_mode,
         )
         .await
     {
@@ -305,24 +316,11 @@ async fn authenticate(
         Ok(None) => return failure(),
         Err(_) => return unavailable(),
     };
-    let Ok(mut url) = Url::parse(&redirect.redirect_uri) else {
-        return unavailable();
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    let mut response = match authorization_response::build(redirect, &code, &issuer) {
+        Ok(response) => response,
+        Err(_) => return unavailable(),
     };
-    {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("code", &code);
-        if let Some(state) = redirect.state {
-            query.append_pair("state", &state);
-        }
-    }
-    let Ok(location) = HeaderValue::from_str(url.as_str()) else {
-        return unavailable();
-    };
-    let mut response = StatusCode::FOUND.into_response();
-    response.headers_mut().insert(header::LOCATION, location);
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     let path_prefix = &s.path_prefix;
     let clear_cookie = format!(
         "rs_auth=; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
@@ -663,7 +661,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
 async fn userinfo(

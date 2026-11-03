@@ -19,6 +19,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0006_refresh.sql"),
     include_str!("../../../migrations/0007_client_auth.sql"),
     include_str!("../../../migrations/0008_token_revocation.sql"),
+    include_str!("../../../migrations/0009_response_mode.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -235,6 +236,8 @@ pub enum LoginOutcome {
 
 /// Redirect details saved with an authorization request.
 pub struct AuthorizationRedirect {
+    /// Response mode saved before the user authenticated.
+    pub response_mode: String,
     /// Exact registered redirect URI.
     pub redirect_uri: String,
     /// Optional caller-supplied state.
@@ -666,8 +669,10 @@ impl Storage {
         scope: &str,
         nonce: Option<&str>,
         ttl_seconds: i32,
+        response_mode: &str,
     ) -> Result<bool, StorageError> {
-        if !(1..=300).contains(&ttl_seconds)
+        if !matches!(response_mode, "query" | "fragment" | "form_post")
+            || !(1..=300).contains(&ttl_seconds)
             || csrf_hash.len() != 32
             || pkce_s256.len() != 32
             || state.is_some_and(|s| s.len() > 2048)
@@ -680,8 +685,8 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10) FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled")
-            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?.rows_affected();
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled")
+            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)
     }
@@ -716,7 +721,7 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let req = sqlx::query("UPDATE authorization_requests SET consumed_at = clock_timestamp() WHERE id = $1 AND csrf_hash = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce")
+        let req = sqlx::query("UPDATE authorization_requests SET consumed_at = clock_timestamp() WHERE id = $1 AND csrf_hash = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, response_mode")
             .bind(request_id).bind(csrf_hash).fetch_optional(&mut *conn).await?;
         let Some(req) = req else {
             return Ok(None);
@@ -734,8 +739,10 @@ impl Storage {
         sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, user_session_id, pkce_s256, scope, nonce, expires_at, replay_until) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $5))")
             .bind(code_hash).bind(&realm).bind(&client).bind(&redirect_uri).bind(user_session_id).bind(req.try_get::<Vec<u8>, _>("pkce_s256")?).bind(req.try_get::<String, _>("scope")?).bind(req.try_get::<Option<String>, _>("nonce")?).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
         let state = req.try_get("state")?;
+        let response_mode = req.try_get("response_mode")?;
         tx.commit().await?;
         Ok(Some(AuthorizationRedirect {
+            response_mode,
             redirect_uri,
             state,
         }))

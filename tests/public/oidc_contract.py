@@ -18,11 +18,22 @@ import urllib.parse
 
 
 class LoginForm(html.parser.HTMLParser):
-    action = None
+    def __init__(self):
+        super().__init__()
+        self.action = None
+        self.method = None
+        self.fields = {}
+        self.scripts = []
 
     def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
         if tag == "form":
-            self.action = dict(attrs).get("action")
+            self.action = attrs.get("action")
+            self.method = attrs.get("method")
+        if tag == "input" and attrs.get("type") == "hidden":
+            self.fields[attrs["name"]] = attrs.get("value", "")
+        if tag == "script":
+            self.scripts.append(attrs.get("nonce"))
 
 
 def verify_jwt(token, keys):
@@ -148,8 +159,17 @@ def run(binary, username, password, prefix=""):
             assert status == 400, "Token input error used the wrong HTTP status"
             assert json.loads(body)["error"] == error
             assert headers.get("cache-control") == "no-store"
+        callback = subprocess.run(
+            ["node", str(Path(__file__).with_name("keycloak_adapter.mjs")), str(adapter_source())],
+            input=json.dumps({"login": {"username": username, "password": password}, "client": public_client, "prefix": prefix, "transport": f"http://127.0.0.1:{port}"}).encode(),
+            capture_output=True, timeout=15, check=False,
+        )
+        assert callback.returncode == 0, callback.stderr.decode()
+        callback_tokens = json.loads(callback.stdout)
+        status, _, body = request("GET", "/realms/master/protocol/openid-connect/userinfo", bearer=callback_tokens["access_token"])
+        assert status == 200, "Adapter callback did not produce usable tokens"
         for mode, replay_kind in (
-            ("public", "code"), ("public", "refresh"), ("public", "refresh_race"), ("public", "adapter"),
+            ("public", "code"), ("public", "fragment"), ("public", "form_post"), ("public", "refresh"), ("public", "refresh_race"), ("public", "adapter"),
             ("basic", "refresh"), ("post", "refresh"),
         ):
             client = public_client if mode == "public" else confidential_client
@@ -169,9 +189,12 @@ def run(binary, username, password, prefix=""):
             verifier = secrets.token_urlsafe(48)
             challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
             state, nonce = secrets.token_urlsafe(24), secrets.token_urlsafe(24)
+            response_mode = replay_kind if replay_kind in ("fragment", "form_post") else "query"
+            if response_mode == "form_post":
+                state += "\"<>&'"
             query = urllib.parse.urlencode({
                 "client_id": client, "redirect_uri": redirect, "response_type": "code",
-                "scope": "openid", "code_challenge_method": "S256", "code_challenge": challenge,
+                "scope": "openid", "response_mode": response_mode, "code_challenge_method": "S256", "code_challenge": challenge,
                 "state": state, "nonce": nonce, "unrecognized_extension": "ignored",
             })
             status, headers, body = request("GET", "/realms/master/protocol/openid-connect/auth?" + query)
@@ -186,12 +209,24 @@ def run(binary, username, password, prefix=""):
             # Secure-cookie policy or persisting the password in a browser profile.
             status, _, _ = request("POST", form.action, {"username": username, "password": password})
             assert status >= 400, "Login accepted without browser binding"
-            status, headers, _ = request("POST", form.action, {"username": username, "password": password}, cookie.split(";", 1)[0])
-            assert status in (302, 303), "Password login failed"
-            location = urllib.parse.urlsplit(headers["location"])
-            params = urllib.parse.parse_qs(location.query)
-            assert location.scheme + "://" + location.netloc + location.path == redirect
-            assert params["state"] == [state]
+            status, headers, response_body = request("POST", form.action, {"username": username, "password": password}, cookie.split(";", 1)[0])
+            if response_mode == "form_post":
+                assert status == 200 and headers["content-type"].startswith("text/html")
+                returned_form = LoginForm()
+                returned_form.feed(response_body.decode())
+                assert returned_form.action == redirect and returned_form.method == "post"
+                assert len(returned_form.scripts) == 1 and returned_form.scripts[0]
+                assert "'nonce-" + returned_form.scripts[0] + "'" in headers["content-security-policy"]
+                assert state.encode() not in response_body, "State was not escaped in form HTML"
+                assert headers["cache-control"] == "no-store"
+                params = {key: [value] for key, value in returned_form.fields.items()}
+            else:
+                assert status in (302, 303), "Password login failed"
+                location = urllib.parse.urlsplit(headers["location"])
+                assert location.scheme + "://" + location.netloc + location.path == redirect
+                params = urllib.parse.parse_qs(location.fragment if response_mode == "fragment" else location.query)
+                assert not (location.query if response_mode == "fragment" else location.fragment)
+            assert params["state"] == [state] and params["iss"] == [issuer]
             token_form = {
                 "grant_type": "authorization_code", "code": params["code"][0],
                 "client_id": client, "redirect_uri": redirect, "code_verifier": verifier,

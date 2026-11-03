@@ -84,7 +84,18 @@ unchanged expiry across rotation and rejection of revoked sessions.
 
 The digest-pinned keycloak-js 26.2.2 adapter now loads issued tokens and performs
 real HTTP refreshes against both issuer paths in the Node client harness.
-Credentials stay in private pipes and memory. This proves adapter token loading
-and refresh only: login callback handling (including response_mode=fragment),
-iframe/session checks, CORS and full browser behavior still need implementation
-and browser-engine qualification.
+Credentials stay in private pipes and memory. The fixture now also lets the adapter generate an authorization request,
+submits the login form, and processes its default fragment callback through the
+real token endpoint. Iframe/session checks, CORS and full browser behavior still
+need implementation and browser-engine qualification.
+
+
+## Authorization response modes
+
+Migration 9 binds query, fragment or form_post to each authorization request;
+password submission cannot change the saved response mode. Responses include
+issuer identification and preserve state. Form-post responses use escaped
+hidden fields, a nonce-scoped auto-submit script, a registered-origin form
+policy and no-store headers. The script runs in the client; backend execution
+remains Rust. Public tests pass all three modes, malicious HTML characters in
+state, and the pinned adapter's fragment callback at both issuer paths.
