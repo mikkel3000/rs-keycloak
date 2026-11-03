@@ -17,6 +17,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0004_authorization.sql"),
     include_str!("../../../migrations/0005_code_replay_retention.sql"),
     include_str!("../../../migrations/0006_refresh.sql"),
+    include_str!("../../../migrations/0007_client_auth.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -294,6 +295,33 @@ pub struct RefreshGrant {
     pub scope: String,
 }
 
+/// Client authentication material read before bounded secret verification.
+/// Secret hashes must never be logged or returned to a client.
+pub enum ClientAuthMaterial {
+    /// No client secret is accepted for this client.
+    Public,
+    /// The client secret must be verified and its revision rechecked transactionally.
+    Confidential {
+        /// Stored secret hash in PHC format.
+        secret_phc: Vec<u8>,
+        /// Revision to recheck after verifying the hash.
+        revision: i64,
+    },
+}
+
+/// Result of registering a confidential client.
+pub enum ConfidentialRegistration {
+    /// The client and redirect were created.
+    Created,
+    /// An exact enabled confidential client and redirect already exist.
+    Existing {
+        /// Existing PHC hash, for constant-time secret verification by the caller.
+        secret_phc: Vec<u8>,
+        /// Existing client revision.
+        revision: i64,
+    },
+}
+
 /// Separate bounded request and worker pools for primary-only access.
 pub struct Storage {
     request: PgPool,
@@ -512,7 +540,82 @@ impl Storage {
         tx.commit().await
     }
 
-    /// Persist an authorization request only for an enabled public client and exact redirect.
+    /// Register a confidential client and its redirect without replacing existing credentials.
+    pub async fn create_confidential_client(
+        &self,
+        realm: &str,
+        client_id: &str,
+        client_identifier: &str,
+        redirect_uri: &str,
+        secret_phc: &[u8],
+    ) -> Result<ConfidentialRegistration, StorageError> {
+        if secret_phc.is_empty() || secret_phc.len() > 4096 {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(false).await?;
+        let inserted: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, public_client, secret_phc) VALUES ($1, $2, $3, false, $4) ON CONFLICT (realm_id, client_id) DO NOTHING RETURNING id")
+            .bind(realm).bind(client_id).bind(client_identifier).bind(secret_phc).fetch_optional(tx.connection()).await?;
+        let result = if let Some(id) = inserted {
+            sqlx::query("INSERT INTO client_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3)")
+                .bind(realm).bind(id).bind(redirect_uri).execute(tx.connection()).await?;
+            ConfidentialRegistration::Created
+        } else {
+            let row = sqlx::query("SELECT c.secret_phc, c.revision FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND NOT c.public_client AND c.enabled AND EXISTS (SELECT 1 FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id AND d.redirect_uri = $3) FOR UPDATE")
+                .bind(realm).bind(client_identifier).bind(redirect_uri).fetch_optional(tx.connection()).await?;
+            let Some(row) = row else {
+                return Err(StorageError::Conflict);
+            };
+            ConfidentialRegistration::Existing {
+                secret_phc: row.try_get("secret_phc")?,
+                revision: row.try_get("revision")?,
+            }
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Read client type and credential for verification outside the transaction.
+    pub async fn client_auth_material(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+    ) -> Result<Option<ClientAuthMaterial>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let row = sqlx::query("SELECT c.public_client, c.secret_phc, c.revision FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
+            .bind(realm).bind(client_identifier).fetch_optional(tx.connection()).await?;
+        let result = match row {
+            None => None,
+            Some(row) if row.try_get::<bool, _>("public_client")? => {
+                Some(ClientAuthMaterial::Public)
+            }
+            Some(row) => Some(ClientAuthMaterial::Confidential {
+                secret_phc: row.try_get("secret_phc")?,
+                revision: row.try_get("revision")?,
+            }),
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Replace a confidential client secret only if its observed revision is current.
+    pub async fn rotate_client_secret(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+        expected_revision: i64,
+        new_secret_phc: &[u8],
+    ) -> Result<bool, StorageError> {
+        if new_secret_phc.is_empty() || new_secret_phc.len() > 4096 {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(false).await?;
+        let changed = sqlx::query("UPDATE clients SET secret_phc = $4 WHERE realm_id = $1 AND client_id = $2 AND revision = $3 AND NOT public_client AND enabled")
+            .bind(realm).bind(client_identifier).bind(expected_revision).bind(new_secret_phc).execute(tx.connection()).await?.rows_affected();
+        tx.commit().await?;
+        Ok(changed == 1)
+    }
+
+    /// Persist an authorization request only for an enabled client and exact redirect.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_authorization_request(
         &self,
@@ -540,7 +643,7 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10) FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.public_client")
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10) FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled")
             .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)
@@ -556,7 +659,7 @@ impl Storage {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query_as("SELECT a.realm_id, a.client_id FROM authorization_requests a JOIN realms r ON r.id = a.realm_id JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id WHERE a.id = $1 AND a.csrf_hash = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp() AND r.enabled AND c.enabled AND c.public_client")
+        let row = sqlx::query_as("SELECT a.realm_id, a.client_id FROM authorization_requests a JOIN realms r ON r.id = a.realm_id JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id WHERE a.id = $1 AND a.csrf_hash = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp() AND r.enabled AND c.enabled")
             .bind(request_id).bind(csrf_hash).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         Ok(row)
@@ -583,7 +686,7 @@ impl Storage {
         };
         let realm: String = req.try_get("realm_id")?;
         let client: String = req.try_get("client_id")?;
-        let valid = sqlx::query("SELECT 1 FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND us.id = $2 AND c.id = $3 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND u.enabled AND c.enabled AND c.public_client FOR SHARE OF us, u, r, cs, c")
+        let valid = sqlx::query("SELECT 1 FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND us.id = $2 AND c.id = $3 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
             .bind(&realm).bind(user_session_id).bind(&client).fetch_optional(&mut *conn).await?.is_some();
         if !valid {
             tx.commit().await?;
@@ -609,14 +712,15 @@ impl Storage {
         client_identifier: &str,
         redirect_uri: &str,
         pkce_s256: &[u8],
+        client_revision: Option<i64>,
     ) -> Result<Option<CodeGrant>, StorageError> {
         if code_hash.len() != 32 || pkce_s256.len() != 32 {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let code = sqlx::query("SELECT a.realm_id, a.client_id, a.user_session_id, us.user_id, c.client_id AS client_identifier, a.scope, a.nonce, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, a.consumed_at IS NOT NULL AS consumed FROM authorization_codes a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN realms r ON r.id = a.realm_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE a.code_hash = $1 AND a.realm_id = $2 AND c.client_id = $3 AND a.redirect_uri = $4 AND a.pkce_s256 = $5 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND c.enabled AND c.public_client AND u.enabled FOR UPDATE OF a, us FOR SHARE OF c, r, u, cs")
-            .bind(code_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).fetch_optional(&mut *conn).await?;
+        let code = sqlx::query("SELECT a.realm_id, a.client_id, a.user_session_id, us.user_id, c.client_id AS client_identifier, a.scope, a.nonce, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, a.consumed_at IS NOT NULL AS consumed FROM authorization_codes a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN realms r ON r.id = a.realm_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE a.code_hash = $1 AND a.realm_id = $2 AND c.client_id = $3 AND a.redirect_uri = $4 AND a.pkce_s256 = $5 AND ((c.public_client AND $6::bigint IS NULL) OR (NOT c.public_client AND c.revision = $6)) AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND c.enabled AND u.enabled FOR UPDATE OF a, us FOR SHARE OF c, r, u, cs")
+            .bind(code_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(code) = code else {
             return Ok(None);
         };
@@ -673,6 +777,7 @@ impl Storage {
         token_hash: &[u8],
         scope: &str,
         ttl_seconds: i32,
+        client_revision: Option<i64>,
     ) -> Result<bool, StorageError> {
         if token_hash.len() != 32
             || scope.is_empty()
@@ -683,8 +788,8 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT c.id FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
-            .bind(realm).bind(client_identifier).bind(session_id).fetch_optional(&mut *conn).await?;
+        let row = sqlx::query("SELECT c.id FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
+            .bind(realm).bind(client_identifier).bind(session_id).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             return Ok(false);
         };
@@ -710,14 +815,15 @@ impl Storage {
         client_identifier: &str,
         token_hash: &[u8],
         next_token_hash: &[u8],
+        client_revision: Option<i64>,
     ) -> Result<Option<RefreshGrant>, StorageError> {
         if token_hash.len() != 32 || next_token_hash.len() != 32 || token_hash == next_token_hash {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
-            .bind(token_hash).bind(realm).bind(client_identifier).fetch_optional(&mut *conn).await?;
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
+            .bind(token_hash).bind(realm).bind(client_identifier).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             return Ok(None);
         };
