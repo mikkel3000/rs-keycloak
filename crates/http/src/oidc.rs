@@ -772,6 +772,9 @@ async fn userinfo(
             Json(json!({"sub":claims.sub})),
         )
             .into_response(),
+        Ok(AccessTokenStatus::ClientNotFound) => {
+            userinfo_challenge(&realm, Some("Client not found"))
+        }
         Ok(AccessTokenStatus::Revoked) => verification_failed(),
         Ok(AccessTokenStatus::SessionNotFound) => {
             userinfo_challenge(&realm, Some("user_session_not_found"))

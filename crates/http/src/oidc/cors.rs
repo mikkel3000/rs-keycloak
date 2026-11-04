@@ -8,6 +8,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use rs_keycloak_storage_postgres::WebOriginCheck;
 use serde_json::json;
 use url::Url;
 use zeroize::Zeroizing;
@@ -195,20 +196,22 @@ pub(super) async fn handle(
         };
         (request, Some(id))
     };
-    let permitted = if let Some(id) = client_id {
-        match state
+    let check = match client_id {
+        Some(id) => match state
             .storage
-            .client_web_origin_allowed(&realm_id, &id, &origin)
+            .client_web_origin(&realm_id, &id, &origin)
             .await
         {
-            Ok(value) => value,
+            Ok(check) => check,
             Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-        }
-    } else {
-        false
+        },
+        None => WebOriginCheck::Denied,
     };
-    if !permitted {
-        return forbidden();
+    match check {
+        WebOriginCheck::Allowed => (),
+        // Userinfo answers "Client not found" to any origin, as the reference does.
+        WebOriginCheck::UnknownClient if !is_form => (),
+        WebOriginCheck::UnknownClient | WebOriginCheck::Denied => return forbidden(),
     }
     let mut response = next.run(request).await;
     vary(&mut response);

@@ -2,6 +2,8 @@
 
 mod cors;
 
+pub use cors::WebOriginCheck;
+
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -297,10 +299,12 @@ fn active_session_row(row: &PgRow) -> Result<ActiveSession, StorageError> {
     })
 }
 
-/// Access token state, checked in the reference order: revocation, then session.
+/// Access token state, checked in the reference order: client, revocation, session.
 pub enum AccessTokenStatus {
     /// The token is unrevoked and its session, user, client and realm are active.
     Active(ActiveSession),
+    /// No client with the token's authorized party exists in the realm.
+    ClientNotFound,
     /// The token ID is on the revocation list.
     Revoked,
     /// No active session binds this user and client.
@@ -312,7 +316,7 @@ impl AccessTokenStatus {
     pub fn into_active(self) -> Option<ActiveSession> {
         match self {
             Self::Active(session) => Some(session),
-            Self::Revoked | Self::SessionNotFound => None,
+            Self::ClientNotFound | Self::Revoked | Self::SessionNotFound => None,
         }
     }
 }
@@ -380,8 +384,11 @@ async fn lookup_access_token(
     user_id: &str,
     jti_hash: &[u8],
 ) -> Result<AccessTokenStatus, StorageError> {
-    let revoked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM revoked_access_tokens WHERE realm_id = $1 AND jti_hash = $2 AND expires_at > clock_timestamp())")
-        .bind(realm).bind(jti_hash).fetch_one(&mut *connection).await?;
+    let (client_exists, revoked): (bool, bool) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM clients WHERE realm_id = $1 AND client_id = $2), EXISTS (SELECT 1 FROM revoked_access_tokens WHERE realm_id = $1 AND jti_hash = $3 AND expires_at > clock_timestamp())")
+        .bind(realm).bind(client_identifier).bind(jti_hash).fetch_one(&mut *connection).await?;
+    if !client_exists {
+        return Ok(AccessTokenStatus::ClientNotFound);
+    }
     if revoked {
         return Ok(AccessTokenStatus::Revoked);
     }

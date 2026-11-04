@@ -30,36 +30,36 @@ impl Storage {
         Ok(true)
     }
 
-    /// Check an exact origin against the enabled realm and client on the primary.
-    pub async fn client_web_origin_allowed(
+    /// Check an exact origin against a client's registered web origins.
+    ///
+    /// Unknown clients are reported separately because the reference allows
+    /// every origin until a token names a client that exists.
+    pub async fn client_web_origin(
         &self,
         realm: &str,
         client_identifier: &str,
         origin: &str,
-    ) -> Result<bool, StorageError> {
-        if origin.is_empty() || origin.len() > 2048 || origin == "*" || origin == "null" {
-            return Ok(false);
-        }
+    ) -> Result<WebOriginCheck, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let allowed = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM client_web_origins o JOIN clients c ON c.realm_id = o.realm_id AND c.id = o.client_id JOIN realms r ON r.id = c.realm_id WHERE o.realm_id = $1 AND c.client_id = $2 AND o.origin = $3 COLLATE \"C\" AND c.enabled AND r.enabled)")
-            .bind(realm).bind(client_identifier).bind(origin).fetch_one(tx.connection()).await?;
+        let allowed: Option<bool> = sqlx::query_scalar("SELECT c.enabled AND r.enabled AND EXISTS (SELECT 1 FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id AND o.origin = $3 COLLATE \"C\") FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2")
+            .bind(realm).bind(client_identifier).bind(origin).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(allowed)
+        Ok(match allowed {
+            None => WebOriginCheck::UnknownClient,
+            Some(true) if !matches!(origin, "" | "*" | "null") && origin.len() <= 2048 => {
+                WebOriginCheck::Allowed
+            }
+            Some(_) => WebOriginCheck::Denied,
+        })
     }
-    /// Check a preflight origin against any enabled client in the realm.
-    /// Actual requests must check their own client separately.
-    pub async fn any_client_web_origin_allowed(
-        &self,
-        realm: &str,
-        origin: &str,
-    ) -> Result<bool, StorageError> {
-        if origin.is_empty() || origin.len() > 2048 || origin == "*" || origin == "null" {
-            return Ok(false);
-        }
-        let mut tx = self.begin_request(true).await?;
-        let allowed = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM client_web_origins o JOIN clients c ON c.realm_id = o.realm_id AND c.id = o.client_id JOIN realms r ON r.id = c.realm_id WHERE o.realm_id = $1 AND o.origin = $2 COLLATE \"C\" AND c.enabled AND r.enabled)")
-            .bind(realm).bind(origin).fetch_one(tx.connection()).await?;
-        tx.commit().await?;
-        Ok(allowed)
-    }
+}
+
+/// Result of checking a request origin against one client.
+pub enum WebOriginCheck {
+    /// The client is enabled and registered this exact origin.
+    Allowed,
+    /// The client exists but this origin is not allowed for it.
+    Denied,
+    /// No client with this identifier exists in the realm.
+    UnknownClient,
 }

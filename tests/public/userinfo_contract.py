@@ -124,11 +124,11 @@ class UserinfoContract(unittest.TestCase):
         signature = pow(int.from_bytes(encoded, "big"), self.exponent, self.modulus)
         return f"{header}.{payload}.{b64(signature.to_bytes(width, 'big'))}"
 
-    def sessionless_token(self):
+    def sessionless_token(self, client=CLIENT):
         now = int(time.time())
         return self.sign({
-            "typ": "Bearer", "iss": ISSUER, "sub": str(uuid.uuid4()), "aud": CLIENT,
-            "iat": now, "exp": now + 60, "jti": str(uuid.uuid4()), "azp": CLIENT,
+            "typ": "Bearer", "iss": ISSUER, "sub": str(uuid.uuid4()), "aud": client,
+            "iat": now, "exp": now + 60, "jti": str(uuid.uuid4()), "azp": client,
             "sid": str(uuid.uuid4()), "scope": "openid",
         })
 
@@ -181,6 +181,15 @@ class UserinfoContract(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assert_challenge(headers, "user_session_not_found")
         self.assert_cors(headers, REGISTERED)
+
+    def test_unknown_client_allows_any_origin_and_reports_it(self):
+        token = self.sessionless_token(client="missing-" + uuid.uuid4().hex)
+        status, headers, _ = self.request("GET", USERINFO, {
+            "Origin": UNREGISTERED, "Authorization": "Bearer " + token,
+        })
+        self.assertEqual(status, 401)
+        self.assert_challenge(headers, "Client not found")
+        self.assert_cors(headers, UNREGISTERED)
 
     def test_preflight_is_cached_for_one_hour(self):
         status, headers, _ = self.request("OPTIONS", USERINFO, {

@@ -162,7 +162,11 @@ pub(super) async fn handle(
             .await
         {
             Ok(AccessTokenStatus::Active(_)) => (),
-            Ok(AccessTokenStatus::Revoked | AccessTokenStatus::SessionNotFound) => {
+            Ok(
+                AccessTokenStatus::ClientNotFound
+                | AccessTokenStatus::Revoked
+                | AccessTokenStatus::SessionNotFound,
+            ) => {
                 return invalid_token();
             }
             Err(_) => return unavailable(),

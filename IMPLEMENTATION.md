@@ -127,5 +127,7 @@ get "user_session_not_found", matching the recorded challenges. Preflights send
 the reference one-hour max age. `tests/public/userinfo_contract.py` checks these
 cases through HTTP with independently signed tokens; each case takes under
 50 ms after one shared server start. A verified token naming an unknown client
-still returns 403, where the reference allows all origins and answers
-"Client not found".
+gets "Client not found" from any origin, as in the reference; disabled clients
+and users still report "user_session_not_found" instead of the reference's
+"Client disabled" and "User disabled", because no public command can disable
+them yet.
