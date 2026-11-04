@@ -21,3 +21,11 @@ userinfo scope rules, introspection and revocation effects. It retains response
 field and claim names and only fixed values: token type, granted scope,
 service-account username and access audience. The upstream token has no `sid`
 claim, no refresh token and the default `account` audience.
+
+`admin_realms.py` records 19 realm administration cases in
+`admin-realm-observations.json`: create, read and delete with the bootstrap
+service account, an unprivileged service account, an invalid token and no
+token; duplicate, unnamed and malformed requests; and discovery for new,
+disabled and deleted realms. It keeps status, content type, `Location`, error
+messages and the 104 realm representation field names. Both new baselines
+passed a second, comparing reference run.
