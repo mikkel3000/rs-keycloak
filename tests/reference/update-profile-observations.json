@@ -1,0 +1,77 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "UPDATE_PROFILE at login: form fields and prefill, validation errors for missing first name, invalid and taken email, success, and the stored user afterwards.",
+  "normalization": "Pages are reduced to form id, field names, prefilled field names and error field ids.",
+  "observations": {
+    "login/profile-page": {
+      "status": 200,
+      "form": "kc-update-profile-form",
+      "fields": [
+        "email",
+        "firstName",
+        "lastName"
+      ],
+      "prefilled": [
+        "email",
+        "firstName",
+        "lastName"
+      ]
+    },
+    "update/missing-first-name": {
+      "status": 200,
+      "form": "kc-update-profile-form",
+      "fields": [
+        "email",
+        "firstName",
+        "lastName"
+      ],
+      "errors": [
+        "firstName"
+      ]
+    },
+    "update/invalid-email": {
+      "status": 200,
+      "form": "kc-update-profile-form",
+      "fields": [
+        "email",
+        "firstName",
+        "lastName"
+      ],
+      "errors": [
+        "email"
+      ]
+    },
+    "update/taken-email": {
+      "status": 200,
+      "form": "kc-update-profile-form",
+      "fields": [
+        "email",
+        "firstName",
+        "lastName"
+      ],
+      "errors": [
+        "email"
+      ]
+    },
+    "update/success": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "errors": []
+    },
+    "admin/user-after": {
+      "username": "reference-user",
+      "firstName": "Changed",
+      "lastName": "Person",
+      "email": "changed@example.invalid",
+      "emailVerified": false,
+      "requiredActions": []
+    }
+  }
+}

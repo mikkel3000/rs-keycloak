@@ -126,3 +126,11 @@ verified" page on reuse, admin `send-verify-email`, the "confirm validity"
 page an admin-sent link shows before it verifies, and the unknown-user error.
 Pages are reduced to form ids, fields and a few keyword phrases. The baseline
 passed a second, comparing run.
+
+`update_profile.py` records 6 `UPDATE_PROFILE` cases in
+`update-profile-observations.json`: the prefilled `kc-update-profile-form`
+(email, first and last name; username is not editable by default),
+field errors for a missing first name and for an invalid or taken email,
+success continuing to the code, and the stored user afterwards, whose email is
+lowercased and no longer verified. The baseline passed a second, comparing
+run.
