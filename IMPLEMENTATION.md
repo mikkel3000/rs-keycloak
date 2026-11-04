@@ -374,3 +374,23 @@ Remaining differences: one OTP credential per user; HOTP, other OTP policies,
 WebAuthn and recovery codes are not implemented; the `logout-sessions`
 checkbox is accepted but other sessions are not ended; setup trusts the
 posted secret as the reference does.
+
+## Temporary passwords and login steps
+
+An admin password reset with `temporary: true` adds `UPDATE_PASSWORD`; a
+permanent reset clears it. The next login shows `kc-passwd-update-form`,
+re-shown for mismatched or empty input, and success replaces the password,
+clears the action and continues, following the 9 recorded cases in
+`tests/reference/update-password-observations.json`. Login steps now run in
+the reference order through one continuation: an existing OTP code first,
+then `CONFIGURE_TOTP`, then `UPDATE_PASSWORD`. The session flag was renamed
+`steps_pending` and stays set until every step has passed, with OTP
+verification recorded separately. A wrong password now shows the login form
+again with status 200, as recorded, instead of a bare 401.
+`tests/public/update_password_contract.py` checks 3 groups, including the step
+order for a user with both actions; the slowest takes 303 ms.
+
+Remaining differences: password policies (length, history, complexity) are
+not implemented, so the reference's acceptance of the temporary password as
+the new one is matched only by default; the `logout-sessions` checkbox is
+accepted but other sessions are not ended.

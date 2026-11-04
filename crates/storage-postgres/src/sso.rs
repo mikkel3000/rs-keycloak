@@ -22,7 +22,7 @@ impl Storage {
             return Err(StorageError::InvalidInput);
         }
         let mut tx = self.begin_request(true).await?;
-        let changed = sqlx::query("UPDATE user_sessions SET sso_token_hash = $3 WHERE realm_id = $1 AND id = $2 AND revoked_at IS NULL AND NOT mfa_pending AND expires_at > clock_timestamp()")
+        let changed = sqlx::query("UPDATE user_sessions SET sso_token_hash = $3 WHERE realm_id = $1 AND id = $2 AND revoked_at IS NULL AND NOT steps_pending AND expires_at > clock_timestamp()")
             .bind(realm_id).bind(session_id).bind(token_hash).execute(tx.connection()).await?.rows_affected();
         tx.commit().await?;
         Ok(changed == 1)
@@ -38,7 +38,7 @@ impl Storage {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
-        let row: Option<(String, i64)> = sqlx::query_as("SELECT us.id, floor(EXTRACT(EPOCH FROM us.created_at))::bigint FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $1 AND us.sso_token_hash = $2 AND us.revoked_at IS NULL AND NOT us.mfa_pending AND us.expires_at > clock_timestamp() AND u.enabled AND r.enabled")
+        let row: Option<(String, i64)> = sqlx::query_as("SELECT us.id, floor(EXTRACT(EPOCH FROM us.created_at))::bigint FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $1 AND us.sso_token_hash = $2 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp() AND u.enabled AND r.enabled")
             .bind(realm_id).bind(token_hash).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         Ok(row.map(|(session_id, auth_time)| SsoSession {

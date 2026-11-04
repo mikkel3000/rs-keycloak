@@ -208,12 +208,15 @@ impl Storage {
 
     /// Replaces a user's password hash; returns false if the user is missing.
     /// Pending login challenges for the old credential are removed with it.
+    /// A temporary password requires UPDATE_PASSWORD at the next login; a
+    /// permanent one clears that action.
     pub async fn reset_password(
         &self,
         realm_id: &str,
         user_id: &str,
         credential_id: &str,
         password_phc: &[u8],
+        temporary: bool,
         actor_user_id: &str,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
@@ -233,6 +236,8 @@ impl Storage {
             .bind(realm_id).bind(user_id).execute(&mut *conn).await?;
         sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data) VALUES ($1, $2, $3, 'password', $4)")
             .bind(realm_id).bind(credential_id).bind(user_id).bind(password_phc).execute(&mut *conn).await?;
+        sqlx::query("UPDATE users SET required_actions = CASE WHEN $3 THEN array_append(array_remove(required_actions, 'UPDATE_PASSWORD'), 'UPDATE_PASSWORD') ELSE array_remove(required_actions, 'UPDATE_PASSWORD') END WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id).bind(user_id).bind(temporary).execute(&mut *conn).await?;
         audit(conn, actor_user_id, "user_password_reset").await?;
         tx.commit().await?;
         Ok(true)

@@ -5,8 +5,8 @@ mod client_credentials;
 mod consent;
 mod cors;
 mod introspection;
+mod login_steps;
 mod logout;
-mod mfa;
 mod revocation;
 
 use std::collections::BTreeMap;
@@ -28,7 +28,7 @@ use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, MfaStep, RefreshRotation, Storage};
+use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -114,11 +114,15 @@ pub fn router(state: OidcState) -> Router {
         )
         .route(
             "/realms/{realm}/login-actions/otp/{request_id}",
-            post(mfa::verify),
+            post(login_steps::verify),
         )
         .route(
             "/realms/{realm}/login-actions/totp-setup/{request_id}",
-            post(mfa::configure),
+            post(login_steps::configure),
+        )
+        .route(
+            "/realms/{realm}/login-actions/update-password/{request_id}",
+            post(login_steps::update_password),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/token",
@@ -370,32 +374,22 @@ async fn authorize(
                 .unwrap_or_else(|()| unavailable());
         }
     }
-    let path_prefix = s.path_prefix.replace('&', "&amp;");
-    let html = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Sign in</title></head><body><h1>Sign in</h1><form method=\"post\" action=\"{path_prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form></body></html>"
-    );
-    let mut response = Html(html).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response.headers_mut().insert(
-        header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static("default-src 'none'; form-action 'self'; frame-ancestors 'none'"),
-    );
-    response.headers_mut().insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    let path_prefix = &s.path_prefix;
-    let cookie = format!(
-        "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
-    );
-    if let Ok(value) = HeaderValue::from_str(&cookie) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
+    login_page(&s, &realm, &request_id, &csrf, false)
+}
+
+/// Renders the password form; after a failed attempt it shows the same form
+/// again with an error, as the reference does.
+fn login_page(s: &OidcState, realm: &str, request_id: &str, csrf: &str, failed: bool) -> Response {
+    let prefix = consent::escape(&s.path_prefix);
+    let message = if failed {
+        "<p role=\"alert\">Invalid username or password.</p>"
     } else {
-        return unavailable();
-    }
-    response
+        ""
+    };
+    let body = format!(
+        "<h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>"
+    );
+    step_page(&s.path_prefix, realm, csrf, "Sign in", &body)
 }
 
 #[derive(Deserialize)]
@@ -460,23 +454,10 @@ async fn authenticate(
         .await;
     let session_id = match result {
         Ok(LoginResult::Authenticated { session_id }) => session_id,
-        Ok(LoginResult::Denied) => {
-            return (
-                StatusCode::UNAUTHORIZED,
-                [(header::CACHE_CONTROL, "no-store")],
-                "Invalid credentials",
-            )
-                .into_response();
-        }
+        Ok(LoginResult::Denied) => return login_page(&s, &realm, &request_id, csrf, true),
         Err(_) => return unavailable(),
     };
-    match s.storage.mfa_step(&realm_id, &session_id).await {
-        Ok(MfaStep::Complete) => {
-            complete_login(&s, &realm, &realm_id, &request_id, csrf, &session_id).await
-        }
-        Ok(step) => mfa::hold(&s, &realm, &request_id, csrf, &session_id, &step).await,
-        Err(_) => unavailable(),
-    }
+    login_steps::continue_login(&s, &realm, &realm_id, &request_id, csrf, &session_id).await
 }
 
 /// Finishes an authenticated login: sets the SSO cookies, then shows consent

@@ -1,17 +1,21 @@
-//! TOTP second factor: sealed seeds, setup, verification and admin listing.
+//! Login steps after the password: OTP verification, then the user's required
+//! actions (CONFIGURE_TOTP, UPDATE_PASSWORD), in the reference order. A
+//! session stays pending, without codes or SSO, until every step has passed.
 
 use sqlx::{PgConnection, Row};
 
 use crate::{Storage, StorageError};
 
 /// What a freshly authenticated session still needs before a code is issued.
-pub enum MfaStep {
-    /// No second factor is pending.
+pub enum LoginStep {
+    /// Every step has passed.
     Complete,
-    /// The user must set up TOTP first.
-    ConfigureTotp,
     /// The user must enter a code for this OTP credential.
     VerifyTotp(OtpCredential),
+    /// The user must set up TOTP.
+    ConfigureTotp,
+    /// The user must choose a new password.
+    UpdatePassword,
 }
 
 /// A user's OTP credential with its sealed seed.
@@ -38,13 +42,13 @@ pub struct CredentialRecord {
     pub created: i64,
 }
 
-/// Marks a pending session as fully authenticated.
-async fn complete_session(
+/// Clears the pending flag once the user has no required actions left.
+async fn settle_session(
     connection: &mut PgConnection,
     realm_id: &str,
     session_id: &str,
 ) -> Result<(), StorageError> {
-    sqlx::query("UPDATE user_sessions SET mfa_pending = false WHERE realm_id = $1 AND id = $2")
+    sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2")
         .bind(realm_id)
         .bind(session_id)
         .execute(connection)
@@ -52,38 +56,73 @@ async fn complete_session(
     Ok(())
 }
 
+/// Removes a completed required action from the session's user.
+async fn complete_action(
+    connection: &mut PgConnection,
+    realm_id: &str,
+    user_id: &str,
+    action: &str,
+) -> Result<(), StorageError> {
+    sqlx::query("UPDATE users SET required_actions = array_remove(required_actions, $3) WHERE realm_id = $1 AND id = $2")
+        .bind(realm_id)
+        .bind(user_id)
+        .bind(action)
+        .execute(connection)
+        .await?;
+    Ok(())
+}
+
+/// Locks a pending session and returns its user.
+async fn pending_user(
+    connection: &mut PgConnection,
+    realm_id: &str,
+    session_id: &str,
+) -> Result<Option<String>, StorageError> {
+    Ok(sqlx::query_scalar("SELECT user_id FROM user_sessions WHERE realm_id = $1 AND id = $2 AND steps_pending AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR UPDATE")
+        .bind(realm_id).bind(session_id).fetch_optional(connection).await?)
+}
+
 impl Storage {
-    /// Returns the second-factor step a session still needs.
-    pub async fn mfa_step(
+    /// Returns the next step a session needs: an OTP code first, then the
+    /// user's required actions.
+    pub async fn login_step(
         &self,
         realm_id: &str,
         session_id: &str,
-    ) -> Result<MfaStep, StorageError> {
+    ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT us.mfa_pending, 'CONFIGURE_TOTP' = ANY(u.required_actions) AS configure, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
+        let row = sqlx::query("SELECT us.steps_pending, us.otp_verified, 'CONFIGURE_TOTP' = ANY(u.required_actions) AS configure, 'UPDATE_PASSWORD' = ANY(u.required_actions) AS update_password, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
             .bind(realm_id).bind(session_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         let Some(row) = row else {
-            return Ok(MfaStep::Complete);
+            return Ok(LoginStep::Complete);
         };
-        if !row.try_get::<bool, _>("mfa_pending")? {
-            return Ok(MfaStep::Complete);
+        if !row.try_get::<bool, _>("steps_pending")? {
+            return Ok(LoginStep::Complete);
         }
-        Ok(match row.try_get::<Option<String>, _>("credential_id")? {
-            Some(id) if !row.try_get::<bool, _>("configure")? => {
-                MfaStep::VerifyTotp(OtpCredential {
-                    id,
-                    sealed: row.try_get("secret_data")?,
-                    key_id: row.try_get("secret_key_id")?,
-                    last_step: row.try_get("otp_last_step")?,
-                })
-            }
-            _ => MfaStep::ConfigureTotp,
+        let configure: bool = row.try_get("configure")?;
+        if let Some(id) = row.try_get::<Option<String>, _>("credential_id")?
+            && !configure
+            && !row.try_get::<bool, _>("otp_verified")?
+        {
+            return Ok(LoginStep::VerifyTotp(OtpCredential {
+                id,
+                sealed: row.try_get("secret_data")?,
+                key_id: row.try_get("secret_key_id")?,
+                last_step: row.try_get("otp_last_step")?,
+            }));
+        }
+        Ok(if configure {
+            LoginStep::ConfigureTotp
+        } else if row.try_get::<bool, _>("update_password")? {
+            LoginStep::UpdatePassword
+        } else {
+            LoginStep::Complete
         })
     }
 
-    /// Records an accepted code's step and completes the session, unless a
-    /// concurrent request already used this or a later step.
+    /// Records an accepted code's step, unless a concurrent request already
+    /// used this or a later step, and settles the session.
     pub async fn accept_otp(
         &self,
         realm_id: &str,
@@ -96,14 +135,21 @@ impl Storage {
         let accepted = sqlx::query("UPDATE credentials SET otp_last_step = $3 WHERE realm_id = $1 AND id = $2 AND credential_type = 'otp' AND (otp_last_step IS NULL OR otp_last_step < $3)")
             .bind(realm_id).bind(credential_id).bind(step).execute(&mut *conn).await?.rows_affected() == 1;
         if accepted {
-            complete_session(conn, realm_id, session_id).await?;
+            sqlx::query(
+                "UPDATE user_sessions SET otp_verified = true WHERE realm_id = $1 AND id = $2",
+            )
+            .bind(realm_id)
+            .bind(session_id)
+            .execute(&mut *conn)
+            .await?;
+            settle_session(conn, realm_id, session_id).await?;
         }
         tx.commit().await?;
         Ok(accepted)
     }
 
     /// Stores a newly set-up OTP credential, replacing any earlier one,
-    /// clears the CONFIGURE_TOTP action and completes the session.
+    /// completes CONFIGURE_TOTP and settles the session.
     #[allow(clippy::too_many_arguments)]
     pub async fn configure_otp(
         &self,
@@ -117,9 +163,7 @@ impl Storage {
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let user: Option<String> = sqlx::query_scalar("SELECT user_id FROM user_sessions WHERE realm_id = $1 AND id = $2 AND mfa_pending AND revoked_at IS NULL AND expires_at > clock_timestamp() FOR UPDATE")
-            .bind(realm_id).bind(session_id).fetch_optional(&mut *conn).await?;
-        let Some(user) = user else {
+        let Some(user) = pending_user(conn, realm_id, session_id).await? else {
             tx.commit().await?;
             return Ok(false);
         };
@@ -128,9 +172,38 @@ impl Storage {
         sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data, secret_key_id, user_label, otp_last_step) VALUES ($1, $2, $3, 'otp', $4, $5, $6, $7)")
             .bind(realm_id).bind(credential_id).bind(&user).bind(sealed_seed).bind(key_id).bind(label).bind(step)
             .execute(&mut *conn).await?;
-        sqlx::query("UPDATE users SET required_actions = array_remove(required_actions, 'CONFIGURE_TOTP') WHERE realm_id = $1 AND id = $2")
+        sqlx::query("UPDATE user_sessions SET otp_verified = true WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(session_id)
+            .execute(&mut *conn)
+            .await?;
+        complete_action(conn, realm_id, &user, "CONFIGURE_TOTP").await?;
+        settle_session(conn, realm_id, session_id).await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+
+    /// Replaces the password of a pending session's user, completes
+    /// UPDATE_PASSWORD and settles the session.
+    pub async fn update_password_step(
+        &self,
+        realm_id: &str,
+        session_id: &str,
+        credential_id: &str,
+        password_phc: &[u8],
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let Some(user) = pending_user(conn, realm_id, session_id).await? else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        sqlx::query("DELETE FROM credentials WHERE realm_id = $1 AND user_id = $2 AND credential_type = 'password'")
             .bind(realm_id).bind(&user).execute(&mut *conn).await?;
-        complete_session(conn, realm_id, session_id).await?;
+        sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data) VALUES ($1, $2, $3, 'password', $4)")
+            .bind(realm_id).bind(credential_id).bind(&user).bind(password_phc).execute(&mut *conn).await?;
+        complete_action(conn, realm_id, &user, "UPDATE_PASSWORD").await?;
+        settle_session(conn, realm_id, session_id).await?;
         tx.commit().await?;
         Ok(true)
     }

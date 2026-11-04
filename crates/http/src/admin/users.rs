@@ -178,7 +178,11 @@ async fn create_user(
         Some(Value::Array(actions)) => actions
             .iter()
             .map(|action| match action {
-                Value::String(action) if action == "CONFIGURE_TOTP" => Ok(action.clone()),
+                Value::String(action)
+                    if matches!(action.as_str(), "CONFIGURE_TOTP" | "UPDATE_PASSWORD") =>
+                {
+                    Ok(action.clone())
+                }
                 Value::String(action) => Err(AdminError::bad_request(format!(
                     "Unsupported required action: {action}"
                 ))),
@@ -331,11 +335,7 @@ async fn reset_password(
             ));
         }
     }
-    if flag(&fields, "temporary")? {
-        return Err(AdminError::bad_request(
-            "Temporary passwords are not supported",
-        ));
-    }
+    let temporary = flag(&fields, "temporary")?;
     let password = match fields.get("value") {
         Some(Value::String(value)) if !value.is_empty() => Zeroizing::new(value.clone()),
         None | Some(Value::Null | Value::String(_)) => {
@@ -373,6 +373,7 @@ async fn reset_password(
             &user,
             &Uuid::new_v4().to_string(),
             hash.as_bytes(),
+            temporary,
             &actor,
         )
         .await?;

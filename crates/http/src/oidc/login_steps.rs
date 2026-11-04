@@ -1,17 +1,19 @@
-//! TOTP second factor: setup for users with CONFIGURE_TOTP, and code entry
-//! for users with an OTP credential.
+//! Login steps after the password: OTP code entry, TOTP setup for users with
+//! CONFIGURE_TOTP, and a new password for users with UPDATE_PASSWORD.
 //!
-//! Follows the recorded cases in `tests/reference/otp-observations.json`:
-//! rejected codes show the same form again, and a code step is accepted once.
-//! Seeds are sealed with the operator key, bound to their realm and credential.
+//! Follows `tests/reference/otp-observations.json` and
+//! `tests/reference/update-password-observations.json`: rejected input shows
+//! the same form again, and a code step is accepted once. Seeds are sealed
+//! with the operator key, bound to their realm and credential.
 
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::extract::{Form, Path, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use rs_keycloak_protocols::totp;
-use rs_keycloak_storage_postgres::MfaStep;
+use rs_keycloak_storage_postgres::LoginStep;
 use serde::Deserialize;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -125,7 +127,7 @@ pub(super) async fn hold(
     request_id: &str,
     csrf: &str,
     session_id: &str,
-    step: &MfaStep,
+    step: &LoginStep,
 ) -> Response {
     match s
         .storage
@@ -137,11 +139,12 @@ pub(super) async fn hold(
         Err(_) => return unavailable(),
     }
     match step {
-        MfaStep::ConfigureTotp => setup_page(s, realm, request_id, csrf, &new_secret(), false),
-        MfaStep::VerifyTotp(credential) => {
+        LoginStep::ConfigureTotp => setup_page(s, realm, request_id, csrf, &new_secret(), false),
+        LoginStep::UpdatePassword => password_page(s, realm, request_id, csrf, false),
+        LoginStep::VerifyTotp(credential) => {
             code_page(s, realm, request_id, csrf, &credential.id, false)
         }
-        MfaStep::Complete => failure(),
+        LoginStep::Complete => failure(),
     }
 }
 
@@ -215,8 +218,8 @@ pub(super) async fn verify(
         Ok(held) => held,
         Err(rejected) => return rejected.into_response(),
     };
-    let credential = match s.storage.mfa_step(&held.realm_id, &held.session_id).await {
-        Ok(MfaStep::VerifyTotp(credential)) => credential,
+    let credential = match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::VerifyTotp(credential)) => credential,
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
     };
@@ -249,7 +252,7 @@ pub(super) async fn verify(
     };
     match accepted {
         Ok(true) => {
-            complete_login(
+            continue_login(
                 &s,
                 &realm,
                 &held.realm_id,
@@ -287,8 +290,8 @@ pub(super) async fn configure(
         Ok(held) => held,
         Err(rejected) => return rejected.into_response(),
     };
-    match s.storage.mfa_step(&held.realm_id, &held.session_id).await {
-        Ok(MfaStep::ConfigureTotp) => (),
+    match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::ConfigureTotp) => (),
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
     }
@@ -330,7 +333,118 @@ pub(super) async fn configure(
         .await
     {
         Ok(true) => {
-            complete_login(
+            continue_login(
+                &s,
+                &realm,
+                &held.realm_id,
+                &request_id,
+                &held.csrf,
+                &held.session_id,
+            )
+            .await
+        }
+        Ok(false) => failure(),
+        Err(_) => unavailable(),
+    }
+}
+
+/// Shows the session's next login step, or finishes the login when none is
+/// left. Every step handler continues through here.
+pub(super) async fn continue_login(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request_id: &str,
+    csrf: &str,
+    session_id: &str,
+) -> Response {
+    match s.storage.login_step(realm_id, session_id).await {
+        Ok(LoginStep::Complete) => {
+            complete_login(s, realm, realm_id, request_id, csrf, session_id).await
+        }
+        Ok(step) => hold(s, realm, request_id, csrf, session_id, &step).await,
+        Err(_) => unavailable(),
+    }
+}
+
+fn password_page(
+    s: &OidcState,
+    realm: &str,
+    request_id: &str,
+    csrf: &str,
+    error: bool,
+) -> Response {
+    let prefix = escape(&s.path_prefix);
+    let message = if error {
+        "<p role=\"alert\">Passwords must match and must not be empty.</p>"
+    } else {
+        ""
+    };
+    let body = format!(
+        "<h1>Update your password</h1>{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-password/{request_id}\"><label>New password <input name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required></label><label>Confirm password <input name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required></label><label><input name=\"logout-sessions\" type=\"checkbox\"> Sign out other devices</label><button>Submit</button></form>"
+    );
+    step_page(&s.path_prefix, realm, csrf, "Update your password", &body)
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PasswordForm {
+    #[serde(rename = "password-new")]
+    password_new: String,
+    #[serde(rename = "password-confirm")]
+    password_confirm: String,
+    #[serde(rename = "logout-sessions")]
+    _logout_sessions: Option<String>,
+}
+
+/// Longest password the login path accepts.
+const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// Replaces the password of a user with UPDATE_PASSWORD.
+pub(super) async fn update_password(
+    State(s): State<OidcState>,
+    Path((realm, request_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<PasswordForm>,
+) -> Response {
+    let held = match held(&s, &realm, &request_id, &headers).await {
+        Ok(held) => held,
+        Err(rejected) => return rejected.into_response(),
+    };
+    match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::UpdatePassword) => (),
+        Ok(_) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let password = Zeroizing::new(form.password_new);
+    let confirm = Zeroizing::new(form.password_confirm);
+    if password.is_empty() || password.len() > MAX_PASSWORD_BYTES || *password != *confirm {
+        return password_page(&s, &realm, &request_id, &held.csrf, true);
+    }
+    let Ok(permit) = Arc::clone(&s.hash_slots).try_acquire_owned() else {
+        return unavailable();
+    };
+    let hash = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        rs_keycloak_crypto::hash_password(password.as_bytes())
+    })
+    .await;
+    let Ok(Ok(hash)) = hash else {
+        return unavailable();
+    };
+    let hash = Zeroizing::new(hash);
+    match s
+        .storage
+        .update_password_step(
+            &held.realm_id,
+            &held.session_id,
+            &Uuid::new_v4().to_string(),
+            hash.as_bytes(),
+        )
+        .await
+    {
+        Ok(true) => {
+            continue_login(
                 &s,
                 &realm,
                 &held.realm_id,
