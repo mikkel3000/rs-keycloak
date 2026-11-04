@@ -29,3 +29,11 @@ token; duplicate, unnamed and malformed requests; and discovery for new,
 disabled and deleted realms. It keeps status, content type, `Location`, error
 messages and the 104 realm representation field names. Both new baselines
 passed a second, comparing reference run.
+
+`admin_users.py` records 21 user administration cases in
+`admin-user-observations.json`: create, duplicate username (case-insensitive)
+and email, missing username, default and explicit enabled state, read, exact
+and prefix search, count, password reset, sign-in after reset, and delete. The
+fixture user sets name and email because the default 26.8.1 user profile
+requires them before a login completes. The baseline passed a second,
+comparing run.

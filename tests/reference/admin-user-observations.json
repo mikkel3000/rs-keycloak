@@ -1,0 +1,286 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "User create, read, search, count, password reset and delete through the admin API; field names and selected fixed values only.",
+  "normalization": "The random realm name and base URL are replaced with {realm} and {base}; created user IDs are replaced with {id}.",
+  "observations": {
+    "create/success": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/users/{id}",
+      "empty_body": true
+    },
+    "create/duplicate-case": {
+      "status": 409,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "User exists with same username"
+      }
+    },
+    "create/missing-username": {
+      "status": 400,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "User name is missing"
+      }
+    },
+    "create/disabled": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/users/{id}",
+      "empty_body": true
+    },
+    "create/default-enabled": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/users/{id}",
+      "empty_body": true
+    },
+    "create/duplicate-email": {
+      "status": 409,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "User exists with same email"
+      }
+    },
+    "create/no-token": {
+      "status": 401,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "HTTP 401 Unauthorized"
+      }
+    },
+    "create/unknown-realm": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Realm not found."
+      }
+    },
+    "create/malformed-json": {
+      "status": 400,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Cannot parse the JSON"
+      }
+    },
+    "get/success": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "email",
+        "emailVerified",
+        "enabled",
+        "firstName",
+        "id",
+        "lastName",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ],
+      "body": {
+        "username": "reference-user",
+        "enabled": true,
+        "email": "reference@example.invalid",
+        "emailVerified": true,
+        "firstName": "Reference",
+        "lastName": "User"
+      }
+    },
+    "get/unknown": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "User not found"
+      }
+    },
+    "search/exact": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 1,
+      "item_fields": [
+        "access",
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "email",
+        "emailVerified",
+        "enabled",
+        "firstName",
+        "id",
+        "lastName",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ],
+      "usernames": [
+        "reference-user"
+      ],
+      "enabled_by_username": {
+        "reference-user": true
+      }
+    },
+    "search/prefix": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 1,
+      "item_fields": [
+        "access",
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "email",
+        "emailVerified",
+        "enabled",
+        "firstName",
+        "id",
+        "lastName",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ],
+      "usernames": [
+        "reference-user"
+      ],
+      "enabled_by_username": {
+        "reference-user": true
+      }
+    },
+    "search/all": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 3,
+      "item_fields": [
+        "access",
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "emailVerified",
+        "enabled",
+        "id",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ],
+      "usernames": [
+        "default-user",
+        "disabled-user",
+        "reference-user"
+      ],
+      "enabled_by_username": {
+        "default-user": false,
+        "disabled-user": false,
+        "reference-user": true
+      }
+    },
+    "count": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "value": 3
+    },
+    "password/success": {
+      "status": 204,
+      "content_type": null,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "password/empty": {
+      "status": 400,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Empty password not allowed"
+      }
+    },
+    "password/unknown-user": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "User not found"
+      }
+    },
+    "login/after-reset": {
+      "status": 200,
+      "preferred_username": "reference-user"
+    },
+    "delete/success": {
+      "status": 204,
+      "content_type": null,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "delete/repeat": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "User not found"
+      }
+    }
+  }
+}
