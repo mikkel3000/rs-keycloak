@@ -347,6 +347,16 @@ impl AccessTokenStatus {
     }
 }
 
+/// Outcome of rotating a refresh token.
+pub enum RefreshRotation {
+    /// The token was current; a replacement was stored.
+    Rotated(RefreshGrant),
+    /// The token belongs to the client, but its session has ended.
+    SessionNotActive,
+    /// The token is unknown, replayed or expired, or the client changed.
+    Invalid,
+}
+
 /// Rotated session and the scopes granted to its refresh family.
 pub struct RefreshGrant {
     /// Fixed refresh family expiry as Unix seconds.
@@ -964,16 +974,25 @@ impl Storage {
         token_hash: &[u8],
         next_token_hash: &[u8],
         client_revision: Option<i64>,
-    ) -> Result<Option<RefreshGrant>, StorageError> {
+    ) -> Result<RefreshRotation, StorageError> {
         if token_hash.len() != 32 || next_token_hash.len() != 32 || token_hash == next_token_hash {
-            return Ok(None);
+            return Ok(RefreshRotation::Invalid);
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, floor(EXTRACT(EPOCH FROM f.expires_at))::bigint AS expires_at, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
             .bind(token_hash).bind(realm).bind(client_identifier).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
-            return Ok(None);
+            // A token of this client whose session has ended is reported
+            // separately, as the reference does.
+            let issued: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3)")
+                .bind(token_hash).bind(realm).bind(client_identifier).fetch_one(&mut *conn).await?;
+            tx.commit().await?;
+            return Ok(if issued {
+                RefreshRotation::SessionNotActive
+            } else {
+                RefreshRotation::Invalid
+            });
         };
         let family: String = row.try_get("family_id")?;
         let session: String = row.try_get("session_id")?;
@@ -987,7 +1006,7 @@ impl Storage {
                 .await?;
             sqlx::query("UPDATE user_sessions SET revoked_at = clock_timestamp() WHERE realm_id = $1 AND id = $2").bind(realm).bind(session).execute(&mut *conn).await?;
             tx.commit().await?;
-            return Ok(None);
+            return Ok(RefreshRotation::Invalid);
         }
         sqlx::query("UPDATE refresh_tokens SET consumed_at = clock_timestamp() WHERE token_hash = $1 AND consumed_at IS NULL").bind(token_hash).execute(&mut *conn).await?;
         let next: i64 = sqlx::query_scalar("UPDATE refresh_families SET generation = generation + 1 WHERE id = $1 AND expires_at > clock_timestamp() AND revoked_at IS NULL RETURNING generation").bind(&family).fetch_one(&mut *conn).await?;
@@ -1005,7 +1024,7 @@ impl Storage {
             scope: row.try_get("scope")?,
         };
         tx.commit().await?;
-        Ok(Some(result))
+        Ok(RefreshRotation::Rotated(result))
     }
 
     /// Check a verified access token against current session state and token revocations.

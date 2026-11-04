@@ -49,7 +49,7 @@ class LogoutContract(AdminCase):
     def assert_ended(self, tokens, label):
         status, _, body = self.request("POST", self.endpoint + "/token", form={"grant_type": "refresh_token", "client_id": "logout-app", "refresh_token": tokens["refresh_token"]})
         self.assertEqual(status, REFERENCE[label + "/refresh"]["status"], label)
-        self.assertEqual(json.loads(body)["error"], REFERENCE[label + "/refresh"]["body"]["error"], label)
+        self.assertEqual(json.loads(body), REFERENCE[label + "/refresh"]["body"], label)
         status, headers, _ = self.request("GET", self.endpoint + "/userinfo", {"Authorization": "Bearer " + tokens["access_token"]})
         expected = REFERENCE[label + "/userinfo"]
         self.assertEqual(status, expected["status"], label)

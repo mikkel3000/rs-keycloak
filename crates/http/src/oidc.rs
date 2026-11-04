@@ -26,7 +26,7 @@ use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, Storage};
+use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -466,6 +466,18 @@ fn invalid_grant() -> Response {
     token_error("invalid_grant")
 }
 
+fn invalid_grant_described(description: &'static str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({"error":"invalid_grant","error_description":description})),
+    )
+        .into_response()
+}
+
 struct ParsedTokenForm {
     grant: TokenForm,
     client_id: Option<String>,
@@ -643,8 +655,11 @@ async fn token(
                 )
                 .await
             {
-                Ok(Some(grant)) => grant,
-                Ok(None) => return invalid_grant(),
+                Ok(RefreshRotation::Rotated(grant)) => grant,
+                Ok(RefreshRotation::SessionNotActive) => {
+                    return invalid_grant_described("Session not active");
+                }
+                Ok(RefreshRotation::Invalid) => return invalid_grant(),
                 Err(_) => return unavailable(),
             };
             let expiry = refreshed.expires_at;

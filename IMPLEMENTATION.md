@@ -306,5 +306,7 @@ an `AdminCase` base class and a shared browser login.
 Remaining differences: there is no SSO cookie yet, so browser logout without
 `id_token_hint` has no session to end and shows a plain page instead of
 Keycloak's confirmation form; front-channel and back-channel logout
-notifications to other clients are not implemented; refresh-token error
-descriptions for ended sessions are not yet sent.
+notifications to other clients are not implemented. A refresh token whose
+session has ended (logout, revocation) now gets the recorded "Session not
+active" description; replayed and unknown refresh tokens keep a bare
+`invalid_grant` until their reference responses are recorded.
