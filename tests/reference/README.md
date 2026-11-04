@@ -13,3 +13,11 @@ Synthetic bootstrap/client/user secrets and tokens remain in memory, upstream pr
 `--record` emits redacted observations without comparing the baseline for an explicit reviewed contract update; normal runs fail if the baseline is missing or any observed case changes, and `--port` selects another loopback reference port.
 
 `oauth.py` separately tests public/confidential login forms, code/PKCE, signed token validation and client-authentication errors; the HTTP form client does not replace browser-engine or independent protocol-client qualification.
+
+`service_accounts.py` uses the same launcher and records 21 client-credentials
+observations in `service-account-observations.json`: post and Basic secrets,
+openid and unknown scopes, public, disabled and unknown clients, origin checks,
+userinfo scope rules, introspection and revocation effects. It retains response
+field and claim names and only fixed values: token type, granted scope,
+service-account username and access audience. The upstream token has no `sid`
+claim, no refresh token and the default `account` audience.
