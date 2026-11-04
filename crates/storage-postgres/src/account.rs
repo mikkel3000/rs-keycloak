@@ -18,20 +18,6 @@ pub struct AccountSession {
 }
 
 impl Storage {
-    /// Reports whether a user may use the account API: enabled and holding
-    /// the realm's default role, which carries the account roles.
-    pub async fn account_access(
-        &self,
-        realm_id: &str,
-        user_id: &str,
-    ) -> Result<bool, StorageError> {
-        let mut tx = self.begin_request(true).await?;
-        let allowed = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users u JOIN realms r ON r.id = u.realm_id JOIN user_role_grants g ON g.realm_id = u.realm_id AND g.user_id = u.id AND g.role_id = r.default_role_id WHERE u.realm_id = $1 AND u.id = $2 AND u.enabled AND u.service_account_client_id IS NULL)")
-            .bind(realm_id).bind(user_id).fetch_one(tx.connection()).await?;
-        tx.commit().await?;
-        Ok(allowed)
-    }
-
     /// Saves the user's own name and email; false if the email is taken.
     pub async fn update_account_profile(
         &self,

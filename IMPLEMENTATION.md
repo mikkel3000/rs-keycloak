@@ -501,3 +501,23 @@ account client roles, so access follows the default role instead; sessions
 report no IP address, browser or separate last-access time; linked accounts,
 applications, consents and credential removal through the account API, and
 the account console web interface itself, are not implemented.
+
+## Client roles and built-in clients
+
+Roles may belong to a client; names are unique per realm or per client
+through partial unique indexes. Every realm, including existing ones through
+migration 25, has the public built-in clients `account`, `account-console` and
+`admin-cli`, the eight `account` roles, and the default role's composites
+(`view-profile`, `manage-account`, which includes `manage-account-links`).
+`/clients/{id}/roles` and `/users/{id}/role-mappings/clients/{client}` follow
+the 19 recorded cases in `tests/reference/client-role-observations.json`, and
+access tokens carry `resource_access`. The account API now checks the real
+`account` roles: `view-profile` or `manage-account` to read, `manage-account`
+to change. `tests/public/client_roles_contract.py` checks 2 groups, the
+slowest in 381 ms; a fresh install with bootstrap creates the built-ins.
+
+Remaining differences: `broker`, `realm-management` and
+`security-admin-console` are not created, because bearer-only clients are
+not modelled; built-in clients have no redirect URIs, so `account-console`
+cannot sign in yet; token `aud` still names the token's own client rather
+than the clients whose roles it carries.

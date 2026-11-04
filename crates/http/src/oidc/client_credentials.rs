@@ -15,7 +15,7 @@ use serde_json::json;
 
 use crate::client_auth::AuthenticatedClient;
 
-use super::{OidcState, has_openid_scope, random_token, unavailable};
+use super::{OidcState, has_openid_scope, random_token, resource_access, unavailable};
 
 /// Access and ID token lifetime, matching the authorization-code grant.
 const TOKEN_LIFETIME_SECONDS: u64 = 300;
@@ -103,9 +103,9 @@ pub(super) async fn grant(
     let Ok(permit) = Arc::clone(&state.signing_slots).try_acquire_owned() else {
         return unavailable();
     };
-    let Ok(realm_roles) = state
+    let Ok(roles) = state
         .storage
-        .effective_realm_roles(realm_id, &account.user_id)
+        .effective_roles(realm_id, &account.user_id)
         .await
     else {
         return unavailable();
@@ -127,8 +127,9 @@ pub(super) async fn grant(
             sid: None,
             scope: granted,
             realm_access: Some(RealmAccess {
-                roles: &realm_roles,
+                roles: &roles.realm,
             }),
+            resource_access: resource_access(&roles),
         })?;
         let id = if has_openid_scope(granted) {
             Some(signer.sign_id_token(&IdTokenClaims {

@@ -59,6 +59,9 @@ pub struct TokenClaims<'a> {
     /// Effective realm roles, as Keycloak's `realm_access` claim.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub realm_access: Option<RealmAccess<'a>>,
+    /// Effective client roles by client, as Keycloak's `resource_access`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource_access: Option<std::collections::BTreeMap<&'a str, RealmAccess<'a>>>,
 }
 
 /// The `realm_access` claim listing effective realm role names.

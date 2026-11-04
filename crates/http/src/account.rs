@@ -1,9 +1,10 @@
 //! Keycloak's account REST API: a user's own profile, credentials and
 //! sessions, authorized by their realm access token.
 //!
-//! Follows `tests/reference/account-api-observations.json`. Keycloak checks
-//! the account client roles in the token; users receive those through the
-//! realm's default role, so access here requires that role directly.
+//! Follows `tests/reference/account-api-observations.json`. Access follows the
+//! user's effective roles of the built-in `account` client, which users
+//! receive through the realm's default role: reading needs `view-profile` or
+//! `manage-account`, changes need `manage-account`.
 
 use axum::body::Bytes;
 use axum::extract::{Path, State};
@@ -81,10 +82,20 @@ struct Account {
     session_id: String,
 }
 
+/// The account role a request needs.
+#[derive(Clone, Copy)]
+enum Need {
+    /// Read the profile, credentials or sessions.
+    View,
+    /// Change the profile or end sessions.
+    Manage,
+}
+
 async fn authorize(
     state: &OidcState,
     realm: &str,
     headers: &HeaderMap,
+    need: Need,
 ) -> Result<Account, AccountError> {
     let token = headers
         .get(header::AUTHORIZATION)
@@ -114,11 +125,22 @@ async fn authorize(
         AccessTokenStatus::Active(session) => session,
         _ => return Err(AccountError::Unauthorized),
     };
-    if !state
+    let roles = state
         .storage
-        .account_access(&realm_id, &session.user_id)
-        .await?
-    {
+        .effective_roles(&realm_id, &session.user_id)
+        .await?;
+    let account_roles = roles
+        .clients
+        .get("account")
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let allowed = match need {
+        Need::View => account_roles
+            .iter()
+            .any(|role| role == "view-profile" || role == "manage-account"),
+        Need::Manage => account_roles.iter().any(|role| role == "manage-account"),
+    };
+    if !allowed {
         return Err(AccountError::Forbidden);
     }
     Ok(Account {
@@ -155,7 +177,7 @@ async fn read_profile(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AccountError> {
-    let account = authorize(&state, &realm, &headers).await?;
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
     let user = state
         .storage
         .user(&account.realm_id, &account.user_id)
@@ -185,7 +207,7 @@ async fn update_profile(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AccountError> {
-    let account = authorize(&state, &realm, &headers).await?;
+    let account = authorize(&state, &realm, &headers, Need::Manage).await?;
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&body) else {
         return Err(AccountError::Field(
             StatusCode::BAD_REQUEST,
@@ -261,7 +283,7 @@ async fn credentials(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AccountError> {
-    let account = authorize(&state, &realm, &headers).await?;
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
     let stored = state
         .storage
         .user_credentials(&account.realm_id, &account.user_id)
@@ -309,7 +331,7 @@ async fn sessions(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AccountError> {
-    let account = authorize(&state, &realm, &headers).await?;
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
     let sessions = state
         .storage
         .account_sessions(&account.realm_id, &account.user_id)
@@ -338,7 +360,7 @@ async fn end_session(
     Path((realm, session)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AccountError> {
-    let account = authorize(&state, &realm, &headers).await?;
+    let account = authorize(&state, &realm, &headers, Need::Manage).await?;
     let owned = state
         .storage
         .account_sessions(&account.realm_id, &account.user_id)

@@ -25,7 +25,7 @@ pub use logout::RefreshLogout;
 pub use realm_admin::{
     MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
 };
-pub use role_admin::{RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
+pub use role_admin::{EffectiveRoles, RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;
 pub use user_admin::{NewUser, UserCreation, UserRecord, UsernameFilter};
@@ -65,6 +65,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0022_reset_credentials.sql"),
     include_str!("../../../migrations/0023_verify_email.sql"),
     include_str!("../../../migrations/0024_update_profile.sql"),
+    include_str!("../../../migrations/0025_client_roles.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

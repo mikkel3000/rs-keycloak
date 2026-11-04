@@ -30,7 +30,7 @@ use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, Storage};
+use rs_keycloak_storage_postgres::{AccessTokenStatus, EffectiveRoles, RefreshRotation, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1009,11 +1009,7 @@ async fn token(
         return unavailable();
     };
     let refresh_expires_in = refresh_expiry.saturating_sub(now);
-    let Ok(realm_roles) = s
-        .storage
-        .effective_realm_roles(&realm_id, &grant.user_id)
-        .await
-    else {
+    let Ok(roles) = s.storage.effective_roles(&realm_id, &grant.user_id).await else {
         return unavailable();
     };
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
@@ -1032,8 +1028,9 @@ async fn token(
             sid: Some(&grant.session_id),
             scope: &grant.scope,
             realm_access: Some(RealmAccess {
-                roles: &realm_roles,
+                roles: &roles.realm,
             }),
+            resource_access: resource_access(&roles),
         };
         let id_claims = IdTokenClaims {
             iss: &issuer,
@@ -1056,6 +1053,7 @@ async fn token(
             sid: Some(&grant.session_id),
             scope: &grant.scope,
             realm_access: None,
+            resource_access: None,
         };
         Some((
             signer.sign(&claims).ok()?,
@@ -1128,6 +1126,18 @@ fn userinfo_challenge(realm: &str, description: Option<&str>) -> Response {
         ],
     )
         .into_response()
+}
+
+/// The `resource_access` claim for a user's client roles, or `None` when
+/// the user has none, as the reference omits it then.
+fn resource_access(roles: &EffectiveRoles) -> Option<BTreeMap<&str, RealmAccess<'_>>> {
+    (!roles.clients.is_empty()).then(|| {
+        roles
+            .clients
+            .iter()
+            .map(|(client, names)| (client.as_str(), RealmAccess { roles: names }))
+            .collect()
+    })
 }
 
 /// Reports whether a space-separated scope string grants `openid`.

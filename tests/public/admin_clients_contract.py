@@ -101,7 +101,11 @@ class AdminClientsContract(ServerCase):
         status, _, body = self.assert_case(self.call("GET", self.clients + "?clientId=missing-app"), "search/client-id-unknown")
         self.assertEqual(json.loads(body), [])
         listed = {item["clientId"] for item in json.loads(self.call("GET", self.clients)[2])}
-        self.assertEqual(listed, {"public-app", "service-app", "default-app"})
+        # The reference lists six built-in clients; broker, realm-management
+        # and security-admin-console are not created here yet, and this test
+        # does not create the client with a generated clientId.
+        expected = set(REFERENCE["search/all-count"]["client_ids"]) - {"broker", "realm-management", "security-admin-console", "{generated}"}
+        self.assertEqual(listed, expected)
 
     def test_secret_read_and_regenerate_change_authentication(self):
         public, confidential, _ = self.create_reference_clients()

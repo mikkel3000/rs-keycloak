@@ -1,5 +1,7 @@
 //! Realm role administration and user realm role mappings.
 
+use std::collections::BTreeMap;
+
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
 
@@ -74,21 +76,23 @@ async fn audit(
     Ok(())
 }
 
-/// Resolves `(id, name)` pairs to realm role identifiers, or `None` if any
-/// pair does not name the same role.
+/// Resolves `(id, name)` pairs to role identifiers in one container (the
+/// realm when `client` is `None`), or `None` if any pair does not match.
 async fn resolve_roles(
     connection: &mut PgConnection,
     realm_id: &str,
+    client: Option<&str>,
     roles: &[(String, String)],
 ) -> Result<Option<Vec<String>>, StorageError> {
     let mut ids = Vec::with_capacity(roles.len());
     for (id, name) in roles {
         let found: Option<String> = sqlx::query_scalar(
-            "SELECT id FROM roles WHERE realm_id = $1 AND id = $2 AND name = $3",
+            "SELECT id FROM roles WHERE realm_id = $1 AND id = $2 AND name = $3 AND client_id IS NOT DISTINCT FROM $4",
         )
         .bind(realm_id)
         .bind(id)
         .bind(name)
+        .bind(client)
         .fetch_optional(&mut *connection)
         .await?;
         match found {
@@ -100,41 +104,49 @@ async fn resolve_roles(
 }
 
 impl Storage {
-    /// Lists the realm's roles by name.
-    pub async fn roles(&self, realm_id: &str) -> Result<Vec<RoleRecord>, StorageError> {
+    /// Lists the roles of a container (the realm when `client` is `None`) by name.
+    pub async fn roles(
+        &self,
+        realm_id: &str,
+        client: Option<&str>,
+    ) -> Result<Vec<RoleRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let rows = sqlx::query(&format!(
-            "SELECT {ROLE_COLUMNS} FROM roles r WHERE r.realm_id = $1 ORDER BY r.name"
+            "SELECT {ROLE_COLUMNS} FROM roles r WHERE r.realm_id = $1 AND r.client_id IS NOT DISTINCT FROM $2 ORDER BY r.name"
         ))
         .bind(realm_id)
+        .bind(client)
         .fetch_all(tx.connection())
         .await?;
         tx.commit().await?;
         rows.iter().map(role_row).collect()
     }
 
-    /// Reads one role by name.
+    /// Reads one role of a container by name.
     pub async fn role(
         &self,
         realm_id: &str,
+        client: Option<&str>,
         name: &str,
     ) -> Result<Option<RoleRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let row = sqlx::query(&format!(
-            "SELECT {ROLE_COLUMNS} FROM roles r WHERE r.realm_id = $1 AND r.name = $2"
+            "SELECT {ROLE_COLUMNS} FROM roles r WHERE r.realm_id = $1 AND r.name = $2 AND r.client_id IS NOT DISTINCT FROM $3"
         ))
         .bind(realm_id)
         .bind(name)
+        .bind(client)
         .fetch_optional(tx.connection())
         .await?;
         tx.commit().await?;
         row.as_ref().map(role_row).transpose()
     }
 
-    /// Creates a role unless the name is taken.
+    /// Creates a role in a container unless the name is taken there.
     pub async fn create_role(
         &self,
         realm_id: &str,
+        client: Option<&str>,
         id: &str,
         name: &str,
         description: Option<&str>,
@@ -142,8 +154,8 @@ impl Storage {
     ) -> Result<RoleCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO roles (realm_id, id, name, description) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING id")
-            .bind(realm_id).bind(id).bind(name).bind(description).fetch_optional(&mut *conn).await?;
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO roles (realm_id, id, name, description, client_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id")
+            .bind(realm_id).bind(id).bind(name).bind(description).bind(client).fetch_optional(&mut *conn).await?;
         if created.is_none() {
             tx.commit().await?;
             return Ok(RoleCreation::Exists);
@@ -153,17 +165,18 @@ impl Storage {
         Ok(RoleCreation::Created)
     }
 
-    /// Deletes a role and its mappings; the default role is kept.
+    /// Deletes a role of a container and its mappings; the default role is kept.
     pub async fn delete_role(
         &self,
         realm_id: &str,
+        client: Option<&str>,
         name: &str,
         actor_user_id: &str,
     ) -> Result<RoleDeletion, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let role: Option<(String, bool)> = sqlx::query_as("SELECT r.id, r.id = m.default_role_id FROM roles r JOIN realms m ON m.id = r.realm_id WHERE r.realm_id = $1 AND r.name = $2 FOR UPDATE OF r")
-            .bind(realm_id).bind(name).fetch_optional(&mut *conn).await?;
+        let role: Option<(String, bool)> = sqlx::query_as("SELECT r.id, r.id = m.default_role_id FROM roles r JOIN realms m ON m.id = r.realm_id WHERE r.realm_id = $1 AND r.name = $2 AND r.client_id IS NOT DISTINCT FROM $3 FOR UPDATE OF r")
+            .bind(realm_id).bind(name).bind(client).fetch_optional(&mut *conn).await?;
         let result = match role {
             None => RoleDeletion::NotFound,
             Some((_, true)) => RoleDeletion::DefaultRole,
@@ -194,10 +207,12 @@ impl Storage {
         rows.iter().map(user_row).collect()
     }
 
-    /// Lists the roles mapped directly to a user, or `None` if the user is missing.
+    /// Lists a container's roles mapped directly to a user, or `None` if the
+    /// user is missing.
     pub async fn user_roles(
         &self,
         realm_id: &str,
+        client: Option<&str>,
         user_id: &str,
     ) -> Result<Option<Vec<RoleRecord>>, StorageError> {
         let mut tx = self.begin_request(false).await?;
@@ -210,8 +225,8 @@ impl Storage {
         .fetch_one(&mut *conn)
         .await?;
         let roles = if exists {
-            let rows = sqlx::query(&format!("SELECT {ROLE_COLUMNS} FROM roles r JOIN user_role_grants g ON g.realm_id = r.realm_id AND g.role_id = r.id WHERE r.realm_id = $1 AND g.user_id = $2 ORDER BY r.name"))
-                .bind(realm_id).bind(user_id).fetch_all(&mut *conn).await?;
+            let rows = sqlx::query(&format!("SELECT {ROLE_COLUMNS} FROM roles r JOIN user_role_grants g ON g.realm_id = r.realm_id AND g.role_id = r.id WHERE r.realm_id = $1 AND g.user_id = $2 AND r.client_id IS NOT DISTINCT FROM $3 ORDER BY r.name"))
+                .bind(realm_id).bind(user_id).bind(client).fetch_all(&mut *conn).await?;
             Some(rows.iter().map(role_row).collect::<Result<_, _>>()?)
         } else {
             None
@@ -220,10 +235,12 @@ impl Storage {
         Ok(roles)
     }
 
-    /// Maps or unmaps realm roles for a user; all roles must resolve first.
+    /// Maps or unmaps a container's roles for a user; all roles must resolve first.
+    #[allow(clippy::too_many_arguments)]
     pub async fn change_user_roles(
         &self,
         realm_id: &str,
+        client: Option<&str>,
         user_id: &str,
         roles: &[(String, String)],
         grant: bool,
@@ -242,7 +259,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RoleMappingChange::UserNotFound);
         }
-        let Some(role_ids) = resolve_roles(conn, realm_id, roles).await? else {
+        let Some(role_ids) = resolve_roles(conn, realm_id, client, roles).await? else {
             tx.commit().await?;
             return Ok(RoleMappingChange::RoleNotFound);
         };
@@ -272,18 +289,34 @@ impl Storage {
     }
 }
 
+/// A user's effective roles: realm roles, and client roles by client.
+#[derive(Default)]
+pub struct EffectiveRoles {
+    /// Realm role names, sorted.
+    pub realm: Vec<String>,
+    /// Client role names keyed by public client identifier, sorted.
+    pub clients: BTreeMap<String, Vec<String>>,
+}
+
 impl Storage {
-    /// Returns a user's effective realm role names: direct grants plus every
-    /// role reachable through composites, sorted and without duplicates.
-    pub async fn effective_realm_roles(
+    /// Returns a user's effective roles: direct grants plus every role
+    /// reachable through composites, without duplicates.
+    pub async fn effective_roles(
         &self,
         realm_id: &str,
         user_id: &str,
-    ) -> Result<Vec<String>, StorageError> {
+    ) -> Result<EffectiveRoles, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let roles = sqlx::query_scalar("WITH RECURSIVE effective(id, depth) AS (SELECT role_id, 0 FROM user_role_grants WHERE realm_id = $1 AND user_id = $2 UNION SELECT c.child_role_id, e.depth + 1 FROM role_composites c JOIN effective e ON c.realm_id = $1 AND c.role_id = e.id WHERE e.depth < 32) SELECT DISTINCT r.name FROM roles r JOIN effective e ON r.realm_id = $1 AND r.id = e.id ORDER BY r.name")
+        let rows: Vec<(Option<String>, String)> = sqlx::query_as("WITH RECURSIVE effective(id, depth) AS (SELECT role_id, 0 FROM user_role_grants WHERE realm_id = $1 AND user_id = $2 UNION SELECT c.child_role_id, e.depth + 1 FROM role_composites c JOIN effective e ON c.realm_id = $1 AND c.role_id = e.id WHERE e.depth < 32) SELECT DISTINCT c.client_id, r.name FROM roles r JOIN effective e ON r.realm_id = $1 AND r.id = e.id LEFT JOIN clients c ON c.realm_id = r.realm_id AND c.id = r.client_id ORDER BY 1 NULLS FIRST, 2")
             .bind(realm_id).bind(user_id).fetch_all(tx.connection()).await?;
         tx.commit().await?;
+        let mut roles = EffectiveRoles::default();
+        for (client, name) in rows {
+            match client {
+                None => roles.realm.push(name),
+                Some(client) => roles.clients.entry(client).or_default().push(name),
+            }
+        }
         Ok(roles)
     }
 }
