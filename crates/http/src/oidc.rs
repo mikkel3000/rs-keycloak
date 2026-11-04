@@ -20,6 +20,7 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
+use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedToken};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::{AccessTokenStatus, Storage};
@@ -41,20 +42,26 @@ pub struct OidcState {
     signing_slots: Arc<Semaphore>,
     /// Bounds concurrent password hashing for admin credential changes.
     pub(crate) hash_slots: Arc<Semaphore>,
+    /// Seals and opens recoverable client secrets, when configured.
+    pub(crate) secret_key: Option<Arc<SecretKey>>,
     pub(crate) issuer_base: String,
     path_prefix: String,
 }
 
 impl OidcState {
     /// Creates state after storage, issuer, and persistent key validation.
+    /// `secret_key` seals client secrets the admin API must be able to return.
     pub async fn new(
         storage: Arc<Storage>,
         signer: SigningKey,
         issuer_base: String,
+        secret_key: Option<SecretKey>,
     ) -> Result<Self, PasswordWorkError> {
         let path_prefix = issuer_path_prefix(&issuer_base).ok_or(PasswordWorkError)?;
         let login = LoginService::new(Arc::clone(&storage)).await?;
-        let client_auth = ClientAuthenticator::new(Arc::clone(&storage)).await?;
+        let secret_key = secret_key.map(Arc::new);
+        let client_auth =
+            ClientAuthenticator::new(Arc::clone(&storage), secret_key.clone()).await?;
         Ok(Self {
             storage,
             login: Arc::new(login),
@@ -62,6 +69,7 @@ impl OidcState {
             signer: Arc::new(signer),
             signing_slots: Arc::new(Semaphore::new(2)),
             hash_slots: Arc::new(Semaphore::new(2)),
+            secret_key,
             issuer_base,
             path_prefix,
         })
@@ -167,7 +175,7 @@ struct AuthorizationQuery {
     nonce: Option<String>,
 }
 
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
 pub(crate) fn digest(value: &str) -> [u8; 32] {

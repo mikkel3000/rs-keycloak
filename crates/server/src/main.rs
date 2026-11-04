@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use rs_keycloak_crypto::secret_box::SecretKey;
 
 use url::Url;
 use uuid::Uuid;
@@ -22,6 +23,23 @@ struct Config {
     management_listen: SocketAddr,
     http_listen: SocketAddr,
     issuer_base: String,
+    secret_key: Option<SecretKey>,
+}
+
+/// Reads the optional AES-256-GCM key for recoverable client secrets.
+fn secret_key() -> Result<Option<SecretKey>, &'static str> {
+    let Ok(encoded) = env::var("RS_KEYCLOAK_SECRET_KEY") else {
+        return Ok(None);
+    };
+    let encoded = Zeroizing::new(encoded);
+    let bytes = Zeroizing::new(
+        STANDARD
+            .decode(encoded.as_bytes())
+            .map_err(|_| "RS_KEYCLOAK_SECRET_KEY must be 32 bytes in base64")?,
+    );
+    SecretKey::from_bytes(&bytes)
+        .map(Some)
+        .map_err(|_| "RS_KEYCLOAK_SECRET_KEY must be 32 bytes in base64")
 }
 
 fn database_url() -> Result<String, &'static str> {
@@ -86,6 +104,7 @@ fn config() -> Result<Config, &'static str> {
                     | "RS_KEYCLOAK_ALLOW_REMOTE_MANAGEMENT"
                     | "RS_KEYCLOAK_HTTP_LISTEN"
                     | "RS_KEYCLOAK_SIGNING_KEY_PKCS8"
+                    | "RS_KEYCLOAK_SECRET_KEY"
             )
         {
             return Err("Unknown RS_KEYCLOAK_ environment variable");
@@ -140,6 +159,7 @@ fn config() -> Result<Config, &'static str> {
         management_listen,
         http_listen,
         issuer_base: issuer.to_string(),
+        secret_key: secret_key()?,
     })
 }
 
@@ -236,10 +256,14 @@ async fn run() -> Result<(), &'static str> {
                         .await
                         .map_err(|_| "Database check failed")?,
                 );
-                let state =
-                    rs_keycloak_http::oidc::OidcState::new(storage, signer, config.issuer_base)
-                        .await
-                        .map_err(|_| "Authentication startup failed")?;
+                let state = rs_keycloak_http::oidc::OidcState::new(
+                    storage,
+                    signer,
+                    config.issuer_base,
+                    config.secret_key,
+                )
+                .await
+                .map_err(|_| "Authentication startup failed")?;
                 let http_listener = tokio::net::TcpListener::bind(config.http_listen)
                     .await
                     .map_err(|_| "HTTP listener failed")?;
@@ -392,27 +416,7 @@ fn validate_client_input(
     if realm.is_empty() || realm.len() > 255 || client_id.is_empty() || client_id.len() > 255 {
         return Err("Realm and client ID must be 1-255 bytes");
     }
-    let redirect = Url::parse(redirect_uri).map_err(|_| "Redirect URI is invalid")?;
-    let local = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true")
-        && matches!(
-            redirect.host_str(),
-            Some("localhost" | "127.0.0.1" | "[::1]")
-        );
-    if redirect
-        .query_pairs()
-        .any(|(key, _)| key == "code" || key == "state")
-    {
-        return Err("Redirect URI must not contain code or state query parameters");
-    }
-    if !(redirect.scheme() == "https" || (redirect.scheme() == "http" && local))
-        || redirect.host_str().is_none()
-        || !redirect.username().is_empty()
-        || redirect.password().is_some()
-        || redirect.fragment().is_some()
-    {
-        return Err(
-            "Redirect URI must use HTTPS without credentials or a fragment; HTTP is allowed only for local development",
-        );
-    }
+    let local = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true");
+    rs_keycloak_protocols::client_urls::validate_redirect_uri(redirect_uri, local)?;
     Ok(())
 }

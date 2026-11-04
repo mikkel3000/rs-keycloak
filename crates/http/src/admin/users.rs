@@ -44,10 +44,10 @@ pub(super) fn routes() -> Router<OidcState> {
 }
 
 fn user_not_found() -> AdminError {
-    AdminError::Error(StatusCode::NOT_FOUND, "User not found")
+    AdminError::Error(StatusCode::NOT_FOUND, "User not found".into())
 }
 
-fn unparsable() -> AdminError {
+pub(super) fn unparsable() -> AdminError {
     AdminError::OAuth(
         StatusCode::BAD_REQUEST,
         "invalid_request",
@@ -56,7 +56,7 @@ fn unparsable() -> AdminError {
 }
 
 /// Resolves the realm identifier for an existing realm name.
-async fn realm_id(state: &OidcState, name: &str) -> Result<String, AdminError> {
+pub(super) async fn realm_id(state: &OidcState, name: &str) -> Result<String, AdminError> {
     state
         .storage
         .realm_by_name(name)
@@ -66,7 +66,7 @@ async fn realm_id(state: &OidcState, name: &str) -> Result<String, AdminError> {
 }
 
 /// Parses a JSON object body or reports the reference parse error.
-fn json_object(body: &[u8]) -> Result<Map<String, Value>, AdminError> {
+pub(super) fn json_object(body: &[u8]) -> Result<Map<String, Value>, AdminError> {
     match serde_json::from_slice(body) {
         Ok(Value::Object(fields)) => Ok(fields),
         _ => Err(unparsable()),
@@ -94,7 +94,7 @@ fn flag(fields: &Map<String, Value>, name: &str) -> Result<bool, AdminError> {
     }
 }
 
-fn representation(user: UserRecord) -> Value {
+pub(super) fn representation(user: UserRecord) -> Value {
     let mut fields = Map::new();
     fields.insert("id".into(), json!(user.id));
     fields.insert("username".into(), json!(user.username));
@@ -117,7 +117,7 @@ fn representation(user: UserRecord) -> Value {
     Value::Object(fields)
 }
 
-fn json_response(value: Value) -> Response {
+pub(super) fn json_response(value: Value) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json;charset=UTF-8")],
         value.to_string(),
@@ -306,7 +306,7 @@ async fn reset_password(
         None | Some(Value::Null | Value::String(_)) => {
             return Err(AdminError::Error(
                 StatusCode::BAD_REQUEST,
-                "Empty password not allowed",
+                "Empty password not allowed".into(),
             ));
         }
         Some(_) => return Err(unparsable()),

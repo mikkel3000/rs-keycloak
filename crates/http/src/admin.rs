@@ -19,11 +19,13 @@ use uuid::Uuid;
 
 use crate::oidc::{OidcState, digest, valid_realm, verified_access};
 
+mod clients;
 mod users;
 
 /// Admin routes, mounted with the public routes below the issuer path.
 pub(crate) fn routes() -> Router<OidcState> {
     Router::new()
+        .merge(clients::routes())
         .merge(users::routes())
         .route("/admin/realms", post(create_realm))
         .route(
@@ -42,8 +44,8 @@ enum AdminError {
     RealmNotFound,
     /// A request error reported in an `errorMessage` body.
     Message(StatusCode, String),
-    /// A fixed error reported in an `error` body.
-    Error(StatusCode, &'static str),
+    /// An error reported in an `error` body.
+    Error(StatusCode, String),
     /// An OAuth-style `error` and `error_description` body.
     OAuth(StatusCode, &'static str, &'static str),
     /// Storage or signing capacity is unavailable.
@@ -74,7 +76,7 @@ impl IntoResponse for AdminError {
             Self::Message(status, message) => {
                 (status, Json(json!({ "errorMessage": message }))).into_response()
             }
-            Self::Error(status, message) => error(status, message).into_response(),
+            Self::Error(status, message) => error(status, &message).into_response(),
             Self::OAuth(status, code, description) => (
                 status,
                 Json(json!({ "error": code, "error_description": description })),

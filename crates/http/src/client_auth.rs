@@ -4,6 +4,9 @@ use axum::http::{HeaderMap, header};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use percent_encoding::percent_decode;
+use rs_keycloak_crypto::secret_box::SecretKey;
+use rs_keycloak_storage_postgres::client_secret_context;
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 /// Parsed public or confidential client credentials.
@@ -143,15 +146,23 @@ pub enum ClientAuthResult {
 pub struct ClientAuthenticator {
     storage: std::sync::Arc<rs_keycloak_storage_postgres::Storage>,
     verifier: rs_keycloak_authentication::PasswordVerifier,
+    secret_key: Option<std::sync::Arc<SecretKey>>,
 }
 
 impl ClientAuthenticator {
     /// Creates a bounded verifier for a running server.
+    /// `secret_key` opens sealed client secrets; without it, clients with
+    /// sealed secrets cannot authenticate and the request is unavailable.
     pub async fn new(
         storage: std::sync::Arc<rs_keycloak_storage_postgres::Storage>,
+        secret_key: Option<std::sync::Arc<SecretKey>>,
     ) -> Result<Self, rs_keycloak_authentication::PasswordWorkError> {
         let verifier = rs_keycloak_authentication::PasswordVerifier::new().await?;
-        Ok(Self { storage, verifier })
+        Ok(Self {
+            storage,
+            verifier,
+            secret_key,
+        })
     }
 
     /// Authenticates a client; token transactions must recheck `revision`.
@@ -187,6 +198,33 @@ impl ClientAuthenticator {
             ) => {
                 let hash = std::str::from_utf8(&secret_phc).map_err(|_| PasswordWorkError)?;
                 if self.verifier.verify(secret, Some(hash)).await? {
+                    Ok(ClientAuthResult::Authenticated(AuthenticatedClient {
+                        client_id,
+                        revision: Some(revision),
+                    }))
+                } else {
+                    Ok(ClientAuthResult::Unauthorized)
+                }
+            }
+            (
+                ClientCredentials::Confidential { client_id, secret },
+                Some(ClientAuthMaterial::Sealed {
+                    client_id: internal_id,
+                    sealed,
+                    key_id,
+                    revision,
+                }),
+            ) => {
+                let key = self
+                    .secret_key
+                    .as_ref()
+                    .filter(|key| key.key_id() == key_id)
+                    .ok_or(PasswordWorkError)?;
+                let stored = key
+                    .open(&sealed, &client_secret_context(realm, &internal_id))
+                    .map_err(|_| PasswordWorkError)?;
+                // Comparing digests keeps the timing independent of the secret.
+                if Sha256::digest(stored.as_slice()) == Sha256::digest(secret.as_slice()) {
                     Ok(ClientAuthResult::Authenticated(AuthenticatedClient {
                         client_id,
                         revision: Some(revision),

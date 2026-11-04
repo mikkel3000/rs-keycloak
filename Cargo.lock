@@ -990,6 +990,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "zeroize",
 ]
 
 [[package]]
@@ -1020,6 +1021,7 @@ dependencies = [
  "base64",
  "sha2",
  "subtle",
+ "url",
 ]
 
 [[package]]
@@ -1030,6 +1032,7 @@ dependencies = [
  "base64",
  "rs-keycloak-crypto",
  "rs-keycloak-http",
+ "rs-keycloak-protocols",
  "rs-keycloak-storage-postgres",
  "tokio",
  "url",

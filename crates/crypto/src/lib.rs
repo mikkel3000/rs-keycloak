@@ -46,4 +46,5 @@ pub fn verify_password(password: &[u8], encoded: &str) -> Result<bool, PasswordE
     }
 }
 
+pub mod secret_box;
 pub mod signing;

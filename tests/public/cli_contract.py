@@ -1,5 +1,6 @@
 """Public CLI security checks; run with a built rs-keycloak binary path."""
 
+import base64
 import os
 from pathlib import Path
 import secrets
@@ -39,6 +40,19 @@ class CliContract(unittest.TestCase):
         })
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(marker, result.stdout + result.stderr)
+
+    def test_secret_key_must_be_256_bits_and_is_not_echoed(self):
+        base = {
+            "RS_KEYCLOAK_DATABASE_URL": "postgresql://localhost/unused?sslmode=verify-full",
+            "RS_KEYCLOAK_ISSUER": "https://login.example.test",
+        }
+        for invalid in (base64.b64encode(secrets.token_bytes(16)).decode(), "not base64 " + secrets.token_hex(24)):
+            result = self.invoke("config", "check", settings=dict(base, RS_KEYCLOAK_SECRET_KEY=invalid))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn(invalid, result.stdout + result.stderr)
+        valid = base64.b64encode(secrets.token_bytes(32)).decode()
+        result = self.invoke("config", "check", settings=dict(base, RS_KEYCLOAK_SECRET_KEY=valid))
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_insecure_public_issuer_is_rejected_without_echo(self):
         marker = secrets.token_hex(24)

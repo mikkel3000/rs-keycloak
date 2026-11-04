@@ -86,6 +86,7 @@ class ServerCase(unittest.TestCase):
             "RS_KEYCLOAK_MANAGEMENT_LISTEN": f"127.0.0.1:{management}",
             "RS_KEYCLOAK_ISSUER": ISSUER_BASE,
             "RS_KEYCLOAK_SIGNING_KEY_PKCS8": base64.b64encode(der).decode(),
+            "RS_KEYCLOAK_SECRET_KEY": base64.b64encode(secrets.token_bytes(32)).decode(),
         })
         cls.process = subprocess.Popen(
             [BINARY, "serve"], env=environment,

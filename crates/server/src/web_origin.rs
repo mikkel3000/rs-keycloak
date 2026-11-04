@@ -3,7 +3,6 @@
 use std::env;
 
 use rs_keycloak_storage_postgres::Storage;
-use url::Url;
 
 pub(crate) async fn add(realm: &str, client_id: &str, origin: &str) -> Result<(), &'static str> {
     if realm.is_empty()
@@ -14,21 +13,8 @@ pub(crate) async fn add(realm: &str, client_id: &str, origin: &str) -> Result<()
     {
         return Err("Realm, client ID, or origin is invalid");
     }
-    let parsed = Url::parse(origin).map_err(|_| "Web origin is invalid")?;
-    let local = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true")
-        && matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"));
-    if !(parsed.scheme() == "https" || (parsed.scheme() == "http" && local))
-        || !parsed.username().is_empty()
-        || parsed.password().is_some()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-        || parsed.origin().ascii_serialization() != origin
-    {
-        return Err(
-            "Web origin must be a canonical HTTPS origin; loopback HTTP requires local development",
-        );
-    }
+    let local = env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true");
+    rs_keycloak_protocols::client_urls::validate_web_origin(origin, local)?;
     let storage = Storage::connect(&super::database_url()?)
         .await
         .map_err(|_| "Database check failed")?;

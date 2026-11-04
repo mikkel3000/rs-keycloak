@@ -206,13 +206,35 @@ because none of those exist yet; other user fields, other search parameters
 and temporary passwords are refused with 400; deleting a master user who has
 written audit events fails, because audit rows keep their actor.
 
-## Open decision: recoverable client secrets
+## Client administration and recoverable secrets
 
-PLAN.md requires client secrets to be stored with authenticated encryption so
-they can be recovered, but the current code stores them as Argon2id hashes.
-The recorded reference returns a client's secret from
-`GET /admin/realms/{realm}/clients/{id}/client-secret`, and admin tools rely on
-reading it, which a hash cannot support. The client admin API needs a
-deployment-supplied encryption key, encrypted storage for new and rotated
-secrets, and a migration path for existing hashed secrets, which cannot be
-recovered and need rotation, before it can match those cases.
+Client secrets created or regenerated through the admin API are sealed with
+AES-256-GCM under the operator key `RS_KEYCLOAK_SECRET_KEY` (32 bytes in
+base64), as PLAN.md requires for recoverable secrets. The client row's realm
+and identifier are bound as associated data, and the key's non-secret
+identifier is stored beside the ciphertext. Authentication opens the secret and
+compares SHA-256 digests. Secrets set through the CLI remain Argon2id hashes,
+which still authenticate but cannot be returned; regenerating such a secret
+through the admin API converts it to a sealed one. Without the key, creating a
+confidential client through the API answers 503, and clients with sealed
+secrets cannot authenticate.
+
+`/admin/realms/{realm}/clients` supports create, list with `clientId`, read,
+delete, `client-secret` read and regeneration, and `service-account-user`,
+following the 23 recorded cases in
+`tests/reference/admin-client-observations.json`. Defaults match the
+reference: a confidential client with standard flow and a generated secret,
+and a generated `clientId` when none is given. `standardFlowEnabled: false`
+now blocks authorization requests. Regenerating a secret bumps the client
+revision, so the old secret stops working at once.
+`tests/public/admin_clients_contract.py` checks 7 groups of cases; the slowest
+takes 165 ms. Redirect URI and web origin rules moved to
+`rs_keycloak_protocols::client_urls`, shared by the CLI and the API; the API
+does not allow loopback HTTP.
+
+Remaining differences: new realms have no built-in clients (`account`,
+`admin-cli`, `broker` and others), so unfiltered lists are shorter; the
+representation lists only the 13 modelled settings of the reference's 26
+fields; direct access, implicit, bearer-only, non-OIDC protocols, other
+authenticators, attributes other than S256 PKCE, and client updates are
+refused or missing; the CLI cannot rotate a sealed secret.

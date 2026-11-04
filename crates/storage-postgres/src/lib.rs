@@ -1,10 +1,12 @@
 //! PostgreSQL schema management and guarded application transactions.
 
+mod client_admin;
 mod cors;
 mod realm_admin;
 mod service_account;
 mod user_admin;
 
+pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use cors::WebOriginCheck;
 pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
@@ -33,6 +35,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0010_client_web_origins.sql"),
     include_str!("../../../migrations/0011_service_accounts.sql"),
     include_str!("../../../migrations/0012_user_profile.sql"),
+    include_str!("../../../migrations/0013_sealed_client_secrets.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -357,6 +360,29 @@ pub enum ClientAuthMaterial {
         /// Revision to recheck after verifying the hash.
         revision: i64,
     },
+    /// A recoverable secret sealed with the operator key; open it with
+    /// [`client_secret_context`] for this client before comparing.
+    Sealed {
+        /// Internal client identifier, part of the sealing context.
+        client_id: String,
+        /// Nonce and AES-256-GCM ciphertext.
+        sealed: Vec<u8>,
+        /// Identifier of the key that sealed the secret.
+        key_id: String,
+        /// Revision to recheck after verifying the secret.
+        revision: i64,
+    },
+}
+
+/// Associated data that binds a sealed client secret to one client row.
+pub fn client_secret_context(realm_id: &str, client_id: &str) -> Vec<u8> {
+    [
+        b"client-secret\0",
+        realm_id.as_bytes(),
+        b"\0",
+        client_id.as_bytes(),
+    ]
+    .concat()
 }
 
 /// Result of registering a confidential client.
@@ -682,17 +708,25 @@ impl Storage {
         client_identifier: &str,
     ) -> Result<Option<ClientAuthMaterial>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT c.public_client, c.secret_phc, c.revision FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
+        let row = sqlx::query("SELECT c.id, c.public_client, c.secret_phc, c.secret_sealed, c.secret_key_id, c.revision FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
             .bind(realm).bind(client_identifier).fetch_optional(tx.connection()).await?;
         let result = match row {
             None => None,
             Some(row) if row.try_get::<bool, _>("public_client")? => {
                 Some(ClientAuthMaterial::Public)
             }
-            Some(row) => Some(ClientAuthMaterial::Confidential {
-                secret_phc: row.try_get("secret_phc")?,
-                revision: row.try_get("revision")?,
-            }),
+            Some(row) => match row.try_get::<Option<Vec<u8>>, _>("secret_sealed")? {
+                Some(sealed) => Some(ClientAuthMaterial::Sealed {
+                    client_id: row.try_get("id")?,
+                    sealed,
+                    key_id: row.try_get("secret_key_id")?,
+                    revision: row.try_get("revision")?,
+                }),
+                None => Some(ClientAuthMaterial::Confidential {
+                    secret_phc: row.try_get("secret_phc")?,
+                    revision: row.try_get("revision")?,
+                }),
+            },
         };
         tx.commit().await?;
         Ok(result)
@@ -746,7 +780,7 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled")
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled")
             .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)

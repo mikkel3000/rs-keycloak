@@ -16,6 +16,7 @@ rs-keycloak-storage-postgres = { path = "../storage-postgres" }
 tokio.workspace = true
 url.workspace = true
 rs-keycloak-crypto = { path = "../crypto" }
+rs-keycloak-protocols = { path = "../protocols" }
 uuid = { version = "=1.18.1", features = ["v4"] }
 zeroize = "=1.9.1"
 base64 = "=0.22.1"
