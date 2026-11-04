@@ -1,0 +1,115 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "CONFIGURE_TOTP setup, OTP login with wrong, correct and reused codes, admin credential listing and deletion; form ids, field names and redirect shapes only, never secrets or codes.",
+  "normalization": "Pages are reduced to form id and field names; a rejected code shows the same form again.",
+  "observations": {
+    "setup/page": {
+      "status": 200,
+      "form": "kc-totp-settings-form",
+      "fields": [
+        "logout-sessions",
+        "totp",
+        "totpSecret",
+        "userLabel"
+      ]
+    },
+    "setup/secret": {
+      "length": 20,
+      "alphanumeric": true
+    },
+    "setup/wrong-code": {
+      "status": 200,
+      "form": "kc-totp-settings-form",
+      "fields": [
+        "logout-sessions",
+        "totp",
+        "totpSecret",
+        "userLabel"
+      ]
+    },
+    "setup/missing-code": {
+      "status": 200,
+      "form": "kc-totp-settings-form",
+      "fields": [
+        "logout-sessions",
+        "totp",
+        "totpSecret",
+        "userLabel"
+      ]
+    },
+    "setup/correct-code": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ]
+    },
+    "admin/credentials": {
+      "types": [
+        "otp",
+        "password"
+      ],
+      "otp_fields": [
+        "createdDate",
+        "credentialData",
+        "id",
+        "type",
+        "userLabel"
+      ],
+      "otp_label": "phone"
+    },
+    "admin/user-after-setup": {
+      "totp": true,
+      "requiredActions": []
+    },
+    "login/otp-page": {
+      "status": 200,
+      "form": "kc-otp-login-form",
+      "fields": [
+        "otp",
+        "selectedCredentialId"
+      ]
+    },
+    "login/wrong-code": {
+      "status": 200,
+      "form": "kc-otp-login-form",
+      "fields": [
+        "otp",
+        "selectedCredentialId"
+      ]
+    },
+    "login/correct-code": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ]
+    },
+    "login/reused-code": {
+      "status": 200,
+      "form": "kc-otp-login-form",
+      "fields": [
+        "otp",
+        "selectedCredentialId"
+      ]
+    },
+    "admin/delete-otp": {
+      "status": 204
+    },
+    "login/after-delete": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ]
+    }
+  }
+}

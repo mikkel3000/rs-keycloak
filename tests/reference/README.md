@@ -82,3 +82,12 @@ seconds. The baseline passed two comparing runs.
 and the admin consent list and revocation, after which the screen returns.
 Pages are reduced to their kind and submit button names. The baseline passed a
 second, comparing run.
+
+`otp.py` records 13 TOTP cases in `otp-observations.json`: `CONFIGURE_TOTP`
+setup with wrong, missing and correct codes, the admin credential list and
+user flags afterwards, OTP login with wrong, correct and reused codes, and
+login after the admin deletes the OTP credential. The probe computes codes
+with Keycloak's defaults (HMAC-SHA1 over the secret string's bytes, 6 digits,
+30-second steps) and waits for a fresh step before the login cases, so a run
+takes about a minute of setup. Secrets and codes are never retained. The
+baseline passed a second, comparing run.
