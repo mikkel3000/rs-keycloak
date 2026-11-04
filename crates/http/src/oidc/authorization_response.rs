@@ -16,13 +16,37 @@ fn escape(value: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Sends an authorization code with the session it belongs to.
 pub(super) fn build(
     redirect: AuthorizationRedirect,
     code: &str,
+    session_state: &str,
     issuer: &str,
 ) -> Result<Response, ()> {
+    respond(
+        &redirect,
+        vec![
+            ("code", code),
+            ("session_state", session_state),
+            ("iss", issuer),
+        ],
+    )
+}
+
+/// Sends an OAuth error, such as `login_required`, to a validated redirect.
+pub(super) fn error(
+    redirect: AuthorizationRedirect,
+    error: &str,
+    issuer: &str,
+) -> Result<Response, ()> {
+    respond(&redirect, vec![("error", error), ("iss", issuer)])
+}
+
+fn respond<'a>(
+    redirect: &'a AuthorizationRedirect,
+    mut pairs: Vec<(&'a str, &'a str)>,
+) -> Result<Response, ()> {
     let mut url = Url::parse(&redirect.redirect_uri).map_err(|_| ())?;
-    let mut pairs = vec![("code", code), ("iss", issuer)];
     if let Some(state) = &redirect.state {
         pairs.push(("state", state));
     }

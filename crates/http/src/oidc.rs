@@ -180,7 +180,47 @@ struct AuthorizationQuery {
     code_challenge_method: String,
     state: Option<String>,
     nonce: Option<String>,
+    prompt: Option<String>,
+    max_age: Option<String>,
 }
+
+/// Reads one cookie value from the request.
+fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(';'))
+        .map(str::trim)
+        .find_map(|part| part.strip_prefix(name)?.strip_prefix('='))
+}
+
+/// The SSO session cookies, set after login and cleared at logout.
+fn sso_cookies(path_prefix: &str, realm: &str, identity: Option<(&str, &str)>) -> [String; 2] {
+    let path = format!("{path_prefix}/realms/{realm}/");
+    match identity {
+        Some((token, session_id)) => [
+            format!("KEYCLOAK_IDENTITY={token}; Path={path}; Secure; HttpOnly; SameSite=None"),
+            format!(
+                "KEYCLOAK_SESSION={session_id}; Path={path}; Max-Age={SSO_SESSION_SECONDS}; Secure; SameSite=None"
+            ),
+        ],
+        None => [
+            // Clearing needs only the path, as the reference sends it.
+            format!("KEYCLOAK_IDENTITY=; Path={path}; Max-Age=0"),
+            format!("KEYCLOAK_SESSION=; Path={path}; Max-Age=0"),
+        ],
+    }
+}
+
+/// The reference re-authenticates only once `auth_time + max_age` is in the
+/// past, comparing whole seconds.
+fn reauthentication_required(auth_time: i64, max_age: i64, now: i64) -> bool {
+    auth_time.saturating_add(max_age) < now
+}
+
+/// Lifetime of the SSO session cookie, matching the stored session lifetime.
+const SSO_SESSION_SECONDS: u32 = 1800;
 
 pub(crate) fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
@@ -216,7 +256,16 @@ async fn authorize(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(q): Query<AuthorizationQuery>,
+    headers: HeaderMap,
 ) -> Response {
+    let prompts: Vec<&str> = q.prompt.as_deref().unwrap_or_default().split(' ').collect();
+    let max_age = match q.max_age.as_deref().filter(|value| !value.is_empty()) {
+        None => None,
+        Some(value) => match value.parse::<i64>() {
+            Ok(seconds) if seconds >= 0 => Some(seconds),
+            _ => return failure(),
+        },
+    };
     if !valid_realm(&realm)
         || q.response_type != "code"
         || q.code_challenge_method != "S256"
@@ -264,6 +313,56 @@ async fn authorize(
         Ok(true) => (),
         Ok(false) => return failure(),
         Err(_) => return unavailable(),
+    }
+    let redirect = rs_keycloak_storage_postgres::AuthorizationRedirect {
+        response_mode: response_mode.to_owned(),
+        redirect_uri: q.redirect_uri.clone(),
+        state: q.state.clone(),
+    };
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    if !prompts.contains(&"login") {
+        let session = match cookie(&headers, "KEYCLOAK_IDENTITY") {
+            Some(token) => match s.storage.sso_session(&realm_id, &digest(token)).await {
+                Ok(session) => session,
+                Err(_) => return unavailable(),
+            },
+            None => None,
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |now| now.as_secs() as i64);
+        let session = session.filter(|session| {
+            !max_age
+                .is_some_and(|seconds| reauthentication_required(session.auth_time, seconds, now))
+        });
+        if let Some(session) = session {
+            return match sso_code(
+                &s,
+                &realm_id,
+                &q.client_id,
+                &request_id,
+                &csrf,
+                &session.session_id,
+            )
+            .await
+            {
+                Ok(Some(code)) => match authorization_response::build(
+                    code.0,
+                    &code.1,
+                    &session.session_id,
+                    &issuer,
+                ) {
+                    Ok(response) => response,
+                    Err(()) => unavailable(),
+                },
+                Ok(None) => failure(),
+                Err(()) => unavailable(),
+            };
+        }
+        if prompts.contains(&"none") {
+            return authorization_response::error(redirect, "login_required", &issuer)
+                .unwrap_or_else(|()| unavailable());
+        }
     }
     let path_prefix = s.path_prefix.replace('&', "&amp;");
     let html = format!(
@@ -376,18 +475,62 @@ async fn authenticate(
         Err(_) => return unavailable(),
     };
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    let mut response = match authorization_response::build(redirect, &code, &issuer) {
+    let sso_token = random_token();
+    match s
+        .storage
+        .set_sso_token(&realm_id, &session_id, &digest(&sso_token))
+        .await
+    {
+        Ok(true) => (),
+        Ok(false) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let mut response = match authorization_response::build(redirect, &code, &session_id, &issuer) {
         Ok(response) => response,
         Err(_) => return unavailable(),
     };
+    for value in sso_cookies(&s.path_prefix, &realm, Some((&sso_token, &session_id))) {
+        match HeaderValue::from_str(&value) {
+            Ok(value) => {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+            Err(_) => return unavailable(),
+        }
+    }
     let path_prefix = &s.path_prefix;
     let clear_cookie = format!(
         "rs_auth=; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
     );
     if let Ok(value) = HeaderValue::from_str(&clear_cookie) {
-        response.headers_mut().insert(header::SET_COOKIE, value);
+        response.headers_mut().append(header::SET_COOKIE, value);
     }
     response
+}
+
+/// Issues a code from an existing SSO session for a new authorization request.
+async fn sso_code(
+    s: &OidcState,
+    realm_id: &str,
+    client_id: &str,
+    request_id: &str,
+    csrf: &str,
+    session_id: &str,
+) -> Result<Option<(rs_keycloak_storage_postgres::AuthorizationRedirect, String)>, ()> {
+    let joined = s
+        .storage
+        .join_client_session(realm_id, session_id, client_id, &Uuid::new_v4().to_string())
+        .await
+        .map_err(|_| ())?;
+    if !joined {
+        return Ok(None);
+    }
+    let code = random_token();
+    let redirect = s
+        .storage
+        .issue_authorization_code(request_id, &digest(csrf), session_id, &digest(&code), 60)
+        .await
+        .map_err(|_| ())?;
+    Ok(redirect.map(|redirect| (redirect, code)))
 }
 
 /// Grants that redeem or extend a stored user session.
@@ -959,4 +1102,18 @@ async fn verified_refresh(
         return Ok(None);
     }
     Ok(Some(claims))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::reauthentication_required;
+
+    #[test]
+    fn max_age_counts_whole_seconds_like_the_reference() {
+        assert!(!reauthentication_required(100, 0, 100));
+        assert!(reauthentication_required(100, 0, 101));
+        assert!(!reauthentication_required(100, 60, 160));
+        assert!(reauthentication_required(100, 60, 161));
+        assert!(!reauthentication_required(i64::MAX, 1, 0));
+    }
 }

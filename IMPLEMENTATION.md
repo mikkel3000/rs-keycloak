@@ -310,3 +310,25 @@ notifications to other clients are not implemented. A refresh token whose
 session has ended (logout, revocation) now gets the recorded "Session not
 active" description; replayed and unknown refresh tokens keep a bare
 `invalid_grant` until their reference responses are recorded.
+
+## Browser SSO
+
+A successful password login sets `KEYCLOAK_IDENTITY` (HttpOnly, a random
+token whose SHA-256 digest is stored on the user session) and
+`KEYCLOAK_SESSION` (the session ID, readable by scripts, with the session's
+lifetime), both Secure, SameSite=None and scoped to `{prefix}/realms/{realm}/`,
+as in the 10 recorded cases of `tests/reference/sso-observations.json`. An
+authorization request with a live session issues a code without the form, for
+the same or another client, which joins the session; code callbacks now carry
+`session_state`. `prompt=none` without a session redirects with
+`login_required`; `prompt=login` and an elapsed `max_age` show the form.
+Logout with `id_token_hint` clears both cookies with the reference's bare
+clearing form. `tests/public/sso_contract.py` checks 4 groups of cases; the
+slowest takes 217 ms. The `max_age=0` case needs a one-second wait, so its
+whole-second rule is unit-tested instead.
+
+Remaining differences: Keycloak's per-login cookies (`AUTH_SESSION_ID`,
+`KC_RESTART`, `KC_AUTH_SESSION_HASH`) are not reproduced, since this server
+keeps login state in its own CSRF cookie; other `prompt` values
+(`consent`, `select_account`) are ignored; the session iframe and
+`check_session_iframe` are not implemented.

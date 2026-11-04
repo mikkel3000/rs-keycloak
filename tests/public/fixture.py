@@ -112,6 +112,12 @@ class ServerCase(unittest.TestCase):
 
     @classmethod
     def request(cls, method, path, headers=None, form=None, body=None):
+        status, pairs, data = cls.request_all(method, path, headers, form, body)
+        return status, {k.lower(): v for k, v in pairs}, data
+
+    @classmethod
+    def request_all(cls, method, path, headers=None, form=None, body=None):
+        """Like `request`, but keeps every header, including repeated Set-Cookie."""
         headers = dict(headers or {})
         if form is not None:
             body = urllib.parse.urlencode(form)
@@ -120,7 +126,7 @@ class ServerCase(unittest.TestCase):
         try:
             connection.request(method, path, body, headers)
             response = connection.getresponse()
-            return response.status, {k.lower(): v for k, v in response.getheaders()}, response.read()
+            return response.status, response.getheaders(), response.read()
         finally:
             connection.close()
 

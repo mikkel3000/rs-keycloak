@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::Json;
 use axum::extract::rejection::FormRejection;
 use axum::extract::{Form, Path, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use rs_keycloak_crypto::signing::VerifiedIdToken;
 use rs_keycloak_storage_postgres::RefreshLogout;
@@ -20,7 +20,9 @@ use zeroize::Zeroizing;
 
 use crate::client_auth::{self, ClientAuthResult, InvalidClientAuthentication};
 
-use super::{OidcState, digest, invalid_client, unavailable, valid_realm, verified_refresh};
+use super::{
+    OidcState, digest, invalid_client, sso_cookies, unavailable, valid_realm, verified_refresh,
+};
 
 fn page(status: StatusCode, message: &'static str) -> Response {
     (
@@ -242,7 +244,7 @@ async fn browser(state: OidcState, realm: String, params: BTreeMap<String, Strin
     {
         return unavailable();
     }
-    match redirect {
+    let mut response = match redirect {
         Some(mut url) => {
             if let Some(value) = params.get("state") {
                 url.query_pairs_mut().append_pair("state", value);
@@ -258,5 +260,13 @@ async fn browser(state: OidcState, realm: String, params: BTreeMap<String, Strin
         }
         None if hint.is_some() => page(StatusCode::OK, "You are logged out."),
         None => page(StatusCode::OK, "You have no active session to log out."),
+    };
+    if hint.is_some() {
+        for value in sso_cookies(&state.path_prefix, &realm, None) {
+            if let Ok(value) = HeaderValue::from_str(&value) {
+                response.headers_mut().append(header::SET_COOKIE, value);
+            }
+        }
     }
+    response
 }
