@@ -91,3 +91,12 @@ with Keycloak's defaults (HMAC-SHA1 over the secret string's bytes, 6 digits,
 30-second steps) and waits for a fresh step before the login cases, so a run
 takes about a minute of setup. Secrets and codes are never retained. The
 baseline passed a second, comparing run.
+
+`update_password.py` records 9 cases in `update-password-observations.json`:
+an admin temporary password adds `UPDATE_PASSWORD`, login then shows
+`kc-passwd-update-form`, mismatched and empty passwords show it again, success
+continues to the code and clears the action, and only the new password signs
+in. The reference also accepts the temporary password itself as the new one
+under its default policy, so that case is not part of the baseline. A wrong
+password shows the login form again with status 200. The baseline passed a
+second, comparing run.
