@@ -196,6 +196,7 @@ pub fn router(state: OidcState) -> Router {
                 .layer(axum::middleware::from_fn(cors::metadata)),
         )
         .merge(crate::admin::routes())
+        .merge(crate::account::routes())
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(state);
     if prefix.is_empty() {

@@ -73,3 +73,31 @@ pub(crate) async fn send_verification(
     )
     .await
 }
+
+/// A plausible email address: one `@`, non-empty parts, a dotted domain.
+pub(crate) fn valid_email(email: &str) -> bool {
+    email.split_once('@').is_some_and(|(local, domain)| {
+        !local.is_empty()
+            && domain.contains('.')
+            && !domain.starts_with('.')
+            && !domain.ends_with('.')
+            && !domain.contains('@')
+            && email.len() <= 255
+            && !email.chars().any(|c| c.is_whitespace() || c.is_control())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_email;
+
+    #[test]
+    fn email_needs_one_at_and_a_dotted_domain() {
+        assert!(valid_email("changed@example.invalid"));
+        assert!(!valid_email("not-an-email"));
+        assert!(!valid_email("@example.invalid"));
+        assert!(!valid_email("a@localhost"));
+        assert!(!valid_email("a@b@example.invalid"));
+        assert!(!valid_email("a b@example.invalid"));
+    }
+}

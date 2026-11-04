@@ -480,3 +480,24 @@ its slowest case now takes 383 ms.
 Remaining differences: the user profile is fixed to email, first and last
 name; configurable profile attributes, `editUsernameAllowed` and
 `registrationEmailAsUsername` are not implemented.
+
+## Account REST API
+
+`/realms/{realm}/account` serves a user's own profile (read and update),
+credential list and sessions (list and end), following the 10 recorded cases
+in `tests/reference/account-api-observations.json`. Any access token of the
+realm from a live user session works, as in the reference, if the user holds
+the realm's default role, which is how Keycloak's account roles reach users.
+Profile updates share the login-step rules: email uniqueness, lowercase
+storage, loss of verification on change, and `VERIFY_EMAIL` where the realm
+requires it. Errors use the reference's 409 `emailExistsMessage` and 400
+`error-user-attribute-required` bodies, and the username is read-only.
+`tests/public/account_api_contract.py` checks 2 groups, the slowest in
+337 ms. Email validation is shared with the login pages through the `mail`
+module.
+
+Remaining differences: realms have no built-in `account-console` client or
+account client roles, so access follows the default role instead; sessions
+report no IP address, browser or separate last-access time; linked accounts,
+applications, consents and credential removal through the account API, and
+the account console web interface itself, are not implemented.

@@ -1,5 +1,6 @@
 //! PostgreSQL schema management and guarded application transactions.
 
+mod account;
 mod action_tokens;
 mod client_admin;
 mod consent;
@@ -13,6 +14,7 @@ mod service_account;
 mod sso;
 mod user_admin;
 
+pub use account::AccountSession;
 pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use consent::{ConsentRecord, PendingRequest};

@@ -102,6 +102,28 @@ async fn complete_action(
     Ok(())
 }
 
+/// Saves name and email, returning false if another user has the email. A
+/// changed email loses its verified flag and, where the realm verifies
+/// email, adds VERIFY_EMAIL. `complete_action` also clears UPDATE_PROFILE.
+pub(crate) async fn save_profile(
+    connection: &mut PgConnection,
+    realm_id: &str,
+    user_id: &str,
+    profile: &Profile,
+    complete_action: bool,
+) -> Result<bool, StorageError> {
+    let email = profile.email.as_deref().map(str::to_lowercase);
+    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3)")
+        .bind(realm_id).bind(user_id).bind(&email).fetch_one(&mut *connection).await?;
+    if taken {
+        return Ok(false);
+    }
+    sqlx::query("UPDATE users u SET first_name = $3, last_name = $4, email_verified = u.email_verified AND u.email_normalized IS NOT DISTINCT FROM $5, required_actions = array_remove(CASE WHEN r.verify_email AND u.email_normalized IS DISTINCT FROM $5 AND $5 IS NOT NULL AND NOT ('VERIFY_EMAIL' = ANY(u.required_actions)) THEN array_append(u.required_actions, 'VERIFY_EMAIL') ELSE u.required_actions END, CASE WHEN $6 THEN 'UPDATE_PROFILE' END), email = $5, email_normalized = $5 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
+        .bind(realm_id).bind(user_id).bind(&profile.first_name).bind(&profile.last_name).bind(&email).bind(complete_action)
+        .execute(connection).await?;
+    Ok(true)
+}
+
 /// Locks a pending session and returns its user.
 async fn pending_user(
     connection: &mut PgConnection,
@@ -329,16 +351,10 @@ impl Storage {
             tx.commit().await?;
             return Ok(ProfileUpdate::NotPending);
         };
-        let email = profile.email.as_deref().map(str::to_lowercase);
-        let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3)")
-            .bind(realm_id).bind(&user).bind(&email).fetch_one(&mut *conn).await?;
-        if taken {
+        if !save_profile(conn, realm_id, &user, profile, true).await? {
             tx.commit().await?;
             return Ok(ProfileUpdate::EmailTaken);
         }
-        sqlx::query("UPDATE users u SET first_name = $3, last_name = $4, email_verified = u.email_verified AND u.email_normalized IS NOT DISTINCT FROM $5, required_actions = CASE WHEN r.verify_email AND u.email_normalized IS DISTINCT FROM $5 AND $5 IS NOT NULL AND NOT ('VERIFY_EMAIL' = ANY(u.required_actions)) THEN array_append(array_remove(u.required_actions, 'UPDATE_PROFILE'), 'VERIFY_EMAIL') ELSE array_remove(u.required_actions, 'UPDATE_PROFILE') END, email = $5, email_normalized = $5 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
-            .bind(realm_id).bind(&user).bind(&profile.first_name).bind(&profile.last_name).bind(&email)
-            .execute(&mut *conn).await?;
         settle_session(conn, realm_id, session_id).await?;
         tx.commit().await?;
         Ok(ProfileUpdate::Updated)

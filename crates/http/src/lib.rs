@@ -17,6 +17,7 @@ pub fn management_router() -> Router {
 
 pub mod oidc;
 
+mod account;
 mod admin;
 mod mail;
 

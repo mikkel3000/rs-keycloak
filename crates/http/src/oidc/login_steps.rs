@@ -613,22 +613,6 @@ pub(super) struct ProfileForm {
     last_name: String,
 }
 
-/// A plausible email address: one `@`, non-empty parts, a dotted domain.
-fn valid_email(email: &str) -> bool {
-    match email.split_once('@') {
-        Some((local, domain)) => {
-            !local.is_empty()
-                && domain.contains('.')
-                && !domain.starts_with('.')
-                && !domain.ends_with('.')
-                && !domain.contains('@')
-                && email.len() <= 255
-                && !email.chars().any(|c| c.is_whitespace() || c.is_control())
-        }
-        None => false,
-    }
-}
-
 /// Saves the profile of a user with UPDATE_PROFILE.
 pub(super) async fn update_profile(
     State(s): State<OidcState>,
@@ -657,7 +641,7 @@ pub(super) async fn update_profile(
     if profile
         .email
         .as_deref()
-        .is_none_or(|email| !valid_email(email))
+        .is_none_or(|email| !crate::mail::valid_email(email))
     {
         errors.push(("email", "Invalid email address."));
     }
@@ -696,20 +680,5 @@ pub(super) async fn update_profile(
         ),
         Ok(ProfileUpdate::NotPending) => failure(),
         Err(_) => unavailable(),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::valid_email;
-
-    #[test]
-    fn email_needs_one_at_and_a_dotted_domain() {
-        assert!(valid_email("changed@example.invalid"));
-        assert!(!valid_email("not-an-email"));
-        assert!(!valid_email("@example.invalid"));
-        assert!(!valid_email("a@localhost"));
-        assert!(!valid_email("a@b@example.invalid"));
-        assert!(!valid_email("a b@example.invalid"));
     }
 }
