@@ -1,5 +1,7 @@
 //! PostgreSQL schema management and guarded application transactions.
 
+mod cors;
+
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
@@ -20,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0007_client_auth.sql"),
     include_str!("../../../migrations/0008_token_revocation.sql"),
     include_str!("../../../migrations/0009_response_mode.sql"),
+    include_str!("../../../migrations/0010_client_web_origins.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
