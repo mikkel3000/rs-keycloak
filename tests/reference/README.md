@@ -46,3 +46,10 @@ and regeneration, the service-account user and delete. Secrets are reduced to
 presence. Every new realm lists six built-in clients (`account`,
 `account-console`, `admin-cli`, `broker`, `realm-management`,
 `security-admin-console`). The baseline passed a second, comparing run.
+
+`admin_roles.py` records 21 realm role cases in `admin-role-observations.json`:
+the default roles of a new realm, create, duplicate, unnamed and malformed
+requests, read, list, user realm role mappings (add, repeat, unknown, remove)
+and the users holding a role. Every new realm has `default-roles-{realm}`,
+`offline_access` and `uma_authorization`, and new users hold the default
+role. The baseline passed a second, comparing run.

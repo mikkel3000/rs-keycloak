@@ -1,0 +1,245 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Realm role create, read, list and delete, and user realm role mappings, through the admin API; names and selected fields only.",
+  "normalization": "The random realm name and base URL are replaced with {realm} and {base}.",
+  "observations": {
+    "list/defaults": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "default-roles-{realm}",
+        "offline_access",
+        "uma_authorization"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "create/success": {
+      "status": 201,
+      "location": "{base}/admin/realms/{realm}/roles/reader",
+      "empty_body": true
+    },
+    "create/second": {
+      "status": 201,
+      "location": "{base}/admin/realms/{realm}/roles/writer",
+      "empty_body": true
+    },
+    "create/duplicate": {
+      "status": 409,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Role with name reader already exists"
+      }
+    },
+    "create/missing-name": {
+      "status": 400,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "role has no name"
+      }
+    },
+    "create/malformed-json": {
+      "status": 400,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Cannot parse the JSON"
+      }
+    },
+    "create/no-token": {
+      "status": 401,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "HTTP 401 Unauthorized"
+      }
+    },
+    "get/success": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "attributes",
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ],
+      "body": {
+        "name": "reader",
+        "description": "Reads things",
+        "composite": false,
+        "clientRole": false
+      }
+    },
+    "get/unknown": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find role"
+      }
+    },
+    "list/after-create": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "default-roles-{realm}",
+        "offline_access",
+        "reader",
+        "uma_authorization",
+        "writer"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "mappings/initial": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "default-roles-{realm}"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "mappings/add": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "mappings/add-repeat": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "mappings/add-unknown": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Role not found"
+      }
+    },
+    "mappings/after-add": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "default-roles-{realm}",
+        "reader"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "role-users": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "role-user"
+      ],
+      "item_fields": [
+        "access",
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "emailVerified",
+        "enabled",
+        "id",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ]
+    },
+    "mappings/remove": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "mappings/after-remove": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "default-roles-{realm}"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "delete/success": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "delete/repeat": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find role"
+      }
+    }
+  }
+}
