@@ -1,0 +1,92 @@
+//! Ending user sessions at OIDC logout.
+
+use sqlx::PgConnection;
+
+use crate::{Storage, StorageError, authenticated_client};
+
+/// Outcome of a refresh-token logout.
+pub enum RefreshLogout {
+    /// The token's session is ended (now or by an earlier logout).
+    Ended,
+    /// No refresh token with this ID was issued to the client.
+    UnknownToken,
+}
+
+/// Revokes a user session and every refresh family bound to it.
+async fn end_session(
+    connection: &mut PgConnection,
+    realm_id: &str,
+    session_id: &str,
+) -> Result<(), StorageError> {
+    sqlx::query("UPDATE refresh_families SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE realm_id = $1 AND user_session_id = $2")
+        .bind(realm_id).bind(session_id).execute(&mut *connection).await?;
+    sqlx::query("UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE realm_id = $1 AND id = $2")
+        .bind(realm_id).bind(session_id).execute(&mut *connection).await?;
+    Ok(())
+}
+
+impl Storage {
+    /// Ends the session of a refresh token issued to an authenticated client.
+    /// Repeating the logout with the same token is harmless.
+    pub async fn logout_with_refresh_token(
+        &self,
+        realm_id: &str,
+        client_identifier: &str,
+        client_revision: Option<i64>,
+        token_hash: &[u8],
+    ) -> Result<RefreshLogout, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let client = authenticated_client(
+            tx.connection(),
+            realm_id,
+            client_identifier,
+            client_revision,
+        )
+        .await?;
+        let conn = tx.connection();
+        let session: Option<String> = sqlx::query_scalar("SELECT f.user_session_id FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND f.client_id = $3")
+            .bind(token_hash).bind(realm_id).bind(&client).fetch_optional(&mut *conn).await?;
+        let result = match session {
+            Some(session) => {
+                end_session(conn, realm_id, &session).await?;
+                RefreshLogout::Ended
+            }
+            None => RefreshLogout::UnknownToken,
+        };
+        tx.commit().await?;
+        Ok(result)
+    }
+
+    /// Ends a user's session named by a verified ID token hint.
+    pub async fn logout_session(
+        &self,
+        realm_id: &str,
+        session_id: &str,
+        user_id: &str,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let owned: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM user_sessions WHERE realm_id = $1 AND id = $2 AND user_id = $3 FOR UPDATE)")
+            .bind(realm_id).bind(session_id).bind(user_id).fetch_one(&mut *conn).await?;
+        if owned {
+            end_session(conn, realm_id, session_id).await?;
+        }
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Reports whether a client registered this exact post-logout redirect URI,
+    /// directly or through its redirect URIs when it uses Keycloak's "+".
+    pub async fn post_logout_redirect_allowed(
+        &self,
+        realm_id: &str,
+        client_identifier: &str,
+        uri: &str,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let allowed = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND (EXISTS (SELECT 1 FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id AND p.redirect_uri = $3) OR (c.post_logout_uses_redirect_uris AND EXISTS (SELECT 1 FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id AND d.redirect_uri = $3))))")
+            .bind(realm_id).bind(client_identifier).bind(uri).fetch_one(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(allowed)
+    }
+}

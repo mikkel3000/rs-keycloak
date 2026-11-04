@@ -285,3 +285,26 @@ Remaining differences: representations omit the `access` map; group
 attributes, group role mappings, moving groups and search parameters are
 refused or missing; group membership is not yet used in tokens or
 authorization.
+
+## Logout
+
+`/realms/{realm}/protocol/openid-connect/logout` follows the 16 recorded cases
+in `tests/reference/logout-observations.json`. A POST with a refresh token from
+the owning client ends the token's session and all its refresh families, and
+answers 204; repeating it is harmless, another client's token is
+`invalid_grant`, and a POST without a refresh token is a browser logout. GET
+logout verifies `id_token_hint` (signature and issuer, ignoring expiry), ends
+its session, and redirects only to a post-logout URI registered with the
+client's `post.logout.redirect.uris` attribute (`+` accepts the client's
+redirect URIs), adding just `state`; otherwise it answers with an HTML page.
+After logout, refresh is `invalid_grant` and userinfo is
+"user_session_not_found", as recorded. ID tokens now carry `sid`, and
+discovery lists `end_session_endpoint`. `tests/public/logout_contract.py`
+checks 3 groups of cases; the slowest takes 227 ms. The fixture now provides
+an `AdminCase` base class and a shared browser login.
+
+Remaining differences: there is no SSO cookie yet, so browser logout without
+`id_token_hint` has no session to end and shows a plain page instead of
+Keycloak's confirmation form; front-channel and back-channel logout
+notifications to other clients are not implemented; refresh-token error
+descriptions for ended sessions are not yet sent.

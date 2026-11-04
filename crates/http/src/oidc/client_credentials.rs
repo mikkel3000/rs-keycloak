@@ -139,6 +139,7 @@ pub(super) async fn grant(
                 exp: now + TOKEN_LIFETIME_SECONDS,
                 auth_time: None,
                 nonce: None,
+                sid: None,
             })?)
         } else {
             None

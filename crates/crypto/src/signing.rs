@@ -87,6 +87,25 @@ pub struct IdTokenClaims<'a> {
     /// Client-provided OIDC nonce.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<&'a str>,
+    /// Session identifier, used as `id_token_hint` at logout.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<&'a str>,
+}
+
+/// Verified ID token claims used to resolve a logout request.
+#[derive(Deserialize)]
+pub struct VerifiedIdToken {
+    #[serde(rename = "typ")]
+    token_type: String,
+    /// Issuer URL.
+    pub iss: String,
+    /// User subject.
+    pub sub: String,
+    /// Client audience.
+    pub aud: String,
+    /// Session ID, absent from service-account ID tokens.
+    #[serde(default)]
+    pub sid: Option<String>,
 }
 
 /// Verified token claims; callers must check issuer, audience, time and session state.
@@ -155,6 +174,16 @@ impl SigningKey {
     pub fn verify_refresh_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
         let claims: VerifiedToken = self.verify_token(token)?;
         if claims.token_type != "Refresh" {
+            return Err(SigningError);
+        }
+        Ok(claims)
+    }
+
+    /// Verifies an ID token's signature and type. Expiry is not checked,
+    /// because an expired ID token is still a valid logout hint.
+    pub fn verify_id_token(&self, token: &str) -> Result<VerifiedIdToken, SigningError> {
+        let claims: VerifiedIdToken = self.verify_token(token)?;
+        if claims.token_type != "ID" {
             return Err(SigningError);
         }
         Ok(claims)

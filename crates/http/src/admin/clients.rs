@@ -88,6 +88,40 @@ fn require_value(
     }
 }
 
+/// Reads the supported client attributes: PKCE, which is always S256, and
+/// post-logout redirect URIs as a `##`-separated list, where `+` stands for
+/// the client's redirect URIs.
+fn client_attributes(attributes: Option<&Value>) -> Result<(Vec<String>, bool), AdminError> {
+    let attributes = match attributes {
+        None | Some(Value::Null) => return Ok((Vec::new(), false)),
+        Some(Value::Object(attributes)) => attributes,
+        Some(_) => return Err(unparsable()),
+    };
+    let mut uris = Vec::new();
+    let mut uses_redirects = false;
+    for (key, value) in attributes {
+        match (key.as_str(), value) {
+            ("pkce.code.challenge.method", Value::String(method)) if method == "S256" => (),
+            ("post.logout.redirect.uris", Value::String(list)) => {
+                for uri in list.split("##").filter(|uri| !uri.is_empty()) {
+                    if uri == "+" {
+                        uses_redirects = true;
+                    } else {
+                        validate_redirect_uri(uri, false).map_err(AdminError::bad_request)?;
+                        uris.push(uri.to_owned());
+                    }
+                }
+            }
+            _ => {
+                return Err(AdminError::bad_request(format!(
+                    "Unsupported client attribute: {key}"
+                )));
+            }
+        }
+    }
+    Ok((uris, uses_redirects))
+}
+
 /// Seals a secret for one client row with the operator key.
 fn seal(
     state: &OidcState,
@@ -193,19 +227,8 @@ async fn create_client(
     ] {
         require_value(&fields, excluded, &json!(false))?;
     }
-    // PKCE S256 is always required, so only that attribute value is accepted.
-    match fields.get("attributes") {
-        None | Some(Value::Null) => (),
-        Some(Value::Object(attributes))
-            if attributes
-                .iter()
-                .all(|(key, value)| key == "pkce.code.challenge.method" && value == "S256") => {}
-        Some(_) => {
-            return Err(AdminError::bad_request(
-                "Unsupported client setting: attributes",
-            ));
-        }
-    }
+    let (post_logout_redirect_uris, post_logout_uses_redirect_uris) =
+        client_attributes(fields.get("attributes"))?;
     let id = Uuid::new_v4().to_string();
     // The reference generates a client identifier when none is given.
     let client_identifier = match fields.get("clientId") {
@@ -256,6 +279,8 @@ async fn create_client(
         service_accounts,
         redirect_uris: &redirect_uris,
         web_origins: &web_origins,
+        post_logout_redirect_uris: &post_logout_redirect_uris,
+        post_logout_uses_redirect_uris,
     };
     let created = state
         .storage

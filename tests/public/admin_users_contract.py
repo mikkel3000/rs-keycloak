@@ -4,14 +4,10 @@ Expected cases come from tests/reference/admin-user-observations.json. The user
 representation omits Keycloak's `access` map until admin permissions exist.
 """
 
-import base64
-import hashlib
 import json
 import pathlib
-import re
 import secrets
 import unittest
-import urllib.parse
 
 from fixture import ENDPOINT, ISSUER_BASE, ServerCase, cli
 
@@ -117,28 +113,12 @@ class AdminUsersContract(ServerCase):
         self.assert_case(self.call("PUT", reset, {"type": "password", "value": ""}), "password/empty")
         self.assert_case(self.call("PUT", reset, {"type": "password", "value": password, "temporary": False}), "password/success")
         self.assertEqual(cli("client", "add-public", self.realm, "login-app", CALLBACK).returncode, 0)
-        claims = self.login("reference-user", password)
+        claims = self.verify(self.browser_login(self.realm, "login-app", CALLBACK, "reference-user", password)["access_token"])
         self.assertEqual(claims["sub"], user_id)
         self.assertEqual(claims["realm_access"]["roles"], sorted([f"default-roles-{self.realm}", "offline_access", "uma_authorization"]))
         self.assertEqual(REFERENCE["login/after-reset"]["status"], 200)
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/success")
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/repeat")
-
-    def login(self, username, password):
-        """Browser-form login with PKCE in the test realm; returns access claims."""
-        verifier = secrets.token_urlsafe(48)
-        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        query = urllib.parse.urlencode({"client_id": "login-app", "redirect_uri": CALLBACK, "response_type": "code", "scope": "openid", "code_challenge": challenge, "code_challenge_method": "S256", "state": "s"})
-        status, headers, body = self.request("GET", f"/realms/{self.realm}/protocol/openid-connect/auth?{query}")
-        self.assertEqual(status, 200)
-        action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
-        cookie = headers["set-cookie"].split(";", 1)[0]
-        status, headers, _ = self.request("POST", action, {"Cookie": cookie}, {"username": username, "password": password})
-        self.assertIn(status, (302, 303))
-        code = urllib.parse.parse_qs(urllib.parse.urlsplit(headers["location"]).query)["code"][0]
-        status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "authorization_code", "code": code, "client_id": "login-app", "redirect_uri": CALLBACK, "code_verifier": verifier})
-        self.assertEqual(status, 200)
-        return self.verify(json.loads(body)["access_token"])
 
 
 if __name__ == "__main__":

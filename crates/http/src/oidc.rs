@@ -4,6 +4,7 @@ mod authorization_response;
 mod client_credentials;
 mod cors;
 mod introspection;
+mod logout;
 mod revocation;
 
 use std::collections::BTreeMap;
@@ -131,6 +132,10 @@ pub fn router(state: OidcState) -> Router {
                     state.clone(),
                     cors::handle,
                 )),
+        )
+        .route(
+            "/realms/{realm}/protocol/openid-connect/logout",
+            get(logout::get).post(logout::post),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/certs",
@@ -700,6 +705,7 @@ async fn token(
             exp: now + 300,
             auth_time: Some(grant.auth_time),
             nonce: grant.nonce.as_deref(),
+            sid: Some(&grant.session_id),
         };
         let refresh_claims = TokenClaims {
             iss: &issuer,
@@ -757,7 +763,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         header::CACHE_CONTROL,
         "no-cache, must-revalidate, no-transform, no-store",
     )];
-    (cache, Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token","client_credentials"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]}))).into_response()
+    (cache, Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"end_session_endpoint":format!("{issuer}/protocol/openid-connect/logout"),"grant_types_supported":["authorization_code","refresh_token","client_credentials"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]}))).into_response()
 }
 
 /// Builds a userinfo 401 with the reference Bearer challenge and empty body.

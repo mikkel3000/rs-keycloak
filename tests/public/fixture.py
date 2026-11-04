@@ -147,3 +147,58 @@ class ServerCase(unittest.TestCase):
         recovered = pow(int.from_bytes(decode(signature), "big"), self.public_exponent, self.modulus)
         self.assertEqual(recovered.to_bytes(width, "big"), expected, "signature mismatch")
         return json.loads(decode(payload))
+
+    def browser_login(self, realm, client, redirect_uri, username, password, scope="openid"):
+        """Signs in through the login form with PKCE; returns the token response."""
+        verifier = secrets.token_urlsafe(48)
+        challenge = b64(hashlib.sha256(verifier.encode()).digest())
+        query = urllib.parse.urlencode({
+            "client_id": client, "redirect_uri": redirect_uri, "response_type": "code",
+            "scope": scope, "code_challenge": challenge, "code_challenge_method": "S256", "state": "s",
+        })
+        status, headers, body = self.request("GET", f"/realms/{realm}/protocol/openid-connect/auth?{query}")
+        self.assertEqual(status, 200, "authorization request")
+        action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
+        cookie = headers["set-cookie"].split(";", 1)[0]
+        status, headers, _ = self.request("POST", action, {"Cookie": cookie}, {"username": username, "password": password})
+        self.assertIn(status, (302, 303), "password login")
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(headers["location"]).query)["code"][0]
+        status, _, body = self.request("POST", f"/realms/{realm}/protocol/openid-connect/token", form={
+            "grant_type": "authorization_code", "code": code, "client_id": client,
+            "redirect_uri": redirect_uri, "code_verifier": verifier,
+        })
+        self.assertEqual(status, 200, "code exchange")
+        return json.loads(body)
+
+
+class AdminCase(ServerCase):
+    """A server with a master admin service account and a fresh realm per test."""
+
+    ADMIN = "contract-admin-" + secrets.token_hex(4)
+    ADMIN_SECRET = secrets.token_urlsafe(40)
+
+    @classmethod
+    def provision(cls):
+        callback = "https://app.example.test/cb"
+        assert cli("client", "add-confidential", "master", cls.ADMIN, callback, stdin=cls.ADMIN_SECRET + "\n").returncode == 0
+        assert cli("client", "enable-service-account", "master", cls.ADMIN).returncode == 0
+        assert cli("client", "grant-master-admin", cls.ADMIN).returncode == 0
+
+    def setUp(self):
+        status, _, body = self.request("POST", ENDPOINT + "/token", form={
+            "grant_type": "client_credentials", "client_id": self.ADMIN, "client_secret": self.ADMIN_SECRET,
+        })
+        self.assertEqual(status, 200, "admin token")
+        self.token = json.loads(body)["access_token"]
+        self.realm = "contract-" + secrets.token_hex(6)
+        self.assertEqual(self.call("POST", "/admin/realms", {"realm": self.realm, "enabled": True})[0], 201)
+
+    def tearDown(self):
+        self.call("DELETE", "/admin/realms/" + self.realm)
+
+    def call(self, method, path, payload=None, raw=None, token=True):
+        headers = {"Authorization": "Bearer " + self.token} if token else {}
+        body = raw if raw is not None else (json.dumps(payload) if payload is not None else None)
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        return self.request(method, path, headers, body=body)

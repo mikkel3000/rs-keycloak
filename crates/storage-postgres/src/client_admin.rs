@@ -31,6 +31,10 @@ pub struct NewClient<'a> {
     pub redirect_uris: &'a [String],
     /// Exact web origins.
     pub web_origins: &'a [String],
+    /// Exact post-logout redirect URIs.
+    pub post_logout_redirect_uris: &'a [String],
+    /// Whether every redirect URI is also a post-logout redirect URI.
+    pub post_logout_uses_redirect_uris: bool,
 }
 
 /// A stored client with the fields of the admin representation.
@@ -117,10 +121,11 @@ impl Storage {
         }
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id, post_logout_uses_redirect_uris) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(id).bind(client.client_identifier).bind(client.enabled).bind(client.public)
             .bind(client.standard_flow).bind(client.service_accounts)
             .bind(secret.map(|secret| secret.sealed.as_slice())).bind(secret.map(|secret| secret.key_id.as_str()))
+            .bind(client.post_logout_uses_redirect_uris)
             .fetch_optional(&mut *conn).await?;
         if created.is_none() {
             tx.commit().await?;
@@ -128,6 +133,10 @@ impl Storage {
         }
         for uri in client.redirect_uris {
             sqlx::query("INSERT INTO client_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+                .bind(realm_id).bind(id).bind(uri).execute(&mut *conn).await?;
+        }
+        for uri in client.post_logout_redirect_uris {
+            sqlx::query("INSERT INTO client_post_logout_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
                 .bind(realm_id).bind(id).bind(uri).execute(&mut *conn).await?;
         }
         for origin in client.web_origins {
