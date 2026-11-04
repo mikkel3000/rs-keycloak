@@ -1,0 +1,149 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Account REST API profile read and update, credentials and sessions with an account-console token, another client token and no token; field names and selected values only.",
+  "normalization": "Bodies are reduced to field names and selected profile values.",
+  "observations": {
+    "token/account-console": {
+      "aud": "account",
+      "resource_access": [
+        "manage-account",
+        "manage-account-links"
+      ]
+    },
+    "profile/no-token": {
+      "status": 401,
+      "www_authenticate": false,
+      "fields": [
+        "error"
+      ],
+      "body": {
+        "error": "HTTP 401 Unauthorized"
+      }
+    },
+    "profile/plain-client-token": {
+      "status": 200,
+      "www_authenticate": false,
+      "fields": [
+        "email",
+        "emailVerified",
+        "firstName",
+        "id",
+        "lastName",
+        "userProfileMetadata",
+        "username"
+      ],
+      "body": {
+        "username": "reference-user",
+        "firstName": "Reference",
+        "lastName": "User",
+        "email": "reference@example.invalid",
+        "emailVerified": true
+      }
+    },
+    "profile/read": {
+      "status": 200,
+      "www_authenticate": false,
+      "fields": [
+        "email",
+        "emailVerified",
+        "firstName",
+        "id",
+        "lastName",
+        "userProfileMetadata",
+        "username"
+      ],
+      "body": {
+        "username": "reference-user",
+        "firstName": "Reference",
+        "lastName": "User",
+        "email": "reference@example.invalid",
+        "emailVerified": true
+      }
+    },
+    "profile/update": {
+      "status": 204,
+      "www_authenticate": false
+    },
+    "profile/after-update": {
+      "status": 200,
+      "www_authenticate": false,
+      "fields": [
+        "email",
+        "emailVerified",
+        "firstName",
+        "id",
+        "lastName",
+        "userProfileMetadata",
+        "username"
+      ],
+      "body": {
+        "username": "reference-user",
+        "firstName": "Changed",
+        "lastName": "Person",
+        "email": "reference@example.invalid",
+        "emailVerified": true
+      }
+    },
+    "profile/update-taken-email": {
+      "status": 409,
+      "www_authenticate": false,
+      "fields": [
+        "errorMessage",
+        "errors",
+        "field",
+        "params"
+      ],
+      "body": {
+        "errorMessage": "emailExistsMessage",
+        "field": "email"
+      }
+    },
+    "profile/update-missing-first-name": {
+      "status": 400,
+      "www_authenticate": false,
+      "fields": [
+        "errorMessage",
+        "errors",
+        "field",
+        "params"
+      ],
+      "body": {
+        "errorMessage": "error-user-attribute-required",
+        "field": "firstName"
+      }
+    },
+    "credentials/list": {
+      "status": 200,
+      "www_authenticate": false,
+      "length": 2,
+      "item_fields": [
+        "category",
+        "createAction",
+        "displayName",
+        "helptext",
+        "iconCssClass",
+        "removeable",
+        "type",
+        "updateAction",
+        "userCredentialMetadatas"
+      ]
+    },
+    "sessions/list": {
+      "status": 200,
+      "www_authenticate": false,
+      "length": 2,
+      "item_fields": [
+        "browser",
+        "clients",
+        "current",
+        "expires",
+        "id",
+        "ipAddress",
+        "lastAccess",
+        "started"
+      ]
+    }
+  }
+}

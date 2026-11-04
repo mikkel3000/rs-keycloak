@@ -134,3 +134,12 @@ field errors for a missing first name and for an invalid or taken email,
 success continuing to the code, and the stored user afterwards, whose email is
 lowercased and no longer verified. The baseline passed a second, comparing
 run.
+
+`account_api.py` records 10 account REST API cases in
+`account-api-observations.json`: the account roles in an `account-console`
+token, 401 without a token, profile read and update with tokens from
+`account-console` and from an ordinary client, the 409 and 400 profile
+validation errors, and the credential and session lists. The reference
+authorizes by the account client roles in the token, which users receive
+through the realm's default roles when they are created through the admin
+API. The baseline passed a second, comparing run.
