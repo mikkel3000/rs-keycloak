@@ -109,3 +109,11 @@ message's headers and its `/login-actions/action-token?key=` link; the info
 page, password form and confirmation page behind the link; reuse of the
 link; and sign-in with the new password. Links, tokens and passwords are not
 retained. The baseline passed a second, comparing run.
+
+`reset_credentials.py` records 12 forgot-password cases in
+`reset-credentials-observations.json`: the login-page link only when
+`resetPasswordAllowed` is set, `kc-reset-password-form`, the same "you should
+receive an email" login page for known and unknown usernames with mail only
+for the known one, the "Reset password" message, the emailed link's password
+form, its continuation into the original login with a code, link reuse, and
+sign-in with the new password. The baseline passed a second, comparing run.
