@@ -2,7 +2,9 @@
 
 use std::io::{self, IsTerminal, Read};
 
-use rs_keycloak_storage_postgres::{ClientAuthMaterial, ConfidentialRegistration, Storage};
+use rs_keycloak_storage_postgres::{
+    ClientAuthMaterial, ConfidentialRegistration, Storage, StorageError,
+};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -162,4 +164,33 @@ pub(crate) async fn rotate_client_secret(realm: &str, client_id: &str) -> Result
         return Err("Client secret rotation failed");
     }
     Ok(())
+}
+
+/// Enables the client-credentials grant for an existing confidential client.
+pub(crate) async fn enable_service_account(
+    realm: &str,
+    client_id: &str,
+) -> Result<(), &'static str> {
+    if realm.is_empty() || realm.len() > 255 || client_id.is_empty() || client_id.len() > 255 {
+        return Err("Realm and client ID must be 1-255 bytes");
+    }
+    let storage = Storage::connect(&super::database_url()?)
+        .await
+        .map_err(|_| "Database check failed")?;
+    let realm_id = storage
+        .realm_id_by_name(realm)
+        .await
+        .map_err(|_| "Realm lookup failed")?
+        .ok_or("Realm is missing or disabled")?;
+    match storage
+        .enable_service_account(&realm_id, client_id, &Uuid::new_v4().to_string())
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Client is missing, disabled, or public"),
+        Err(StorageError::Conflict) => {
+            Err("Another user already holds the service-account username")
+        }
+        Err(_) => Err("Service account setup failed"),
+    }
 }

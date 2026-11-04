@@ -7,6 +7,7 @@ use axum::extract::rejection::FormRejection;
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use rs_keycloak_storage_postgres::AccessTokenStatus;
 use serde_json::{Value, json};
 use zeroize::Zeroizing;
 
@@ -140,7 +141,8 @@ pub(super) async fn handle(
             Ok(None) => return inactive(),
             Err(_) => return unavailable(),
         };
-        if claims.sid != grant.grant.session.session_id || claims.sub != grant.grant.session.user_id
+        if claims.sid.as_deref() != Some(grant.grant.session.session_id.as_str())
+            || claims.sub != grant.grant.session.user_id
         {
             return inactive();
         }
@@ -167,29 +169,35 @@ pub(super) async fn handle(
     if claims.aud != client.client_id {
         return inactive();
     }
-    let session = match state
+    let username = match state
         .storage
         .introspect_access_token(
             &realm_id,
             &client.client_id,
             client.revision,
-            &claims.sid,
+            claims.sid.as_deref(),
             &claims.sub,
             &digest(&claims.jti),
         )
         .await
     {
-        Ok(Some(session)) => session,
-        Ok(None) => return inactive(),
+        Ok(AccessTokenStatus::Active(session)) => session.username,
+        Ok(AccessTokenStatus::ServiceAccount(account)) => account.username,
+        Ok(
+            AccessTokenStatus::ClientNotFound
+            | AccessTokenStatus::Revoked
+            | AccessTokenStatus::SessionNotFound,
+        ) => return inactive(),
         Err(_) => return unavailable(),
     };
-    reply(
-        StatusCode::OK,
-        json!({
-            "active":true, "iss":claims.iss, "sub":claims.sub, "aud":claims.aud,
-            "iat":claims.iat, "exp":claims.exp, "jti":claims.jti,
-            "azp":claims.azp, "client_id":client.client_id, "sid":claims.sid,
-            "scope":claims.scope, "username":session.username, "token_type":"Bearer", "typ":"Bearer",
-        }),
-    )
+    let mut body = json!({
+        "active":true, "iss":claims.iss, "sub":claims.sub, "aud":claims.aud,
+        "iat":claims.iat, "exp":claims.exp, "jti":claims.jti,
+        "azp":claims.azp, "client_id":client.client_id,
+        "scope":claims.scope, "username":username, "token_type":"Bearer", "typ":"Bearer",
+    });
+    if let Some(sid) = claims.sid {
+        body["sid"] = json!(sid);
+    }
+    reply(StatusCode::OK, body)
 }

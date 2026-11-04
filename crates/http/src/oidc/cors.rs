@@ -13,7 +13,7 @@ use serde_json::json;
 use url::Url;
 use zeroize::Zeroizing;
 
-use super::{OidcState, valid_realm, verified_access};
+use super::{OidcState, has_openid_scope, valid_realm, verified_access};
 use crate::client_auth::{self, ClientCredentials};
 
 fn single_header(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
@@ -54,6 +54,9 @@ fn forbidden() -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+        .headers_mut()
+        .insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
     response
 }
 
@@ -179,8 +182,9 @@ pub(super) async fn handle(
             .and_then(|value| value.strip_prefix("Bearer "));
         let id = match bearer {
             Some(token) => match verified_access(&state, realm, token).await {
-                Ok(Some(claims)) => Some(claims.azp),
-                Ok(None) => None,
+                // Missing openid is rejected before the client is looked up.
+                Ok(Some(claims)) if has_openid_scope(&claims.scope) => Some(claims.azp),
+                Ok(_) => None,
                 Err(()) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
             },
             None => None,

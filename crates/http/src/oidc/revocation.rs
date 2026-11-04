@@ -158,13 +158,13 @@ pub(super) async fn handle(
             .active_access_token(
                 &realm_id,
                 &client.client_id,
-                &claims.sid,
+                claims.sid.as_deref(),
                 &claims.sub,
                 &digest(&claims.jti),
             )
             .await
         {
-            Ok(AccessTokenStatus::Active(_)) => (),
+            Ok(AccessTokenStatus::Active(_) | AccessTokenStatus::ServiceAccount(_)) => (),
             Ok(
                 AccessTokenStatus::ClientNotFound
                 | AccessTokenStatus::Revoked
@@ -183,7 +183,7 @@ pub(super) async fn handle(
                 &realm_id,
                 &client.client_id,
                 client.revision,
-                &claims.sid,
+                claims.sid.as_deref(),
                 &claims.sub,
                 &digest(&claims.jti),
                 expiry,

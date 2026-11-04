@@ -1,8 +1,10 @@
 //! PostgreSQL schema management and guarded application transactions.
 
 mod cors;
+mod service_account;
 
 pub use cors::WebOriginCheck;
+pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 
 use std::time::Duration;
 
@@ -25,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0008_token_revocation.sql"),
     include_str!("../../../migrations/0009_response_mode.sql"),
     include_str!("../../../migrations/0010_client_web_origins.sql"),
+    include_str!("../../../migrations/0011_service_accounts.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -303,6 +306,8 @@ fn active_session_row(row: &PgRow) -> Result<ActiveSession, StorageError> {
 pub enum AccessTokenStatus {
     /// The token is unrevoked and its session, user, client and realm are active.
     Active(ActiveSession),
+    /// A sessionless token whose client still owns this enabled service account.
+    ServiceAccount(ServiceAccount),
     /// No client with the token's authorized party exists in the realm.
     ClientNotFound,
     /// The token ID is on the revocation list.
@@ -312,11 +317,15 @@ pub enum AccessTokenStatus {
 }
 
 impl AccessTokenStatus {
-    /// Returns the session for an active token and discards the failure reason.
+    /// Returns the session for an active session-bound token; service-account
+    /// tokens and failures yield `None`.
     pub fn into_active(self) -> Option<ActiveSession> {
         match self {
             Self::Active(session) => Some(session),
-            Self::ClientNotFound | Self::Revoked | Self::SessionNotFound => None,
+            Self::ServiceAccount(_)
+            | Self::ClientNotFound
+            | Self::Revoked
+            | Self::SessionNotFound => None,
         }
     }
 }
@@ -366,7 +375,7 @@ pub struct RefreshIntrospection {
     pub expires_at: i64,
 }
 
-async fn authenticated_client(
+pub(crate) async fn authenticated_client(
     connection: &mut PgConnection,
     realm: &str,
     client_identifier: &str,
@@ -380,7 +389,7 @@ async fn lookup_access_token(
     connection: &mut PgConnection,
     realm: &str,
     client_identifier: &str,
-    session_id: &str,
+    session_id: Option<&str>,
     user_id: &str,
     jti_hash: &[u8],
 ) -> Result<AccessTokenStatus, StorageError> {
@@ -392,6 +401,15 @@ async fn lookup_access_token(
     if revoked {
         return Ok(AccessTokenStatus::Revoked);
     }
+    let Some(session_id) = session_id else {
+        return service_account::lookup_service_account_token(
+            connection,
+            realm,
+            client_identifier,
+            user_id,
+        )
+        .await;
+    };
     let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled")
         .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).fetch_optional(connection).await?;
     Ok(match row {
@@ -947,7 +965,7 @@ impl Storage {
         &self,
         realm: &str,
         client_identifier: &str,
-        session_id: &str,
+        session_id: Option<&str>,
         user_id: &str,
         jti_hash: &[u8],
     ) -> Result<AccessTokenStatus, StorageError> {
@@ -975,10 +993,10 @@ impl Storage {
         realm: &str,
         client_identifier: &str,
         client_revision: Option<i64>,
-        session_id: &str,
+        session_id: Option<&str>,
         user_id: &str,
         jti_hash: &[u8],
-    ) -> Result<Option<ActiveSession>, StorageError> {
+    ) -> Result<AccessTokenStatus, StorageError> {
         let mut tx = self.begin_request(true).await?;
         authenticated_client(tx.connection(), realm, client_identifier, client_revision).await?;
         let result = if jti_hash.len() == 32 {
@@ -991,9 +1009,8 @@ impl Storage {
                 jti_hash,
             )
             .await?
-            .into_active()
         } else {
-            None
+            AccessTokenStatus::SessionNotFound
         };
         tx.commit().await?;
         Ok(result)
@@ -1006,7 +1023,7 @@ impl Storage {
         realm: &str,
         client_identifier: &str,
         client_revision: Option<i64>,
-        session_id: &str,
+        session_id: Option<&str>,
         user_id: &str,
         jti_hash: &[u8],
         expires_at: i64,
@@ -1018,8 +1035,12 @@ impl Storage {
         let conn = tx.connection();
         if jti_hash.len() == 32 {
             sqlx::query("DELETE FROM revoked_access_tokens WHERE (realm_id, jti_hash) IN (SELECT realm_id, jti_hash FROM revoked_access_tokens WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-            sqlx::query("INSERT INTO revoked_access_tokens (realm_id, jti_hash, session_id, expires_at) SELECT us.realm_id, $5, us.id, LEAST(to_timestamp($6::double precision), us.expires_at) FROM user_sessions us JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id WHERE us.realm_id = $1 AND cs.client_id = $2 AND us.id = $3 AND us.user_id = $4 AND to_timestamp($6::double precision) > clock_timestamp() AND us.expires_at > clock_timestamp() ON CONFLICT DO NOTHING")
-                .bind(realm).bind(client_id).bind(session_id).bind(user_id).bind(jti_hash).bind(expires_at as f64).execute(&mut *conn).await?;
+            match session_id {
+                Some(session_id) => sqlx::query("INSERT INTO revoked_access_tokens (realm_id, jti_hash, session_id, expires_at) SELECT us.realm_id, $5, us.id, LEAST(to_timestamp($6::double precision), us.expires_at) FROM user_sessions us JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id WHERE us.realm_id = $1 AND cs.client_id = $2 AND us.id = $3 AND us.user_id = $4 AND to_timestamp($6::double precision) > clock_timestamp() AND us.expires_at > clock_timestamp() ON CONFLICT DO NOTHING")
+                    .bind(realm).bind(client_id).bind(session_id).bind(user_id).bind(jti_hash).bind(expires_at as f64).execute(&mut *conn).await?,
+                None => sqlx::query("INSERT INTO revoked_access_tokens (realm_id, jti_hash, service_account_user_id, expires_at) SELECT u.realm_id, $4, u.id, to_timestamp($5::double precision) FROM users u WHERE u.realm_id = $1 AND u.service_account_client_id = $2 AND u.id = $3 AND to_timestamp($5::double precision) > clock_timestamp() ON CONFLICT DO NOTHING")
+                    .bind(realm).bind(client_id).bind(user_id).bind(jti_hash).bind(expires_at as f64).execute(&mut *conn).await?,
+            };
         }
         tx.commit().await?;
         Ok(())

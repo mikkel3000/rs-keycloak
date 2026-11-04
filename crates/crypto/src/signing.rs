@@ -51,8 +51,9 @@ pub struct TokenClaims<'a> {
     pub jti: &'a str,
     /// Authorized client ID.
     pub azp: &'a str,
-    /// Session identifier.
-    pub sid: &'a str,
+    /// Session identifier; service-account tokens have no stored session.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sid: Option<&'a str>,
     /// Granted scopes.
     pub scope: &'a str,
 }
@@ -70,8 +71,9 @@ pub struct IdTokenClaims<'a> {
     pub iat: u64,
     /// Token expiration time.
     pub exp: u64,
-    /// Session authentication time.
-    pub auth_time: i64,
+    /// Session authentication time; absent when no user authenticated.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auth_time: Option<i64>,
     /// Client-provided OIDC nonce.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub nonce: Option<&'a str>,
@@ -96,8 +98,9 @@ pub struct VerifiedToken {
     pub jti: String,
     /// Authorized client.
     pub azp: String,
-    /// Session ID.
-    pub sid: String,
+    /// Session ID, absent from service-account tokens.
+    #[serde(default)]
+    pub sid: Option<String>,
     /// Granted scopes.
     pub scope: String,
 }

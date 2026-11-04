@@ -1,6 +1,7 @@
 //! OIDC authorization-code request handling.
 
 mod authorization_response;
+mod client_credentials;
 mod cors;
 mod introspection;
 mod revocation;
@@ -370,7 +371,8 @@ async fn authenticate(
     response
 }
 
-enum TokenForm {
+/// Grants that redeem or extend a stored user session.
+enum SessionGrant {
     Code {
         code: String,
         redirect_uri: String,
@@ -380,6 +382,12 @@ enum TokenForm {
         refresh_token: String,
         scope: Option<String>,
     },
+}
+
+/// A parsed token request grant.
+enum TokenForm {
+    Session(SessionGrant),
+    ClientCredentials { scope: Option<String> },
 }
 
 fn token_error(error: &'static str) -> Response {
@@ -459,13 +467,16 @@ fn token_form(pairs: Vec<(String, String)>) -> Result<ParsedTokenForm, &'static 
     let client_secret = fields.remove("client_secret").map(Zeroizing::new);
     let mut required = |name| fields.remove(name).ok_or("invalid_request");
     let grant = match required("grant_type")?.as_str() {
-        "authorization_code" => Ok(TokenForm::Code {
+        "authorization_code" => Ok(TokenForm::Session(SessionGrant::Code {
             code: required("code")?,
             redirect_uri: required("redirect_uri")?,
             code_verifier: required("code_verifier")?,
-        }),
-        "refresh_token" => Ok(TokenForm::Refresh {
+        })),
+        "refresh_token" => Ok(TokenForm::Session(SessionGrant::Refresh {
             refresh_token: required("refresh_token")?,
+            scope: fields.remove("scope"),
+        })),
+        "client_credentials" => Ok(TokenForm::ClientCredentials {
             scope: fields.remove("scope"),
         }),
         _ => Err("unsupported_grant_type"),
@@ -516,9 +527,16 @@ async fn token(
         Ok(ClientAuthResult::Unauthorized) => return unauthorized_client(),
         Err(_) => return unavailable(),
     };
+    let q = match q {
+        TokenForm::Session(grant) => grant,
+        TokenForm::ClientCredentials { scope } => {
+            return client_credentials::grant(&s, &realm, &realm_id, client, scope.as_deref())
+                .await;
+        }
+    };
     let client_id = client.client_id;
     let client_revision = client.revision;
-    let previous_jti = if let TokenForm::Refresh { refresh_token, .. } = &q {
+    let previous_jti = if let SessionGrant::Refresh { refresh_token, .. } = &q {
         match verified_refresh(&s, &realm, refresh_token).await {
             Ok(Some(claims)) if claims.azp == client_id => Some(claims.jti),
             Ok(_) => return invalid_grant(),
@@ -533,7 +551,7 @@ async fn token(
     };
     let refresh_jti = Zeroizing::new(random_token());
     let (grant, refresh_expiry) = match q {
-        TokenForm::Code {
+        SessionGrant::Code {
             code,
             redirect_uri,
             code_verifier,
@@ -579,7 +597,7 @@ async fn token(
                 Err(_) => return unavailable(),
             }
         }
-        TokenForm::Refresh {
+        SessionGrant::Refresh {
             refresh_token: previous,
             scope,
         } => {
@@ -647,7 +665,7 @@ async fn token(
             exp: now + 300,
             jti: &jti,
             azp: &grant.client_identifier,
-            sid: &grant.session_id,
+            sid: Some(&grant.session_id),
             scope: &grant.scope,
         };
         let id_claims = IdTokenClaims {
@@ -656,7 +674,7 @@ async fn token(
             aud: &grant.client_identifier,
             iat: now,
             exp: now + 300,
-            auth_time: grant.auth_time,
+            auth_time: Some(grant.auth_time),
             nonce: grant.nonce.as_deref(),
         };
         let refresh_claims = TokenClaims {
@@ -667,7 +685,7 @@ async fn token(
             exp: refresh_expiry,
             jti: &refresh_jti,
             azp: &grant.client_identifier,
-            sid: &grant.session_id,
+            sid: Some(&grant.session_id),
             scope: &grant.scope,
         };
         Some((
@@ -703,7 +721,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token","client_credentials"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
 /// Builds a userinfo 401 with the reference Bearer challenge and empty body.
@@ -719,6 +737,34 @@ fn userinfo_challenge(realm: &str, description: Option<&str>) -> Response {
     };
     (
         StatusCode::UNAUTHORIZED,
+        [
+            (header::WWW_AUTHENTICATE, challenge),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (header::PRAGMA, HeaderValue::from_static("no-cache")),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain;charset=utf-8"),
+            ),
+        ],
+    )
+        .into_response()
+}
+
+/// Reports whether a space-separated scope string grants `openid`.
+fn has_openid_scope(scope: &str) -> bool {
+    scope.split(' ').any(|value| value == "openid")
+}
+
+/// Builds the reference 403 for userinfo tokens issued without `openid`.
+fn userinfo_missing_openid(realm: &str) -> Response {
+    let challenge = format!(
+        "Bearer realm=\"{realm}\", error=\"insufficient_scope\", error_description=\"Missing openid scope\""
+    );
+    let Ok(challenge) = HeaderValue::from_str(&challenge) else {
+        return failure();
+    };
+    (
+        StatusCode::FORBIDDEN,
         [
             (header::WWW_AUTHENTICATE, challenge),
             (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
@@ -753,6 +799,9 @@ async fn userinfo(
         Ok(None) => return verification_failed(),
         Err(()) => return unavailable(),
     };
+    if !has_openid_scope(&claims.scope) {
+        return userinfo_missing_openid(&realm);
+    }
     let realm_id = match s.storage.realm_id_by_name(&realm).await {
         Ok(Some(id)) => id,
         Ok(None) => return verification_failed(),
@@ -763,13 +812,13 @@ async fn userinfo(
         .active_access_token(
             &realm_id,
             &claims.azp,
-            &claims.sid,
+            claims.sid.as_deref(),
             &claims.sub,
             &digest(&claims.jti),
         )
         .await
     {
-        Ok(AccessTokenStatus::Active(_)) => (
+        Ok(AccessTokenStatus::Active(_) | AccessTokenStatus::ServiceAccount(_)) => (
             [
                 (header::CACHE_CONTROL, "no-store"),
                 (header::PRAGMA, "no-cache"),
@@ -813,12 +862,7 @@ async fn verified_access(
         .map_err(|_| ())?
         .as_secs();
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    if claims.iss != issuer
-        || claims.iat > now
-        || claims.exp <= now
-        || claims.aud != claims.azp
-        || claims.scope != "openid"
-    {
+    if claims.iss != issuer || claims.iat > now || claims.exp <= now || claims.aud != claims.azp {
         return Ok(None);
     }
     Ok(Some(claims))

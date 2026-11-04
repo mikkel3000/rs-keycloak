@@ -131,3 +131,30 @@ gets "Client not found" from any origin, as in the reference; disabled clients
 and users still report "user_session_not_found" instead of the reference's
 "Client disabled" and "User disabled", because no public command can disable
 them yet.
+
+## Client-credentials grant
+
+`client enable-service-account <realm> <client-id>` enables service accounts on
+an existing confidential client and creates its `service-account-<client-id>`
+user once; public clients are refused, and the database also requires
+confidential clients through a check constraint. The token endpoint follows the
+pinned ClientCredentialsGrantType and the 21 recorded cases in
+`tests/reference/service-account-observations.json`. Public, disabled and
+unknown clients get the recorded errors. Tokens carry no `sid`, no refresh token
+is issued, and an ID token without `auth_time` is added only for `openid`.
+Userinfo needs `openid` and answers 403 `insufficient_scope` otherwise;
+revocation of a sessionless token takes effect at userinfo and introspection,
+while new grants keep working.
+
+Sessionless tokens are checked against the client's current service-account
+user rather than a stored session, and their revocations bind that user, so
+deleting the client removes them. `tests/public/client_credentials_contract.py`
+checks 13 cases through HTTP; the slowest takes 88 ms.
+
+Remaining differences from the reference: access tokens name the client as
+audience, where Keycloak's default role mappings produce `account`, so the
+owner can introspect its own token as active; only `openid` is grantable, so a
+default request returns an empty scope instead of `profile email`; access and
+ID tokens omit Keycloak's role, profile and client-address claims; enabling a
+service account through the CLI writes no audit event, like the other CLI
+provisioning commands.
