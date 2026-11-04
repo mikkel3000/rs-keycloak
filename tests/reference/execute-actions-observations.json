@@ -1,0 +1,89 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Admin execute-actions-email for UPDATE_PASSWORD through a local SMTP sink: errors, message shape, action-token pages, link reuse and sign-in; no tokens, links or passwords retained.",
+  "normalization": "Mail is reduced to recipients, headers, MIME parts and the link path and parameter names.",
+  "observations": {
+    "admin/realm-smtp": {
+      "fields": [
+        "from",
+        "fromDisplayName",
+        "host",
+        "port"
+      ]
+    },
+    "send/no-email": {
+      "status": 400,
+      "body": {
+        "errorMessage": "User email missing"
+      }
+    },
+    "send/no-smtp": {
+      "status": 500,
+      "body": {
+        "errorMessage": "Failed to send execute actions email: Invalid sender address 'null'. If the address contains UTF-8 characters in the local part please ensure the SMTP server supports the SMTPUTF8 extension and enable 'Allow UTF-8' in the email realm configuration."
+      }
+    },
+    "send/unknown-action": {
+      "status": 400,
+      "body": {
+        "errorMessage": "Provided invalid required actions"
+      }
+    },
+    "send/success": {
+      "status": 204,
+      "body": null
+    },
+    "mail/count-after-errors": {
+      "count": 1
+    },
+    "mail/message": {
+      "to": [
+        "reference@example.invalid"
+      ],
+      "from_header": "Reference Realm <noreply@example.invalid>",
+      "subject": "Update Your Account",
+      "multipart": true,
+      "parts": [
+        "text/html",
+        "text/plain"
+      ],
+      "link_path": "/realms/{realm}/login-actions/action-token",
+      "link_params": [
+        "key"
+      ]
+    },
+    "link/first-page": {
+      "status": 200,
+      "form": null,
+      "fields": []
+    },
+    "link/proceed-0": {
+      "status": 200,
+      "form": "kc-passwd-update-form",
+      "fields": [
+        "logout-sessions",
+        "password-confirm",
+        "password-new"
+      ]
+    },
+    "link/after-update": {
+      "status": 200,
+      "form": null,
+      "fields": [],
+      "text": true
+    },
+    "link/reused": {
+      "status": 400,
+      "form": null,
+      "fields": [],
+      "text": [
+        "expired"
+      ]
+    },
+    "login/new-password": {
+      "signed_in": true
+    }
+  }
+}

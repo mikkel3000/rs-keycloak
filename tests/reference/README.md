@@ -100,3 +100,12 @@ in. The reference also accepts the temporary password itself as the new one
 under its default policy, so that case is not part of the baseline. A wrong
 password shows the login form again with status 200. The baseline passed a
 second, comparing run.
+
+`execute_actions.py` records 12 cases in `execute-actions-observations.json`
+for admin `execute-actions-email` with `UPDATE_PASSWORD`, delivered to the
+shared in-memory SMTP sink in `tests/smtp_sink.py`: errors for a user without
+email, a realm without SMTP settings and an unknown action; the multipart
+message's headers and its `/login-actions/action-token?key=` link; the info
+page, password form and confirmation page behind the link; reuse of the
+link; and sign-in with the new password. Links, tokens and passwords are not
+retained. The baseline passed a second, comparing run.
