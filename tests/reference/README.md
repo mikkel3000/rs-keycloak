@@ -67,3 +67,11 @@ post-logout redirects, missing and invalid `id_token_hint`, and no redirect),
 each followed by refresh and userinfo checks of the ended session. Redirects
 are observed without following them. The baseline passed a second, comparing
 run.
+
+`sso.py` records 10 SSO cases in `sso-observations.json`: the session cookies
+after login, silent authorization for the same and another client,
+`prompt=none` with and without a session, `prompt=login`, `max_age=0`, and
+cookie clearing at logout. Only `KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION` are
+kept, because Keycloak's per-login cookies vary between runs. The `max_age`
+probe waits past the login second, since the reference compares whole
+seconds. The baseline passed two comparing runs.

@@ -1,0 +1,171 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "SSO cookies after login, silent authorization for the same and another client, prompt=none, prompt=login, max_age=0, and cookie clearing at logout; SSO session cookie names, paths and attributes only.",
+  "normalization": "The random realm name in cookie paths is replaced with {realm}; cookie values and codes are not retained.",
+  "observations": {
+    "prompt-none/no-session": {
+      "status": 302,
+      "cookies": [],
+      "location_params": [
+        "error",
+        "iss",
+        "state"
+      ],
+      "error": "login_required"
+    },
+    "login/cookie-names": [
+      "KEYCLOAK_IDENTITY",
+      "KEYCLOAK_SESSION"
+    ],
+    "sso/same-client": {
+      "status": 302,
+      "cookies": [
+        {
+          "name": "KEYCLOAK_IDENTITY",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "httponly",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        },
+        {
+          "name": "KEYCLOAK_SESSION",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "max-age",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        }
+      ],
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "error": null
+    },
+    "sso/other-client": {
+      "status": 302,
+      "cookies": [
+        {
+          "name": "KEYCLOAK_IDENTITY",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "httponly",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        },
+        {
+          "name": "KEYCLOAK_SESSION",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "max-age",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        }
+      ],
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "error": null
+    },
+    "prompt-none/with-session": {
+      "status": 302,
+      "cookies": [
+        {
+          "name": "KEYCLOAK_IDENTITY",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "httponly",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        },
+        {
+          "name": "KEYCLOAK_SESSION",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "max-age",
+            "path",
+            "samesite",
+            "secure",
+            "version"
+          ],
+          "cleared": false
+        }
+      ],
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "error": null
+    },
+    "prompt-login/with-session": {
+      "status": 200,
+      "cookies": [],
+      "login_form": true
+    },
+    "max-age-zero/with-session": {
+      "status": 200,
+      "cookies": [],
+      "login_form": true
+    },
+    "logout/cookies": {
+      "status": 302,
+      "cookies": [
+        {
+          "name": "KEYCLOAK_IDENTITY",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "max-age",
+            "path",
+            "version"
+          ],
+          "cleared": true
+        },
+        {
+          "name": "KEYCLOAK_SESSION",
+          "path": "/realms/{realm}/",
+          "attributes": [
+            "max-age",
+            "path",
+            "version"
+          ],
+          "cleared": true
+        }
+      ]
+    },
+    "sso/after-logout": {
+      "status": 200,
+      "cookies": [],
+      "login_form": true
+    }
+  }
+}
