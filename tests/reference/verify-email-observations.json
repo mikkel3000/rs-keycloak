@@ -1,0 +1,110 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "VERIFY_EMAIL at login and admin send-verify-email through a local SMTP sink: pages, message shape, link effects and reuse; no links or tokens retained.",
+  "normalization": "Pages are reduced to form id and field names; mail to headers, parts and link shape.",
+  "observations": {
+    "login/after-password": {
+      "status": 200,
+      "form": null,
+      "fields": [],
+      "resend_link": true
+    },
+    "mail/after-password": {
+      "count": 1
+    },
+    "mail/message": {
+      "to": [
+        "reference@example.invalid"
+      ],
+      "from_header": "Reference Realm <noreply@example.invalid>",
+      "subject": "Verify email",
+      "multipart": true,
+      "parts": [
+        "text/html",
+        "text/plain"
+      ],
+      "link_path": "/realms/{realm}/login-actions/action-token",
+      "link_params": [
+        "client_data",
+        "client_id",
+        "key",
+        "tab_id"
+      ]
+    },
+    "admin/user-before-link": {
+      "emailVerified": false,
+      "requiredActions": [
+        "VERIFY_EMAIL"
+      ]
+    },
+    "link/same-browser": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ]
+    },
+    "admin/user-after-link": {
+      "emailVerified": true,
+      "requiredActions": []
+    },
+    "link/reused": {
+      "status": 200,
+      "form": null,
+      "fields": [],
+      "phrases": [
+        "been verified"
+      ]
+    },
+    "admin/send-verify-email": {
+      "status": 204,
+      "body": null
+    },
+    "mail/admin-sent": {
+      "to": [
+        "other@example.invalid"
+      ],
+      "from_header": "Reference Realm <noreply@example.invalid>",
+      "subject": "Verify email",
+      "multipart": true,
+      "parts": [
+        "text/html",
+        "text/plain"
+      ],
+      "link_path": "/realms/{realm}/login-actions/action-token",
+      "link_params": [
+        "key"
+      ]
+    },
+    "link/admin-sent": {
+      "status": 200,
+      "form": null,
+      "fields": [],
+      "phrases": [
+        "click here to proceed",
+        "confirm validity",
+        "invalid"
+      ],
+      "proceed_link": true
+    },
+    "link/admin-proceed": {
+      "status": 200,
+      "form": null,
+      "fields": [],
+      "phrases": []
+    },
+    "admin/other-after-link": {
+      "emailVerified": true
+    },
+    "admin/send-unknown-user": {
+      "status": 404,
+      "body": {
+        "error": "User not found"
+      }
+    }
+  }
+}

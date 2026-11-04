@@ -117,3 +117,12 @@ receive an email" login page for known and unknown usernames with mail only
 for the known one, the "Reset password" message, the emailed link's password
 form, its continuation into the original login with a code, link reuse, and
 sign-in with the new password. The baseline passed a second, comparing run.
+
+`verify_email.py` records 14 cases in `verify-email-observations.json` for a
+`verifyEmail` realm: the page after the password with its resend link, the
+"Verify email" message sent at login, the user's flag and action before and
+after the link, the same-browser link continuing to the code, an "already
+verified" page on reuse, admin `send-verify-email`, the "confirm validity"
+page an admin-sent link shows before it verifies, and the unknown-user error.
+Pages are reduced to form ids, fields and a few keyword phrases. The baseline
+passed a second, comparing run.
