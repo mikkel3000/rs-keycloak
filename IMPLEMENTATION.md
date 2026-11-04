@@ -99,3 +99,24 @@ hidden fields, a nonce-scoped auto-submit script, a registered-origin form
 policy and no-store headers. The script runs in the client; backend execution
 remains Rust. Public tests pass all three modes, malicious HTML characters in
 state, and the pinned adapter's fragment callback at both issuer paths.
+
+## Revocation and browser origins
+
+The revocation route follows the pinned TokenRevocationEndpoint for the recorded
+cases: duplicate parameters, missing token, unsupported ID tokens, unknown
+tokens as 200 `invalid_token`, client authentication errors and "Unmatching
+clients" ownership. Access revocation stores the token ID until expiry; refresh
+revocation ends the family and the client session, and ends the user session
+only when no sibling client session remains.
+
+Clients register exact canonical web origins through the CLI. Token,
+introspection, revocation and userinfo requests carrying an unregistered origin
+fail with 403 before any token state changes; preflights answer any canonical
+origin with the reference header list, and discovery and certs allow any origin.
+Unit tests compare preflight and metadata CORS headers with every recorded
+reference observation without a database. The database-backed revocation, race
+and CORS public tests in `tests/public/oidc_contract.py` exceed the 500 ms test
+budget and were not re-run for this record; the commit `23f960f` reports them
+passing. Userinfo errors for requests with an origin but no valid bearer token
+return 403 rather than the reference's unrecorded response, and remain to be
+checked against the reference.
