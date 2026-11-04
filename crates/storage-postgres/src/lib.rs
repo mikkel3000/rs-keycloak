@@ -18,7 +18,7 @@ pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
-pub use login_steps::{CredentialRecord, LoginStep, OtpCredential};
+pub use login_steps::{CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate};
 pub use logout::RefreshLogout;
 pub use realm_admin::{
     MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
@@ -62,6 +62,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0021_realm_email.sql"),
     include_str!("../../../migrations/0022_reset_credentials.sql"),
     include_str!("../../../migrations/0023_verify_email.sql"),
+    include_str!("../../../migrations/0024_update_profile.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

@@ -461,3 +461,22 @@ module shared by admin and login handlers.
 Remaining differences: user profile updates (`UPDATE_PROFILE`) and changing an
 email from an account console are not implemented, so a verified address can
 only change through the admin API, which does not reset verification.
+
+## Profile update
+
+Users with `UPDATE_PROFILE` (set at creation through the admin API) review a
+prefilled `kc-update-profile-form` with email, first and last name after
+their password, following the 6 recorded cases in
+`tests/reference/update-profile-observations.json`. Missing names, an
+invalid email and another user's email re-render the form with that field's
+`input-error-*` message. Success stores the email lowercased and, if it
+changed, unverified; in a realm that verifies email, the user must then
+verify the new address in the same login. The step runs after password steps
+and before email verification, as Keycloak's default priorities order them.
+`tests/public/update_profile_contract.py` runs the sequence in 242 ms. The
+OTP contract was split so its login case no longer repeats the setup checks;
+its slowest case now takes 383 ms.
+
+Remaining differences: the user profile is fixed to email, first and last
+name; configurable profile attributes, `editUsernameAllowed` and
+`registrationEmailAsUsername` are not implemented.

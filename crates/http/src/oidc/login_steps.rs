@@ -13,7 +13,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use rs_keycloak_protocols::totp;
-use rs_keycloak_storage_postgres::LoginStep;
+use rs_keycloak_storage_postgres::{LoginStep, Profile, ProfileUpdate};
 use serde::Deserialize;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -142,6 +142,7 @@ pub(super) async fn hold(
     match step {
         LoginStep::ConfigureTotp => setup_page(s, realm, request_id, csrf, &new_secret(), false),
         LoginStep::UpdatePassword => password_page(s, realm, request_id, csrf, false),
+        LoginStep::UpdateProfile(profile) => profile_page(s, realm, request_id, csrf, profile, &[]),
         LoginStep::VerifyEmail { user_id, email } => {
             verify_email_page(s, realm, request_id, csrf, user_id, email).await
         }
@@ -548,5 +549,167 @@ pub(super) async fn resend(
         }
         Ok(_) => failure(),
         Err(_) => unavailable(),
+    }
+}
+
+/// Shows the profile form with current values and any field errors.
+fn profile_page(
+    s: &OidcState,
+    realm: &str,
+    request_id: &str,
+    csrf: &str,
+    profile: &Profile,
+    errors: &[(&str, &str)],
+) -> Response {
+    let field = |name: &str, label: &str, value: Option<&str>, kind: &str| {
+        let error = errors
+            .iter()
+            .find(|(field, _)| *field == name)
+            .map(|(_, message)| {
+                format!(
+                    "<span id=\"input-error-{name}\" role=\"alert\">{}</span>",
+                    escape(message)
+                )
+            })
+            .unwrap_or_default();
+        format!(
+            "<label>{label} <input name=\"{name}\" type=\"{kind}\" value=\"{}\" required></label>{error}",
+            escape(value.unwrap_or_default())
+        )
+    };
+    let body = format!(
+        "<h1>Update account information</h1><form id=\"kc-update-profile-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-profile/{request_id}\">{email}{first}{last}<button>Submit</button></form>",
+        prefix = escape(&s.path_prefix),
+        email = field("email", "Email", profile.email.as_deref(), "email"),
+        first = field(
+            "firstName",
+            "First name",
+            profile.first_name.as_deref(),
+            "text"
+        ),
+        last = field(
+            "lastName",
+            "Last name",
+            profile.last_name.as_deref(),
+            "text"
+        ),
+    );
+    step_page(
+        &s.path_prefix,
+        realm,
+        csrf,
+        "Update account information",
+        &body,
+    )
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ProfileForm {
+    email: String,
+    #[serde(rename = "firstName")]
+    first_name: String,
+    #[serde(rename = "lastName")]
+    last_name: String,
+}
+
+/// A plausible email address: one `@`, non-empty parts, a dotted domain.
+fn valid_email(email: &str) -> bool {
+    match email.split_once('@') {
+        Some((local, domain)) => {
+            !local.is_empty()
+                && domain.contains('.')
+                && !domain.starts_with('.')
+                && !domain.ends_with('.')
+                && !domain.contains('@')
+                && email.len() <= 255
+                && !email.chars().any(|c| c.is_whitespace() || c.is_control())
+        }
+        None => false,
+    }
+}
+
+/// Saves the profile of a user with UPDATE_PROFILE.
+pub(super) async fn update_profile(
+    State(s): State<OidcState>,
+    Path((realm, request_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    Form(form): Form<ProfileForm>,
+) -> Response {
+    let held = match held(&s, &realm, &request_id, &headers).await {
+        Ok(held) => held,
+        Err(rejection) => return rejection.into_response(),
+    };
+    match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::UpdateProfile(_)) => (),
+        Ok(_) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let text = |value: &str| {
+        Some(value.trim().to_owned()).filter(|value| !value.is_empty() && value.len() <= 255)
+    };
+    let profile = Profile {
+        first_name: text(&form.first_name),
+        last_name: text(&form.last_name),
+        email: text(&form.email),
+    };
+    let mut errors = Vec::new();
+    if profile
+        .email
+        .as_deref()
+        .is_none_or(|email| !valid_email(email))
+    {
+        errors.push(("email", "Invalid email address."));
+    }
+    if profile.first_name.is_none() {
+        errors.push(("firstName", "Please specify first name."));
+    }
+    if profile.last_name.is_none() {
+        errors.push(("lastName", "Please specify last name."));
+    }
+    if !errors.is_empty() {
+        return profile_page(&s, &realm, &request_id, &held.csrf, &profile, &errors);
+    }
+    match s
+        .storage
+        .update_profile_step(&held.realm_id, &held.session_id, &profile)
+        .await
+    {
+        Ok(ProfileUpdate::Updated) => {
+            continue_login(
+                &s,
+                &realm,
+                &held.realm_id,
+                &request_id,
+                &held.csrf,
+                &held.session_id,
+            )
+            .await
+        }
+        Ok(ProfileUpdate::EmailTaken) => profile_page(
+            &s,
+            &realm,
+            &request_id,
+            &held.csrf,
+            &profile,
+            &[("email", "Email already exists.")],
+        ),
+        Ok(ProfileUpdate::NotPending) => failure(),
+        Err(_) => unavailable(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_email;
+
+    #[test]
+    fn email_needs_one_at_and_a_dotted_domain() {
+        assert!(valid_email("changed@example.invalid"));
+        assert!(!valid_email("not-an-email"));
+        assert!(!valid_email("@example.invalid"));
+        assert!(!valid_email("a@localhost"));
+        assert!(!valid_email("a@b@example.invalid"));
+        assert!(!valid_email("a b@example.invalid"));
     }
 }

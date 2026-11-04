@@ -188,7 +188,10 @@ async fn create_user(
             .iter()
             .map(|action| match action {
                 Value::String(action)
-                    if matches!(action.as_str(), "CONFIGURE_TOTP" | "UPDATE_PASSWORD") =>
+                    if matches!(
+                        action.as_str(),
+                        "CONFIGURE_TOTP" | "UPDATE_PASSWORD" | "UPDATE_PROFILE"
+                    ) =>
                 {
                     Ok(action.clone())
                 }

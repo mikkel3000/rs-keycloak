@@ -81,7 +81,7 @@ class OtpContract(AdminCase):
         self.assertEqual(observed, REFERENCE["setup/correct-code"])
         return secret
 
-    def test_setup_then_login_with_codes(self):
+    def test_setup_records_the_credential(self):
         secret = self.configure()
         credentials = json.loads(self.call("GET", self.users + "/credentials")[2])
         otp = next(c for c in credentials if c["type"] == "otp")
@@ -90,6 +90,10 @@ class OtpContract(AdminCase):
         self.assertNotIn(secret, json.dumps(credentials))
         rep = json.loads(self.call("GET", self.users)[2])
         self.assertEqual({"totp": rep["totp"], "requiredActions": rep["requiredActions"]}, REFERENCE["admin/user-after-setup"])
+
+    def test_login_with_codes(self):
+        secret = self.configure()
+        otp = next(c for c in json.loads(self.call("GET", self.users + "/credentials")[2]) if c["type"] == "otp")
         jar = {}
         observed, (action, _) = self.page(self.password_step(jar))
         self.assertEqual(observed, REFERENCE["login/otp-page"])
