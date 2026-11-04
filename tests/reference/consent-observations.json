@@ -1,0 +1,87 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Consent screen after password login, deny, accept, remembered consent, prompt=consent, and admin consent listing and revocation; page kinds, button names and redirect shapes only.",
+  "normalization": "Page HTML is reduced to its kind and submit button names; codes are not retained.",
+  "observations": {
+    "consent/after-password": {
+      "status": 200,
+      "page": "consent",
+      "buttons": [
+        "accept",
+        "cancel"
+      ]
+    },
+    "consent/deny": {
+      "status": 302,
+      "location_params": [
+        "error",
+        "iss",
+        "state"
+      ],
+      "error": "access_denied"
+    },
+    "admin/consents-after-deny": {
+      "count": 0
+    },
+    "consent/accept": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "error": null
+    },
+    "admin/consents-after-accept": {
+      "count": 1,
+      "fields": [
+        "additionalGrants",
+        "clientId",
+        "createdDate",
+        "grantedClientScopes",
+        "lastUpdatedDate"
+      ],
+      "client": "consent-app",
+      "scopes": [
+        "email",
+        "profile",
+        "roles"
+      ]
+    },
+    "consent/remembered": {
+      "status": 302,
+      "location_params": [
+        "code",
+        "iss",
+        "session_state",
+        "state"
+      ],
+      "error": null
+    },
+    "consent/prompt-consent": {
+      "status": 200,
+      "page": "consent",
+      "buttons": [
+        "accept",
+        "cancel"
+      ]
+    },
+    "admin/revoke-consent": {
+      "status": 204
+    },
+    "admin/revoke-unknown": {
+      "status": 404
+    },
+    "consent/after-revoke": {
+      "status": 200,
+      "page": "consent",
+      "buttons": [
+        "accept",
+        "cancel"
+      ]
+    }
+  }
+}

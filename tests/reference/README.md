@@ -75,3 +75,10 @@ cookie clearing at logout. Only `KEYCLOAK_IDENTITY` and `KEYCLOAK_SESSION` are
 kept, because Keycloak's per-login cookies vary between runs. The `max_age`
 probe waits past the login second, since the reference compares whole
 seconds. The baseline passed two comparing runs.
+
+`consent.py` records 10 consent cases in `consent-observations.json` for a
+`consentRequired` client: the consent screen after password login, deny
+(`access_denied`), accept, remembered consent on a new login, `prompt=consent`,
+and the admin consent list and revocation, after which the screen returns.
+Pages are reduced to their kind and submit button names. The baseline passed a
+second, comparing run.
