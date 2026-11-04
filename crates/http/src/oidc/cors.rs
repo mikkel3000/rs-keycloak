@@ -68,6 +68,35 @@ fn allow(response: &mut Response, origin: &str) {
     }
 }
 
+/// Request headers Keycloak's `Cors` builder allows on every preflight.
+const ALLOWED_HEADERS: &str = "Origin, X-Requested-With, Accept, Access-Control-Request-Method, \
+     Access-Control-Request-Headers, DPoP, Content-Type, Authorization";
+
+/// Answers a preflight for any canonical origin, as the reference does.
+///
+/// Preflights cannot change state; origin registration is enforced on the
+/// actual request, before any token processing.
+fn preflight(origin: &str, methods: &'static str) -> Response {
+    let mut response = StatusCode::OK.into_response();
+    allow(&mut response, origin);
+    let headers = response.headers_mut();
+    headers.insert(
+        header::VARY,
+        HeaderValue::from_static(
+            "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
+        ),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static(methods),
+    );
+    headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static(ALLOWED_HEADERS),
+    );
+    response
+}
+
 /// Handles browser preflight and adds CORS headers only for the bound client.
 pub(super) async fn handle(
     State(state): State<OidcState>,
@@ -99,36 +128,14 @@ pub(super) async fn handle(
         .path()
         .ends_with("/protocol/openid-connect/userinfo");
     if request.method() == Method::OPTIONS {
-        let method = single_header(request.headers(), header::ACCESS_CONTROL_REQUEST_METHOD);
-        let valid_method = if is_form {
-            method == Some("POST")
-        } else {
-            matches!(method, Some("GET" | "HEAD"))
-        };
-        if !valid_method {
-            return forbidden();
-        }
-        let mut response = StatusCode::OK.into_response();
-        allow(&mut response, &origin);
-        response.headers_mut().insert(
-            header::VARY,
-            HeaderValue::from_static(
-                "Origin, Access-Control-Request-Method, Access-Control-Request-Headers",
-            ),
-        );
-        response.headers_mut().insert(
-            header::ACCESS_CONTROL_ALLOW_METHODS,
-            HeaderValue::from_static(if is_form {
+        return preflight(
+            &origin,
+            if is_form {
                 "POST, OPTIONS"
             } else {
                 "GET, HEAD, OPTIONS"
-            }),
+            },
         );
-        response.headers_mut().insert(
-            header::ACCESS_CONTROL_ALLOW_HEADERS,
-            HeaderValue::from_static("Authorization, Content-Type"),
-        );
-        return response;
     }
     let (request, client_id) = if is_form {
         let (parts, body) = request.into_parts();
@@ -203,17 +210,10 @@ pub(super) async fn metadata(request: Request, next: Next) -> Response {
         return forbidden();
     }
     if request.method() == Method::OPTIONS {
-        let mut response = StatusCode::OK.into_response();
-        if let Some(origin) = origin {
-            allow(&mut response, &origin);
-            vary(&mut response);
-            response.headers_mut().insert(
-                header::ACCESS_CONTROL_ALLOW_METHODS,
-                HeaderValue::from_static("GET"),
-            );
-            response.headers_mut().insert(header::ACCESS_CONTROL_ALLOW_HEADERS, HeaderValue::from_static("Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization"));
-        }
-        return response;
+        return match origin {
+            Some(origin) => preflight(&origin, "GET"),
+            None => StatusCode::OK.into_response(),
+        };
     }
     let mut response = next.run(request).await;
     vary(&mut response);
@@ -221,4 +221,113 @@ pub(super) async fn metadata(request: Request, next: Next) -> Response {
         allow(&mut response, &origin);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use axum::routing::get;
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    use super::{metadata, preflight};
+
+    const CORS_HEADERS: [&str; 4] = [
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Methods",
+        "Access-Control-Allow-Headers",
+    ];
+
+    /// Pinned Keycloak observations for `cors/{origin}/{endpoint}/{case}`.
+    fn observations() -> Vec<(String, String, Value)> {
+        let recorded: Value = serde_json::from_str(include_str!(
+            "../../../../tests/reference/token-observations.json"
+        ))
+        .expect("reference observations parse");
+        let cases: Vec<_> = recorded["observations"]
+            .as_object()
+            .expect("observations object")
+            .iter()
+            .filter_map(|(key, value)| {
+                let mut parts = key.strip_prefix("cors/")?.split('/').skip(1);
+                Some((
+                    parts.next()?.to_owned(),
+                    parts.next()?.to_owned(),
+                    value.clone(),
+                ))
+            })
+            .collect();
+        assert!(!cases.is_empty(), "reference has no CORS observations");
+        cases
+    }
+
+    fn assert_matches(name: &str, headers: &axum::http::HeaderMap, expected: &Value) {
+        for header in CORS_HEADERS {
+            assert_eq!(
+                headers.get(header).and_then(|value| value.to_str().ok()),
+                expected["cors"][header].as_str(),
+                "{name}: {header}",
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_matches_reference_for_every_origin() {
+        for (endpoint, case, expected) in observations() {
+            if case != "preflight" {
+                continue;
+            }
+            let methods = match endpoint.as_str() {
+                "token" => "POST, OPTIONS",
+                "userinfo" => "GET, HEAD, OPTIONS",
+                _ => "GET",
+            };
+            let origin = expected["cors"]["Access-Control-Allow-Origin"]
+                .as_str()
+                .expect("reference preflight echoes origin");
+            let response = preflight(origin, methods);
+            assert_eq!(response.status().as_u16(), expected["status"], "{endpoint}");
+            assert_matches(&endpoint, response.headers(), &expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn metadata_routes_match_reference_for_any_origin() {
+        let app = Router::new()
+            .route(
+                "/meta",
+                get(|| async { StatusCode::OK }).options(|| async { StatusCode::OK }),
+            )
+            .layer(axum::middleware::from_fn(metadata));
+        for (endpoint, case, expected) in observations() {
+            if !matches!(endpoint.as_str(), "certs" | "discovery") {
+                continue;
+            }
+            let method = if case == "preflight" {
+                Method::OPTIONS
+            } else {
+                Method::GET
+            };
+            let origin = expected["cors"]["Access-Control-Allow-Origin"]
+                .as_str()
+                .expect("reference echoes metadata origin");
+            let request = Request::builder()
+                .method(method)
+                .uri("/meta")
+                .header("Origin", origin)
+                .header("Access-Control-Request-Method", "GET")
+                .body(Body::empty())
+                .expect("request builds");
+            let response = app.clone().oneshot(request).await.expect("infallible");
+            assert_eq!(
+                response.status().as_u16(),
+                expected["status"],
+                "{endpoint}/{case}"
+            );
+            assert_matches(&format!("{endpoint}/{case}"), response.headers(), &expected);
+        }
+    }
 }
