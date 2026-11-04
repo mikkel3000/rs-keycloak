@@ -93,6 +93,28 @@ class UpdatePasswordContract(AdminCase):
         observed, _ = self.page(self.submit(action, {"password-new": chosen, "password-confirm": chosen}))
         self.assertEqual(observed["status"], 302)
 
+    def other_session_survives(self, checkbox):
+        first = secrets.token_urlsafe(30)
+        self.call("PUT", self.users + "/reset-password", {"type": "password", "value": first})
+        earlier = self.browser_login(self.realm, "pw-app", CALLBACK, "reference-user", first)
+        self.call("PUT", self.users + "/reset-password", {"type": "password", "value": "temporary-password-value", "temporary": True})
+        _, action = self.page(self.password_step("temporary-password-value"))
+        chosen = secrets.token_urlsafe(30)
+        form = {"password-new": chosen, "password-confirm": chosen}
+        if checkbox:
+            form["logout-sessions"] = "on"
+        self.assertEqual(self.submit(action, form)[0], 302)
+        status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "refresh_token", "client_id": "pw-app", "refresh_token": earlier["refresh_token"]})
+        return status == 200, json.loads(body)
+
+    def test_logout_sessions_checkbox_ends_other_sessions(self):
+        survived, body = self.other_session_survives(checkbox=True)
+        self.assertFalse(survived)
+        self.assertEqual(body, {"error": "invalid_grant", "error_description": "Session not active"})
+
+    def test_other_sessions_survive_without_the_checkbox(self):
+        self.assertTrue(self.other_session_survives(checkbox=False)[0])
+
 
 if __name__ == "__main__":
     unittest.main()

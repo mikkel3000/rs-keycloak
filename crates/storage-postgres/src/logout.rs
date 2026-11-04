@@ -90,3 +90,23 @@ impl Storage {
         Ok(allowed)
     }
 }
+
+impl Storage {
+    /// Ends every other active session of the session's user, as the
+    /// reference does when a required action's "logout-sessions" box is set.
+    pub async fn end_other_sessions(
+        &self,
+        realm_id: &str,
+        session_id: &str,
+    ) -> Result<u64, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let others: Vec<String> = sqlx::query_scalar("SELECT o.id FROM user_sessions s JOIN user_sessions o ON o.realm_id = s.realm_id AND o.user_id = s.user_id AND o.id <> s.id WHERE s.realm_id = $1 AND s.id = $2 AND o.revoked_at IS NULL FOR UPDATE OF o")
+            .bind(realm_id).bind(session_id).fetch_all(&mut *conn).await?;
+        for other in &others {
+            end_session(conn, realm_id, other).await?;
+        }
+        tx.commit().await?;
+        Ok(others.len() as u64)
+    }
+}

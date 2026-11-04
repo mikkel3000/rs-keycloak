@@ -371,9 +371,8 @@ yields neither a code nor an SSO cookie. The user representation now reports
 next step's code instead of the reference's 30-second wait.
 
 Remaining differences: one OTP credential per user; HOTP, other OTP policies,
-WebAuthn and recovery codes are not implemented; the `logout-sessions`
-checkbox is accepted but other sessions are not ended; setup trusts the
-posted secret as the reference does.
+WebAuthn and recovery codes are not implemented; setup trusts the posted
+secret as the reference does.
 
 ## Temporary passwords and login steps
 
@@ -392,5 +391,6 @@ order for a user with both actions; the slowest takes 303 ms.
 
 Remaining differences: password policies (length, history, complexity) are
 not implemented, so the reference's acceptance of the temporary password as
-the new one is matched only by default; the `logout-sessions` checkbox is
-accepted but other sessions are not ended.
+the new one is matched only by default. The `logout-sessions` checkbox on the
+password-update and TOTP-setup forms now ends the user's other sessions when
+set to `on`, as in the pinned UpdatePassword and UpdateTotp actions.

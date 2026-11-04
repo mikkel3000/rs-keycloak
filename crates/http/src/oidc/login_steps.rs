@@ -276,7 +276,18 @@ pub(super) struct SetupForm {
     #[serde(rename = "userLabel")]
     user_label: Option<String>,
     #[serde(rename = "logout-sessions")]
-    _logout_sessions: Option<String>,
+    logout_sessions: Option<String>,
+}
+
+/// Ends the user's other sessions when the form's checkbox was set.
+async fn logout_others(s: &OidcState, held: &Held, checkbox: Option<&str>) -> Result<(), ()> {
+    if checkbox == Some("on") {
+        s.storage
+            .end_other_sessions(&held.realm_id, &held.session_id)
+            .await
+            .map_err(|_| ())?;
+    }
+    Ok(())
 }
 
 /// Completes TOTP setup when the entered code matches the shown secret.
@@ -333,6 +344,12 @@ pub(super) async fn configure(
         .await
     {
         Ok(true) => {
+            if logout_others(&s, &held, form.logout_sessions.as_deref())
+                .await
+                .is_err()
+            {
+                return unavailable();
+            }
             continue_login(
                 &s,
                 &realm,
@@ -394,7 +411,7 @@ pub(super) struct PasswordForm {
     #[serde(rename = "password-confirm")]
     password_confirm: String,
     #[serde(rename = "logout-sessions")]
-    _logout_sessions: Option<String>,
+    logout_sessions: Option<String>,
 }
 
 /// Longest password the login path accepts.
@@ -444,6 +461,12 @@ pub(super) async fn update_password(
         .await
     {
         Ok(true) => {
+            if logout_others(&s, &held, form.logout_sessions.as_deref())
+                .await
+                .is_err()
+            {
+                return unavailable();
+            }
             continue_login(
                 &s,
                 &realm,
