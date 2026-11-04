@@ -1,9 +1,11 @@
 //! PostgreSQL schema management and guarded application transactions.
 
 mod cors;
+mod realm_admin;
 mod service_account;
 
 pub use cors::WebOriginCheck;
+pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 
 use std::time::Duration;

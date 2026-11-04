@@ -110,9 +110,8 @@ class ServerCase(unittest.TestCase):
         cls.process.wait(timeout=10)
 
     @classmethod
-    def request(cls, method, path, headers=None, form=None):
+    def request(cls, method, path, headers=None, form=None, body=None):
         headers = dict(headers or {})
-        body = None
         if form is not None:
             body = urllib.parse.urlencode(form)
             headers["Content-Type"] = "application/x-www-form-urlencoded"

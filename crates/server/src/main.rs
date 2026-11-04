@@ -15,7 +15,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|client add-confidential <realm> <client-id> <redirect-uri>|client rotate-secret <realm> <client-id>|client enable-service-account <realm> <client-id>|client add-web-origin <realm> <client-id> <origin>|version>";
+const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|client add-confidential <realm> <client-id> <redirect-uri>|client rotate-secret <realm> <client-id>|client enable-service-account <realm> <client-id>|client grant-master-admin <client-id>|client add-web-origin <realm> <client-id> <origin>|version>";
 
 struct Config {
     database_url: String,
@@ -189,6 +189,10 @@ async fn run() -> Result<(), &'static str> {
         ["client", "add-web-origin", realm, client_id, origin] => {
             web_origin::add(realm, client_id, origin).await?;
             println!("Client web origin registered");
+        }
+        ["client", "grant-master-admin", client_id] => {
+            client_provision::grant_master_admin(client_id).await?;
+            println!("Master admin role granted to the client service account");
         }
         ["client", "enable-service-account", realm, client_id] => {
             client_provision::enable_service_account(realm, client_id).await?;

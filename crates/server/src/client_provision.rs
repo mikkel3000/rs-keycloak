@@ -194,3 +194,19 @@ pub(crate) async fn enable_service_account(
         Err(_) => Err("Service account setup failed"),
     }
 }
+
+/// Grants the master `admin` role to a master client's service account, so it
+/// can call the admin API with client-credentials tokens.
+pub(crate) async fn grant_master_admin(client_id: &str) -> Result<(), &'static str> {
+    if client_id.is_empty() || client_id.len() > 255 {
+        return Err("Client ID must be 1-255 bytes");
+    }
+    let storage = Storage::connect(&super::database_url()?)
+        .await
+        .map_err(|_| "Database check failed")?;
+    match storage.grant_master_admin(client_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Master client is missing or has no service account"),
+        Err(_) => Err("Admin role grant failed"),
+    }
+}

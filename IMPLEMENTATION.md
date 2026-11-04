@@ -158,3 +158,28 @@ default request returns an empty scope instead of `profile email`; access and
 ID tokens omit Keycloak's role, profile and client-address claims; enabling a
 service account through the CLI writes no audit event, like the other CLI
 provisioning commands.
+
+## Realm administration
+
+`client grant-master-admin <client-id>` grants the master `admin` role to a
+master client's service account, which then calls the admin API with
+client-credentials tokens, as Keycloak's bootstrap admin client does. User
+tokens from the master realm work the same way when the user holds that role.
+`POST /admin/realms`, `GET /admin/realms/{realm}` and
+`DELETE /admin/realms/{realm}` follow the 19 recorded cases in
+`tests/reference/admin-realm-observations.json` and the pinned
+RealmAdminResource: 401 and 403 bodies, 201 with `Location`, 409 for
+duplicates, `errorMessage` validation errors, 404 for unknown realms, and 400
+when deleting master. Discovery now answers 404 "Realm does not exist" for
+unknown realms, still serves disabled realms, and sends the reference cache
+header. Realm creation and deletion write audit events in the master realm
+under the acting user, so the record outlives the deleted realm.
+`tests/public/admin_realms_contract.py` checks 10 cases; the slowest takes
+74 ms.
+
+Remaining differences: the representation holds only `id`, `realm` and
+`enabled` of the reference's 104 fields; requests with any other field are
+refused with 400 instead of being partly applied; realm names follow the
+existing URL-safe pattern and other names get "Invalid realm name", a message
+the reference was not recorded for; admin tokens must come from the master
+realm, and the fine-grained realm-management roles are not modelled.

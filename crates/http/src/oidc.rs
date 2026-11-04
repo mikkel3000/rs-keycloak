@@ -34,12 +34,12 @@ use zeroize::Zeroizing;
 /// Shared state for a single configured issuer.
 #[derive(Clone)]
 pub struct OidcState {
-    storage: Arc<Storage>,
+    pub(crate) storage: Arc<Storage>,
     login: Arc<LoginService>,
     client_auth: Arc<ClientAuthenticator>,
     signer: Arc<SigningKey>,
     signing_slots: Arc<Semaphore>,
-    issuer_base: String,
+    pub(crate) issuer_base: String,
     path_prefix: String,
 }
 
@@ -141,6 +141,7 @@ pub fn router(state: OidcState) -> Router {
                 .options(|| async { StatusCode::OK })
                 .layer(axum::middleware::from_fn(cors::metadata)),
         )
+        .merge(crate::admin::routes())
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(state);
     if prefix.is_empty() {
@@ -166,10 +167,10 @@ struct AuthorizationQuery {
 fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
-fn digest(value: &str) -> [u8; 32] {
+pub(crate) fn digest(value: &str) -> [u8; 32] {
     Sha256::digest(value.as_bytes()).into()
 }
-fn valid_realm(realm: &str) -> bool {
+pub(crate) fn valid_realm(realm: &str) -> bool {
     !realm.is_empty()
         && realm.len() <= 255
         && realm
@@ -184,7 +185,7 @@ fn failure() -> Response {
     )
         .into_response()
 }
-fn unavailable() -> Response {
+pub(crate) fn unavailable() -> Response {
     (
         StatusCode::SERVICE_UNAVAILABLE,
         [(header::CACHE_CONTROL, "no-store")],
@@ -715,13 +716,24 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
     if !valid_realm(&realm) {
         return failure();
     }
-    match s.storage.realm_id_by_name(&realm).await {
+    // The reference serves discovery for disabled realms too.
+    match s.storage.realm_by_name(&realm).await {
         Ok(Some(_)) => (),
-        Ok(None) => return failure(),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"Realm does not exist"})),
+            )
+                .into_response();
+        }
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token","client_credentials"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
+    let cache = [(
+        header::CACHE_CONTROL,
+        "no-cache, must-revalidate, no-transform, no-store",
+    )];
+    (cache, Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token","client_credentials"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]}))).into_response()
 }
 
 /// Builds a userinfo 401 with the reference Bearer challenge and empty body.
@@ -837,7 +849,7 @@ async fn userinfo(
     }
 }
 
-async fn verified_access(
+pub(crate) async fn verified_access(
     s: &OidcState,
     realm: &str,
     token: &str,
