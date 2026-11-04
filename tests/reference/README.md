@@ -37,3 +37,12 @@ and prefix search, count, password reset, sign-in after reset, and delete. The
 fixture user sets name and email because the default 26.8.1 user profile
 requires them before a login completes. The baseline passed a second,
 comparing run.
+
+`admin_clients.py` records 23 client administration cases in
+`admin-client-observations.json`: public, confidential and default clients,
+duplicates, a client without `clientId` (the reference generates a UUID),
+malformed and unauthenticated requests, read, `clientId` search, secret read
+and regeneration, the service-account user and delete. Secrets are reduced to
+presence. Every new realm lists six built-in clients (`account`,
+`account-console`, `admin-cli`, `broker`, `realm-management`,
+`security-admin-console`). The baseline passed a second, comparing run.

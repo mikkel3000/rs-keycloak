@@ -205,3 +205,14 @@ always reports no TOTP, required actions or disableable credential types,
 because none of those exist yet; other user fields, other search parameters
 and temporary passwords are refused with 400; deleting a master user who has
 written audit events fails, because audit rows keep their actor.
+
+## Open decision: recoverable client secrets
+
+PLAN.md requires client secrets to be stored with authenticated encryption so
+they can be recovered, but the current code stores them as Argon2id hashes.
+The recorded reference returns a client's secret from
+`GET /admin/realms/{realm}/clients/{id}/client-secret`, and admin tools rely on
+reading it, which a hash cannot support. The client admin API needs a
+deployment-supplied encryption key, encrypted storage for new and rotated
+secrets, and a migration path for existing hashed secrets, which cannot be
+recovered and need rotation, before it can match those cases.

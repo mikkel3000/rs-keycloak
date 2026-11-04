@@ -1,0 +1,381 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Client create, read, search, secret, service-account user and delete through the admin API; selected fields and fixed values only, secrets reduced to presence.",
+  "normalization": "The random realm name and base URL are replaced with {realm} and {base}; created client IDs are replaced with {id}.",
+  "observations": {
+    "create/public": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/clients/{id}",
+      "empty_body": true
+    },
+    "create/confidential": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/clients/{id}",
+      "empty_body": true
+    },
+    "create/defaults": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/clients/{id}",
+      "empty_body": true
+    },
+    "create/duplicate": {
+      "status": 409,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Client public-app already exists"
+      },
+      "has_secret": false
+    },
+    "create/missing-client-id": {
+      "status": 201,
+      "content_type": null,
+      "location_pattern": "{base}/admin/realms/{realm}/clients/{id}",
+      "empty_body": true
+    },
+    "create/malformed-json": {
+      "status": 400,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Cannot parse the JSON"
+      },
+      "has_secret": false
+    },
+    "create/unknown-realm": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Realm not found."
+      },
+      "has_secret": false
+    },
+    "create/no-token": {
+      "status": 401,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "HTTP 401 Unauthorized"
+      },
+      "has_secret": false
+    },
+    "get/public": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "alwaysDisplayInConsole",
+        "attributes",
+        "authenticationFlowBindingOverrides",
+        "bearerOnly",
+        "clientAuthenticatorType",
+        "clientId",
+        "consentRequired",
+        "defaultClientScopes",
+        "directAccessGrantsEnabled",
+        "enabled",
+        "frontchannelLogout",
+        "fullScopeAllowed",
+        "id",
+        "implicitFlowEnabled",
+        "nodeReRegistrationTimeout",
+        "notBefore",
+        "optionalClientScopes",
+        "protocol",
+        "publicClient",
+        "redirectUris",
+        "serviceAccountsEnabled",
+        "standardFlowEnabled",
+        "surrogateAuthRequired",
+        "webOrigins"
+      ],
+      "body": {
+        "clientId": "public-app",
+        "enabled": true,
+        "publicClient": true,
+        "serviceAccountsEnabled": false,
+        "standardFlowEnabled": true,
+        "directAccessGrantsEnabled": false,
+        "implicitFlowEnabled": false,
+        "redirectUris": [
+          "https://app.example.invalid/callback"
+        ],
+        "webOrigins": [
+          "https://app.example.invalid"
+        ],
+        "protocol": "openid-connect",
+        "clientAuthenticatorType": "client-secret",
+        "bearerOnly": false
+      },
+      "has_secret": false
+    },
+    "get/confidential": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "alwaysDisplayInConsole",
+        "attributes",
+        "authenticationFlowBindingOverrides",
+        "bearerOnly",
+        "clientAuthenticatorType",
+        "clientId",
+        "consentRequired",
+        "defaultClientScopes",
+        "directAccessGrantsEnabled",
+        "enabled",
+        "frontchannelLogout",
+        "fullScopeAllowed",
+        "id",
+        "implicitFlowEnabled",
+        "nodeReRegistrationTimeout",
+        "notBefore",
+        "optionalClientScopes",
+        "protocol",
+        "publicClient",
+        "redirectUris",
+        "secret",
+        "serviceAccountsEnabled",
+        "standardFlowEnabled",
+        "surrogateAuthRequired",
+        "webOrigins"
+      ],
+      "body": {
+        "clientId": "service-app",
+        "enabled": true,
+        "publicClient": false,
+        "serviceAccountsEnabled": true,
+        "standardFlowEnabled": false,
+        "directAccessGrantsEnabled": false,
+        "implicitFlowEnabled": false,
+        "redirectUris": [],
+        "webOrigins": [],
+        "protocol": "openid-connect",
+        "clientAuthenticatorType": "client-secret",
+        "bearerOnly": false
+      },
+      "has_secret": true
+    },
+    "get/defaults": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "alwaysDisplayInConsole",
+        "attributes",
+        "authenticationFlowBindingOverrides",
+        "bearerOnly",
+        "clientAuthenticatorType",
+        "clientId",
+        "consentRequired",
+        "defaultClientScopes",
+        "directAccessGrantsEnabled",
+        "enabled",
+        "frontchannelLogout",
+        "fullScopeAllowed",
+        "id",
+        "implicitFlowEnabled",
+        "nodeReRegistrationTimeout",
+        "notBefore",
+        "optionalClientScopes",
+        "protocol",
+        "publicClient",
+        "redirectUris",
+        "secret",
+        "serviceAccountsEnabled",
+        "standardFlowEnabled",
+        "surrogateAuthRequired",
+        "webOrigins"
+      ],
+      "body": {
+        "clientId": "default-app",
+        "enabled": true,
+        "publicClient": false,
+        "serviceAccountsEnabled": false,
+        "standardFlowEnabled": true,
+        "directAccessGrantsEnabled": false,
+        "implicitFlowEnabled": false,
+        "redirectUris": [],
+        "webOrigins": [],
+        "protocol": "openid-connect",
+        "clientAuthenticatorType": "client-secret",
+        "bearerOnly": false
+      },
+      "has_secret": true
+    },
+    "get/unknown": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find client"
+      },
+      "has_secret": false
+    },
+    "search/client-id": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 1,
+      "client_ids": [
+        "public-app"
+      ]
+    },
+    "search/client-id-unknown": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 0,
+      "client_ids": []
+    },
+    "search/all-count": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "list_length": 10,
+      "client_ids": [
+        "account",
+        "account-console",
+        "admin-cli",
+        "broker",
+        "default-app",
+        "public-app",
+        "realm-management",
+        "security-admin-console",
+        "service-app",
+        "{generated}"
+      ]
+    },
+    "secret/get": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "type",
+        "value"
+      ],
+      "body": {
+        "type": "secret"
+      },
+      "has_secret": true
+    },
+    "secret/get-public": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "type"
+      ],
+      "body": {
+        "type": "secret"
+      },
+      "has_secret": false
+    },
+    "secret/regenerate": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "type",
+        "value"
+      ],
+      "body": {
+        "type": "secret"
+      },
+      "has_secret": true
+    },
+    "service-account/user": {
+      "status": 200,
+      "content_type": "application/json;charset=UTF-8",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "emailVerified",
+        "enabled",
+        "id",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ],
+      "body": {
+        "enabled": true
+      },
+      "has_secret": false
+    },
+    "service-account/public": {
+      "status": 400,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Service account not enabled for the client 'public-app'"
+      },
+      "has_secret": false
+    },
+    "delete/success": {
+      "status": 204,
+      "content_type": null,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "delete/repeat": {
+      "status": 404,
+      "content_type": "application/json",
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find client"
+      },
+      "has_secret": false
+    }
+  }
+}
