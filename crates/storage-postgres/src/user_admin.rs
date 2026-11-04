@@ -62,9 +62,9 @@ pub enum UsernameFilter<'a> {
     Contains(&'a str),
 }
 
-const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp";
+pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp";
 
-fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
+pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
     Ok(UserRecord {
         id: row.try_get("id")?,
         username: row.try_get("username")?,

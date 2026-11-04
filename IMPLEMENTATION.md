@@ -238,3 +238,26 @@ representation lists only the 13 modelled settings of the reference's 26
 fields; direct access, implicit, bearer-only, non-OIDC protocols, other
 authenticators, attributes other than S256 PKCE, and client updates are
 refused or missing; the CLI cannot rotate a sealed secret.
+
+## Realm roles and role mappings
+
+Every realm has `default-roles-{realm}` (composite of `offline_access` and
+`uma_authorization`), and every user, including bootstrap and service-account
+users, holds it. PostgreSQL triggers on realm and user inserts enforce this,
+so no creation path can skip it, and migration 14 backfilled existing realms
+and users. A fresh install checked this: the bootstrap admin holds `admin` and
+`default-roles-master`.
+
+`/admin/realms/{realm}/roles` supports list, create, read, delete and the
+users holding a role; `/users/{id}/role-mappings/realm` supports read, add and
+remove. These follow the 21 recorded cases in
+`tests/reference/admin-role-observations.json`. Mappings are matched by both
+role identifier and name, as the reference does. Adding a mapping twice
+changes nothing. Changes are audited in the master realm.
+`tests/public/admin_roles_contract.py` checks 3 groups of cases; the slowest
+takes 155 ms.
+
+Remaining differences: composite editing, role attributes and client roles
+are refused; deleting the default role answers 400, a response the reference
+was not recorded for; composite roles are not yet expanded into tokens or
+used for authorization, which still checks only the master `admin` role.

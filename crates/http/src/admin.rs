@@ -20,12 +20,14 @@ use uuid::Uuid;
 use crate::oidc::{OidcState, digest, valid_realm, verified_access};
 
 mod clients;
+mod roles;
 mod users;
 
 /// Admin routes, mounted with the public routes below the issuer path.
 pub(crate) fn routes() -> Router<OidcState> {
     Router::new()
         .merge(clients::routes())
+        .merge(roles::routes())
         .merge(users::routes())
         .route("/admin/realms", post(create_realm))
         .route(
