@@ -418,3 +418,24 @@ actions answer 400); SMTP authentication is refused until its password can
 be stored sealed; sends are synchronous, as in the reference, rather than
 queued in a durable outbox; message text is fixed English, not a theme;
 `client_id` and `redirect_uri` link parameters are ignored.
+
+## Forgot password
+
+Realms with `resetPasswordAllowed` (set at creation or through realm PUT)
+show a "Forgot Password?" link on the login page, following the 12 recorded
+cases in `tests/reference/reset-credentials-observations.json`. The
+`kc-reset-password-form` takes a username or email. Every request returns the
+same login page with "You should receive an email shortly with further
+instructions.", and delivery failures are not shown, so the flow does not
+reveal which accounts exist. Known enabled users with an email get a
+"Reset password" message whose link is bound to the login request, expires
+after 5 minutes, and opens the password form directly. In the browser that
+started the login, a new password continues that login, through any pending
+OTP or required-action steps, to the client's code; elsewhere it ends on the
+confirmation page. `tests/public/reset_credentials_contract.py` checks 3
+groups; the slowest takes 333 ms.
+
+Remaining differences: links carry only `key`, without the reference's
+`client_id`, `tab_id`, `execution` and `client_data` parameters; the reset
+form is reachable only from a live login request; there is no rate limit on
+reset requests per user yet.

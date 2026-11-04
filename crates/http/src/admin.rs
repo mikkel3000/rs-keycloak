@@ -134,6 +134,7 @@ async fn authorize(state: &OidcState, headers: &HeaderMap) -> Result<String, Adm
 struct NewRealm {
     name: String,
     enabled: bool,
+    reset_password_allowed: bool,
     smtp: Option<RealmSmtp>,
 }
 
@@ -225,10 +226,12 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
         return Err(unreadable());
     };
-    if let Some(field) = fields
-        .keys()
-        .find(|key| !matches!(key.as_str(), "realm" | "enabled" | "smtpServer"))
-    {
+    if let Some(field) = fields.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed"
+        )
+    }) {
         return Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
         )));
@@ -253,9 +256,15 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
         None | Some(Value::Null) => None,
         Some(value) => parse_smtp(value)?,
     };
+    let reset_password_allowed = match fields.get("resetPasswordAllowed") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(allowed)) => *allowed,
+        Some(_) => return Err(unreadable()),
+    };
     Ok(NewRealm {
         name: name.to_owned(),
         enabled,
+        reset_password_allowed,
         smtp,
     })
 }
@@ -273,6 +282,7 @@ async fn create_realm(
             &Uuid::new_v4().to_string(),
             &realm.name,
             realm.enabled,
+            realm.reset_password_allowed,
             realm.smtp.as_ref(),
             &actor,
         )
@@ -305,8 +315,7 @@ async fn read_realm(
         .realm_by_name(&name)
         .await?
         .ok_or(AdminError::RealmNotFound)?;
-    let mut representation =
-        json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled });
+    let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed });
     if let Some(smtp) = &realm.smtp {
         representation["smtpServer"] = smtp_representation(smtp);
     }
@@ -330,10 +339,12 @@ async fn update_realm(
             "unable to read contents from stream",
         ));
     };
-    if let Some(field) = fields
-        .keys()
-        .find(|key| !matches!(key.as_str(), "realm" | "enabled" | "smtpServer"))
-    {
+    if let Some(field) = fields.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed"
+        )
+    }) {
         return Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
         )));
@@ -354,9 +365,24 @@ async fn update_realm(
         }
     };
     let smtp = fields.get("smtpServer").map(parse_smtp).transpose()?;
+    let reset_password_allowed = match fields.get("resetPasswordAllowed") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(allowed)) => Some(*allowed),
+        Some(_) => {
+            return Err(AdminError::bad_request(
+                "unable to read contents from stream",
+            ));
+        }
+    };
     if state
         .storage
-        .update_realm(&name, enabled, smtp.as_ref().map(Option::as_ref), &actor)
+        .update_realm(
+            &name,
+            enabled,
+            reset_password_allowed,
+            smtp.as_ref().map(Option::as_ref),
+            &actor,
+        )
         .await?
     {
         Ok(StatusCode::NO_CONTENT)

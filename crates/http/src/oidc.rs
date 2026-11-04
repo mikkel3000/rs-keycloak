@@ -8,6 +8,7 @@ mod cors;
 mod introspection;
 mod login_steps;
 mod logout;
+mod reset_credentials;
 mod revocation;
 
 use std::collections::BTreeMap;
@@ -124,6 +125,10 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/update-password/{request_id}",
             post(login_steps::update_password),
+        )
+        .route(
+            "/realms/{realm}/login-actions/reset-credentials",
+            get(reset_credentials::form).post(reset_credentials::request),
         )
         .route(
             "/realms/{realm}/login-actions/action-token",
@@ -379,20 +384,68 @@ async fn authorize(
                 .unwrap_or_else(|()| unavailable());
         }
     }
-    login_page(&s, &realm, &request_id, &csrf, false)
+    login_page(&s, &realm, &request_id, &csrf, LoginNotice::None).await
 }
 
 /// Renders the password form; after a failed attempt it shows the same form
 /// again with an error, as the reference does.
-fn login_page(s: &OidcState, realm: &str, request_id: &str, csrf: &str, failed: bool) -> Response {
+/// Why a login-page submission was refused before its form was checked.
+enum Rejection {
+    /// The request, cookie or realm did not match a live login.
+    Invalid,
+    /// Storage could not answer.
+    Unavailable,
+}
+
+impl Rejection {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Invalid => failure(),
+            Self::Unavailable => unavailable(),
+        }
+    }
+}
+
+/// A message shown above the password form.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LoginNotice {
+    None,
+    /// The last attempt failed.
+    Failed,
+    /// A forgot-password request was accepted.
+    EmailSent,
+}
+
+/// Renders the password form, with a forgot-password link when the realm
+/// allows it.
+async fn login_page(
+    s: &OidcState,
+    realm: &str,
+    request_id: &str,
+    csrf: &str,
+    notice: LoginNotice,
+) -> Response {
+    let reset_allowed = match s.storage.realm_by_name(realm).await {
+        Ok(record) => record.is_some_and(|record| record.reset_password_allowed),
+        Err(_) => return unavailable(),
+    };
     let prefix = consent::escape(&s.path_prefix);
-    let message = if failed {
-        "<p role=\"alert\">Invalid username or password.</p>"
+    let message = match notice {
+        LoginNotice::None => "",
+        LoginNotice::Failed => "<p role=\"alert\">Invalid username or password.</p>",
+        LoginNotice::EmailSent => {
+            "<p role=\"status\">You should receive an email shortly with further instructions.</p>"
+        }
+    };
+    let reset = if reset_allowed {
+        format!(
+            "<p><a href=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\">Forgot Password?</a></p>"
+        )
     } else {
-        ""
+        String::new()
     };
     let body = format!(
-        "<h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>"
+        "<h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>{reset}"
     );
     step_page(&s.path_prefix, realm, csrf, "Sign in", &body)
 }
@@ -459,7 +512,9 @@ async fn authenticate(
         .await;
     let session_id = match result {
         Ok(LoginResult::Authenticated { session_id }) => session_id,
-        Ok(LoginResult::Denied) => return login_page(&s, &realm, &request_id, csrf, true),
+        Ok(LoginResult::Denied) => {
+            return login_page(&s, &realm, &request_id, csrf, LoginNotice::Failed).await;
+        }
         Err(_) => return unavailable(),
     };
     login_steps::continue_login(&s, &realm, &realm_id, &request_id, csrf, &session_id).await

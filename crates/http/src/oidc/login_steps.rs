@@ -20,7 +20,8 @@ use zeroize::Zeroizing;
 
 use super::consent::escape;
 use super::{
-    OidcState, complete_login, csrf, digest, failure, step_page, unavailable, valid_realm,
+    OidcState, Rejection, complete_login, csrf, digest, failure, step_page, unavailable,
+    valid_realm,
 };
 
 /// Length of a generated setup secret, as in the reference.
@@ -155,42 +156,27 @@ struct Held {
     csrf: String,
 }
 
-/// Why a login-step submission was refused before its form was checked.
-enum Rejected {
-    Invalid,
-    Unavailable,
-}
-
-impl Rejected {
-    fn into_response(self) -> Response {
-        match self {
-            Self::Invalid => failure(),
-            Self::Unavailable => unavailable(),
-        }
-    }
-}
-
 async fn held(
     s: &OidcState,
     realm: &str,
     request_id: &str,
     headers: &HeaderMap,
-) -> Result<Held, Rejected> {
+) -> Result<Held, Rejection> {
     if !valid_realm(realm) || request_id.len() != 64 {
-        return Err(Rejected::Invalid);
+        return Err(Rejection::Invalid);
     }
     let Some(csrf) = csrf(headers).filter(|csrf| csrf.len() == 64) else {
-        return Err(Rejected::Invalid);
+        return Err(Rejection::Invalid);
     };
     let pending = match s.storage.pending_request(request_id, &digest(csrf)).await {
         Ok(Some(pending)) => pending,
-        Ok(None) => return Err(Rejected::Invalid),
-        Err(_) => return Err(Rejected::Unavailable),
+        Ok(None) => return Err(Rejection::Invalid),
+        Err(_) => return Err(Rejection::Unavailable),
     };
     let realm_id = match s.storage.realm_id_by_name(realm).await {
         Ok(Some(id)) => id,
-        Ok(None) => return Err(Rejected::Invalid),
-        Err(_) => return Err(Rejected::Unavailable),
+        Ok(None) => return Err(Rejection::Invalid),
+        Err(_) => return Err(Rejection::Unavailable),
     };
     Ok(Held {
         realm_id,

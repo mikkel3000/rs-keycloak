@@ -13,7 +13,7 @@ mod service_account;
 mod sso;
 mod user_admin;
 
-pub use action_tokens::ActionToken;
+pub use action_tokens::{ActionToken, RedeemedToken};
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
@@ -58,6 +58,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0019_totp.sql"),
     include_str!("../../../migrations/0020_required_actions.sql"),
     include_str!("../../../migrations/0021_realm_email.sql"),
+    include_str!("../../../migrations/0022_reset_credentials.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

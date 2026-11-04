@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::{Form, Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
 use rs_keycloak_storage_postgres::ActionToken;
 use serde::Deserialize;
@@ -16,10 +16,14 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::consent::escape;
-use super::{OidcState, digest, plain_page, unavailable, valid_realm};
+use super::login_steps::continue_login;
+use super::{OidcState, csrf, digest, plain_page, unavailable, valid_realm};
 
 /// Longest password the login path accepts.
 const MAX_PASSWORD_BYTES: usize = 1024;
+
+/// Session lifetime, matching password login.
+const SESSION_SECONDS: i32 = 1800;
 
 fn expired() -> Response {
     plain_page(
@@ -97,11 +101,14 @@ pub(super) async fn show(
     Query(params): Query<BTreeMap<String, String>>,
 ) -> Response {
     let key = params.get("key").map(String::as_str);
-    if let Err(refused) = live(&s, &realm, key).await {
-        return refused.into_response();
-    }
+    let token = match live(&s, &realm, key).await {
+        Ok((_, token)) => token,
+        Err(refused) => return refused.into_response(),
+    };
     let key = key.unwrap_or_default();
-    if params.get("execute").map(String::as_str) == Some("UPDATE_PASSWORD") {
+    // A link requested from the login page opens the form directly; an
+    // admin-sent link first lists the requested actions.
+    if token.from_login || params.get("execute").map(String::as_str) == Some("UPDATE_PASSWORD") {
         return password_form(&s, &realm, key, false);
     }
     let body = format!(
@@ -127,6 +134,7 @@ pub(super) async fn submit(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    headers: HeaderMap,
     Form(form): Form<PasswordForm>,
 ) -> Response {
     let key = params.get("key").map(String::as_str);
@@ -152,7 +160,7 @@ pub(super) async fn submit(
         return unavailable();
     };
     let hash = Zeroizing::new(hash);
-    match s
+    let redeemed = match s
         .storage
         .redeem_password_token(
             &realm_id,
@@ -162,10 +170,10 @@ pub(super) async fn submit(
         )
         .await
     {
-        Ok(true) => (),
-        Ok(false) => return expired(),
+        Ok(Some(redeemed)) => redeemed,
+        Ok(None) => return expired(),
         Err(_) => return unavailable(),
-    }
+    };
     if form.logout_sessions.as_deref() == Some("on")
         && s.storage
             .end_user_sessions(&realm_id, &token.user_id)
@@ -173,6 +181,32 @@ pub(super) async fn submit(
             .is_err()
     {
         return unavailable();
+    }
+    // The browser that asked for the link continues its login, as the
+    // reference does; the emailed link stands in for the password.
+    if let (Some(request_id), Some(csrf)) = (
+        redeemed.authorization_request_id.as_deref(),
+        csrf(&headers).filter(|csrf| csrf.len() == 64),
+    ) {
+        let session_id = Uuid::new_v4().to_string();
+        match s
+            .storage
+            .start_session_for_request(
+                &realm_id,
+                request_id,
+                &digest(csrf),
+                &redeemed.user_id,
+                &session_id,
+                SESSION_SECONDS,
+            )
+            .await
+        {
+            Ok(true) => {
+                return continue_login(&s, &realm, &realm_id, request_id, csrf, &session_id).await;
+            }
+            Ok(false) => (),
+            Err(_) => return unavailable(),
+        }
     }
     plain_page(
         StatusCode::OK,

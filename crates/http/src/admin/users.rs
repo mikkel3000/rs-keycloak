@@ -593,7 +593,14 @@ async fn execute_actions_email(
     let token = Zeroizing::new(random_token());
     if !state
         .storage
-        .issue_action_token(&realm.id, &user.id, &digest(&token), &actions, lifespan)
+        .issue_action_token(
+            &realm.id,
+            &user.id,
+            &digest(&token),
+            &actions,
+            lifespan,
+            None,
+        )
         .await?
     {
         return Err(user_not_found());
