@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, MASTER_REALM, RealmCreation, RealmDeletion, StorageError,
+    AccessTokenStatus, MASTER_REALM, RealmCreation, RealmDeletion, RealmSmtp, StorageError,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -34,7 +34,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .route("/admin/realms", post(create_realm))
         .route(
             "/admin/realms/{realm}",
-            get(read_realm).delete(delete_realm),
+            get(read_realm).put(update_realm).delete(delete_realm),
         )
 }
 
@@ -134,6 +134,89 @@ async fn authorize(state: &OidcState, headers: &HeaderMap) -> Result<String, Adm
 struct NewRealm {
     name: String,
     enabled: bool,
+    smtp: Option<RealmSmtp>,
+}
+
+/// Parses Keycloak's `smtpServer` object, whose values are strings. An empty
+/// object removes the settings. SMTP authentication is refused until its
+/// password can be stored sealed.
+fn parse_smtp(value: &Value) -> Result<Option<RealmSmtp>, AdminError> {
+    let Value::Object(fields) = value else {
+        return Err(AdminError::bad_request(
+            "unable to read contents from stream",
+        ));
+    };
+    if fields.is_empty() {
+        return Ok(None);
+    }
+    let text = |name: &str| match fields.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value.is_empty() => Ok(None),
+        Some(Value::String(value)) if value.len() <= 255 => Ok(Some(value.clone())),
+        Some(_) => Err(AdminError::bad_request(format!(
+            "Invalid smtpServer {name}"
+        ))),
+    };
+    let flag = |name: &str| match text(name)?.as_deref() {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(AdminError::bad_request(format!(
+            "Invalid smtpServer {name}"
+        ))),
+    };
+    if let Some(field) = fields.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "host" | "port" | "from" | "fromDisplayName" | "starttls" | "ssl" | "auth"
+        )
+    }) {
+        return Err(AdminError::bad_request(format!(
+            "Unsupported smtpServer field: {field}"
+        )));
+    }
+    if flag("auth")? {
+        return Err(AdminError::bad_request(
+            "Unsupported smtpServer field: auth",
+        ));
+    }
+    let host = text("host")?.ok_or_else(|| AdminError::bad_request("Invalid smtpServer host"))?;
+    let port = match text("port")? {
+        None => 25,
+        Some(port) => port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .map(i32::from)
+            .ok_or_else(|| AdminError::bad_request("Invalid smtpServer port"))?,
+    };
+    Ok(Some(RealmSmtp {
+        host,
+        port,
+        from: text("from")?,
+        from_display_name: text("fromDisplayName")?,
+        starttls: flag("starttls")?,
+        ssl: flag("ssl")?,
+    }))
+}
+
+/// Keycloak's string-valued `smtpServer` representation.
+fn smtp_representation(smtp: &RealmSmtp) -> Value {
+    let mut fields = serde_json::Map::new();
+    fields.insert("host".into(), json!(smtp.host));
+    fields.insert("port".into(), json!(smtp.port.to_string()));
+    if let Some(from) = &smtp.from {
+        fields.insert("from".into(), json!(from));
+    }
+    if let Some(name) = &smtp.from_display_name {
+        fields.insert("fromDisplayName".into(), json!(name));
+    }
+    if smtp.starttls {
+        fields.insert("starttls".into(), json!("true"));
+    }
+    if smtp.ssl {
+        fields.insert("ssl".into(), json!("true"));
+    }
+    Value::Object(fields)
 }
 
 /// Parses a creation body, refusing fields this server does not store yet.
@@ -144,7 +227,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     };
     if let Some(field) = fields
         .keys()
-        .find(|key| !matches!(key.as_str(), "realm" | "enabled"))
+        .find(|key| !matches!(key.as_str(), "realm" | "enabled" | "smtpServer"))
     {
         return Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
@@ -166,9 +249,14 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
         Some(Value::Bool(enabled)) => *enabled,
         Some(_) => return Err(unreadable()),
     };
+    let smtp = match fields.get("smtpServer") {
+        None | Some(Value::Null) => None,
+        Some(value) => parse_smtp(value)?,
+    };
     Ok(NewRealm {
         name: name.to_owned(),
         enabled,
+        smtp,
     })
 }
 
@@ -185,6 +273,7 @@ async fn create_realm(
             &Uuid::new_v4().to_string(),
             &realm.name,
             realm.enabled,
+            realm.smtp.as_ref(),
             &actor,
         )
         .await?;
@@ -216,12 +305,64 @@ async fn read_realm(
         .realm_by_name(&name)
         .await?
         .ok_or(AdminError::RealmNotFound)?;
-    let representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled });
+    let mut representation =
+        json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled });
+    if let Some(smtp) = &realm.smtp {
+        representation["smtpServer"] = smtp_representation(smtp);
+    }
     Ok((
         [(header::CONTENT_TYPE, "application/json;charset=UTF-8")],
         representation.to_string(),
     )
         .into_response())
+}
+
+/// Applies a partial realm representation: `enabled` and `smtpServer`.
+async fn update_realm(
+    State(state): State<OidcState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let actor = authorize(&state, &headers).await?;
+    let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&body) else {
+        return Err(AdminError::bad_request(
+            "unable to read contents from stream",
+        ));
+    };
+    if let Some(field) = fields
+        .keys()
+        .find(|key| !matches!(key.as_str(), "realm" | "enabled" | "smtpServer"))
+    {
+        return Err(AdminError::bad_request(format!(
+            "Unsupported realm field: {field}"
+        )));
+    }
+    if fields
+        .get("realm")
+        .is_some_and(|realm| realm != &json!(name))
+    {
+        return Err(AdminError::bad_request("Renaming realms is not supported"));
+    }
+    let enabled = match fields.get("enabled") {
+        None | Some(Value::Null) => None,
+        Some(Value::Bool(enabled)) => Some(*enabled),
+        Some(_) => {
+            return Err(AdminError::bad_request(
+                "unable to read contents from stream",
+            ));
+        }
+    };
+    let smtp = fields.get("smtpServer").map(parse_smtp).transpose()?;
+    if state
+        .storage
+        .update_realm(&name, enabled, smtp.as_ref().map(Option::as_ref), &actor)
+        .await?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AdminError::RealmNotFound)
+    }
 }
 
 async fn delete_realm(

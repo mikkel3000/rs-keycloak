@@ -1,5 +1,6 @@
 //! OIDC authorization-code request handling.
 
+mod action_token;
 mod authorization_response;
 mod client_credentials;
 mod consent;
@@ -123,6 +124,10 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/update-password/{request_id}",
             post(login_steps::update_password),
+        )
+        .route(
+            "/realms/{realm}/login-actions/action-token",
+            get(action_token::show).post(action_token::submit),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/token",
@@ -514,13 +519,12 @@ async fn complete_login(
     response
 }
 
-/// Renders a login-step page (second factor, consent) that keeps the
-/// request's CSRF cookie so the page's form stays bound to this browser.
-fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str) -> Response {
+/// Renders a page with the login pages' security headers and no cookies.
+fn plain_page(status: StatusCode, title: &str, body: &str) -> Response {
     let html = format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title></head><body>{body}</body></html>"
     );
-    let mut response = Html(html).into_response();
+    let mut response = (status, Html(html)).into_response();
     let headers = response.headers_mut();
     headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
     headers.insert(
@@ -531,6 +535,14 @@ fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str
         header::REFERRER_POLICY,
         HeaderValue::from_static("no-referrer"),
     );
+    response
+}
+
+/// Renders a login-step page (second factor, consent) that keeps the
+/// request's CSRF cookie so the page's form stays bound to this browser.
+fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str) -> Response {
+    let mut response = plain_page(StatusCode::OK, title, body);
+    let headers = response.headers_mut();
     let cookie = format!(
         "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
     );

@@ -1,5 +1,6 @@
 //! PostgreSQL schema management and guarded application transactions.
 
+mod action_tokens;
 mod client_admin;
 mod consent;
 mod cors;
@@ -12,13 +13,14 @@ mod service_account;
 mod sso;
 mod user_admin;
 
+pub use action_tokens::ActionToken;
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
 pub use login_steps::{CredentialRecord, LoginStep, OtpCredential};
 pub use logout::RefreshLogout;
-pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord};
+pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSmtp};
 pub use role_admin::{RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;
@@ -55,6 +57,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0018_consent.sql"),
     include_str!("../../../migrations/0019_totp.sql"),
     include_str!("../../../migrations/0020_required_actions.sql"),
+    include_str!("../../../migrations/0021_realm_email.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

@@ -110,3 +110,22 @@ impl Storage {
         Ok(others.len() as u64)
     }
 }
+
+impl Storage {
+    /// Ends every active session of a user, with their refresh families.
+    pub async fn end_user_sessions(
+        &self,
+        realm_id: &str,
+        user_id: &str,
+    ) -> Result<u64, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let sessions: Vec<String> = sqlx::query_scalar("SELECT id FROM user_sessions WHERE realm_id = $1 AND user_id = $2 AND revoked_at IS NULL FOR UPDATE")
+            .bind(realm_id).bind(user_id).fetch_all(&mut *conn).await?;
+        for session in &sessions {
+            end_session(conn, realm_id, session).await?;
+        }
+        tx.commit().await?;
+        Ok(sessions.len() as u64)
+    }
+}

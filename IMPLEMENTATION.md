@@ -394,3 +394,27 @@ not implemented, so the reference's acceptance of the temporary password as
 the new one is matched only by default. The `logout-sessions` checkbox on the
 password-update and TOTP-setup forms now ends the user's other sessions when
 set to `on`, as in the pinned UpdatePassword and UpdateTotp actions.
+
+## Realm email and action links
+
+Realms accept Keycloak's string-valued `smtpServer` settings (`host`, `port`,
+`from`, `fromDisplayName`, `starttls`, `ssl`) at creation and through a new
+partial `PUT /admin/realms/{realm}`, and return them on read. Mail goes
+through `crates/integrations` with lettre, reviewed in `docs/dependencies.md`;
+plain SMTP is allowed only to loopback hosts, and each send has a 10-second
+limit. `PUT /users/{id}/execute-actions-email` with `UPDATE_PASSWORD` follows
+the 12 recorded cases in `tests/reference/execute-actions-observations.json`:
+the recorded 400 and 500 errors, a multipart "Update Your Account" message
+from the realm's sender, and a `/login-actions/action-token?key=` link that
+opens an info page, then the password form, then a confirmation. Keys are
+random, stored only as digests, expire after the requested `lifespan`
+(default 12 hours), and are used once in the same transaction that replaces
+the password. `tests/public/execute_actions_contract.py` runs the sequence
+against the shared SMTP sink in `tests/smtp_sink.py`; the slowest case takes
+307 ms.
+
+Remaining differences: only `UPDATE_PASSWORD` can be sent (other known
+actions answer 400); SMTP authentication is refused until its password can
+be stored sealed; sends are synchronous, as in the reference, rather than
+queued in a durable outbox; message text is fixed English, not a theme;
+`client_id` and `redirect_uri` link parameters are ignored.

@@ -13,13 +13,14 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
+use rs_keycloak_integrations::mail::{Mail, SmtpSettings, send};
 use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UsernameFilter};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{AdminError, authorize};
-use crate::oidc::OidcState;
+use crate::oidc::{OidcState, digest, random_token};
 
 /// Keycloak's default page size for user searches.
 const DEFAULT_MAX_RESULTS: i64 = 100;
@@ -44,6 +45,10 @@ pub(super) fn routes() -> Router<OidcState> {
         .route(
             "/admin/realms/{realm}/users/{user}/consents",
             get(list_consents),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/execute-actions-email",
+            put(execute_actions_email),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/credentials",
@@ -499,4 +504,141 @@ async fn delete_credential(
             "Credential not found".into(),
         ))
     }
+}
+
+/// Required actions Keycloak defines; others are rejected as invalid.
+const KNOWN_ACTIONS: [&str; 8] = [
+    "CONFIGURE_TOTP",
+    "TERMS_AND_CONDITIONS",
+    "UPDATE_PASSWORD",
+    "UPDATE_PROFILE",
+    "VERIFY_EMAIL",
+    "delete_account",
+    "update_user_locale",
+    "webauthn-register",
+];
+
+/// Default lifespan of an admin-sent action link, as in Keycloak (12 hours).
+const ACTION_LINK_SECONDS: i32 = 43_200;
+
+/// Emails the user a single-use link to perform required actions.
+async fn execute_actions_email(
+    State(state): State<OidcState>,
+    Path((realm_name, user)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm = state
+        .storage
+        .realm_by_name(&realm_name)
+        .await?
+        .ok_or(AdminError::RealmNotFound)?;
+    let user = state
+        .storage
+        .user(&realm.id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let email = user
+        .email
+        .ok_or_else(|| AdminError::bad_request("User email missing"))?;
+    let Ok(Value::Array(requested)) = serde_json::from_slice::<Value>(&body) else {
+        return Err(unparsable());
+    };
+    let mut actions = Vec::new();
+    for action in &requested {
+        match action.as_str() {
+            Some(name) if KNOWN_ACTIONS.contains(&name) => actions.push(name.to_owned()),
+            _ => return Err(AdminError::bad_request("Provided invalid required actions")),
+        }
+    }
+    if let Some(unsupported) = actions
+        .iter()
+        .find(|action| action.as_str() != "UPDATE_PASSWORD")
+    {
+        return Err(AdminError::bad_request(format!(
+            "Unsupported required action: {unsupported}"
+        )));
+    }
+    if actions.is_empty() {
+        return Err(AdminError::bad_request("Provided invalid required actions"));
+    }
+    let lifespan = match params.get("lifespan") {
+        None => ACTION_LINK_SECONDS,
+        Some(value) => value
+            .parse::<i32>()
+            .ok()
+            .filter(|seconds| *seconds > 0)
+            .ok_or_else(|| AdminError::bad_request("Invalid lifespan"))?,
+    };
+    // The reference reports a missing sender as a delivery failure.
+    let settings = realm
+        .smtp
+        .as_ref()
+        .and_then(|smtp| {
+            Some(SmtpSettings {
+                host: smtp.host.clone(),
+                port: u16::try_from(smtp.port).ok()?,
+                from: smtp.from.clone()?,
+                from_display_name: smtp.from_display_name.clone(),
+                starttls: smtp.starttls,
+                ssl: smtp.ssl,
+            })
+        })
+        .ok_or_else(|| AdminError::Message(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to send execute actions email: Invalid sender address 'null'. If the address contains UTF-8 characters in the local part please ensure the SMTP server supports the SMTPUTF8 extension and enable 'Allow UTF-8' in the email realm configuration.".into(),
+        ))?;
+    let token = Zeroizing::new(random_token());
+    if !state
+        .storage
+        .issue_action_token(&realm.id, &user.id, &digest(&token), &actions, lifespan)
+        .await?
+    {
+        return Err(user_not_found());
+    }
+    let link = format!(
+        "{}/realms/{}/login-actions/action-token?key={}",
+        state.issuer_base.trim_end_matches('/'),
+        realm.name,
+        *token
+    );
+    let hours = lifespan / 3600;
+    let expiry = if hours >= 1 {
+        format!("{hours} hours")
+    } else {
+        format!("{} minutes", (lifespan / 60).max(1))
+    };
+    let text = format!(
+        "Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.\n\n{link}\n\nThis link will expire within {expiry}.\n\nIf you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.",
+        realm = realm.name,
+    );
+    let html = format!(
+        "<p>Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.</p><p><a href=\"{link}\">Link to account update</a></p><p>This link will expire within {expiry}.</p><p>If you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.</p>",
+        realm = html_escape(&realm.name),
+        link = html_escape(&link),
+    );
+    let mail = Mail {
+        to: &email,
+        subject: "Update Your Account",
+        text,
+        html,
+    };
+    match send(&settings, mail).await {
+        Ok(()) => Ok(StatusCode::NO_CONTENT),
+        Err(_) => Err(AdminError::Message(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to send execute actions email".into(),
+        )),
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }

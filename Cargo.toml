@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/server", "crates/http", "crates/storage-postgres", "crates/crypto", "crates/authentication", "crates/protocols"]
+members = ["crates/server", "crates/http", "crates/storage-postgres", "crates/crypto", "crates/authentication", "crates/protocols", "crates/integrations"]
 resolver = "3"
 
 [workspace.package]

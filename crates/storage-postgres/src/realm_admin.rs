@@ -15,6 +15,25 @@ pub struct RealmRecord {
     pub name: String,
     /// Whether the realm serves authentication.
     pub enabled: bool,
+    /// SMTP settings, if the realm has a mail server.
+    pub smtp: Option<RealmSmtp>,
+}
+
+/// A realm's SMTP settings as stored.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RealmSmtp {
+    /// Server host.
+    pub host: String,
+    /// Server port.
+    pub port: i32,
+    /// Sender address, if set.
+    pub from: Option<String>,
+    /// Sender display name, if set.
+    pub from_display_name: Option<String>,
+    /// Upgrade with STARTTLS.
+    pub starttls: bool,
+    /// Connect with implicit TLS.
+    pub ssl: bool,
 }
 
 /// Outcome of creating a realm.
@@ -64,16 +83,29 @@ impl Storage {
     /// Looks up a realm by name whether or not it is enabled.
     pub async fn realm_by_name(&self, name: &str) -> Result<Option<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let row = sqlx::query("SELECT id, name, enabled FROM realms WHERE name = $1")
+        let row = sqlx::query("SELECT id, name, enabled, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl FROM realms WHERE name = $1")
             .bind(name)
             .fetch_optional(tx.connection())
             .await?;
         tx.commit().await?;
         row.map(|row| {
+            let host: Option<String> = row.try_get("smtp_host")?;
+            let port: Option<i32> = row.try_get("smtp_port")?;
             Ok(RealmRecord {
                 id: row.try_get("id")?,
                 name: row.try_get("name")?,
                 enabled: row.try_get("enabled")?,
+                smtp: match host.zip(port) {
+                    Some((host, port)) => Some(RealmSmtp {
+                        host,
+                        port,
+                        from: row.try_get("smtp_from")?,
+                        from_display_name: row.try_get("smtp_from_display_name")?,
+                        starttls: row.try_get("smtp_starttls")?,
+                        ssl: row.try_get("smtp_ssl")?,
+                    }),
+                    None => None,
+                },
             })
         })
         .transpose()
@@ -85,11 +117,16 @@ impl Storage {
         realm_id: &str,
         name: &str,
         enabled: bool,
+        smtp: Option<&RealmSmtp>,
         actor_user_id: &str,
     ) -> Result<RealmCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO realms (id, name, enabled) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING RETURNING id")
-            .bind(realm_id).bind(name).bind(enabled).fetch_optional(tx.connection()).await?;
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO realms (id, name, enabled, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl) VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, false), COALESCE($9, false)) ON CONFLICT DO NOTHING RETURNING id")
+            .bind(realm_id).bind(name).bind(enabled)
+            .bind(smtp.map(|smtp| smtp.host.as_str())).bind(smtp.map(|smtp| smtp.port))
+            .bind(smtp.and_then(|smtp| smtp.from.as_deref())).bind(smtp.and_then(|smtp| smtp.from_display_name.as_deref()))
+            .bind(smtp.map(|smtp| smtp.starttls)).bind(smtp.map(|smtp| smtp.ssl))
+            .fetch_optional(tx.connection()).await?;
         if created.is_none() {
             tx.commit().await?;
             return Ok(RealmCreation::Exists);
@@ -98,6 +135,35 @@ impl Storage {
             .bind(MASTER_REALM).bind(actor_user_id).execute(tx.connection()).await?;
         tx.commit().await?;
         Ok(RealmCreation::Created)
+    }
+
+    /// Updates a realm's enabled flag and, when given, its SMTP settings
+    /// (`Some(None)` removes them); returns false if the realm is missing.
+    pub async fn update_realm(
+        &self,
+        name: &str,
+        enabled: Option<bool>,
+        smtp: Option<Option<&RealmSmtp>>,
+        actor_user_id: &str,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let replace = smtp.is_some();
+        let smtp = smtp.flatten();
+        let changed = sqlx::query("UPDATE realms SET enabled = COALESCE($2, enabled), smtp_host = CASE WHEN $3 THEN $4 ELSE smtp_host END, smtp_port = CASE WHEN $3 THEN $5 ELSE smtp_port END, smtp_from = CASE WHEN $3 THEN $6 ELSE smtp_from END, smtp_from_display_name = CASE WHEN $3 THEN $7 ELSE smtp_from_display_name END, smtp_starttls = CASE WHEN $3 THEN COALESCE($8, false) ELSE smtp_starttls END, smtp_ssl = CASE WHEN $3 THEN COALESCE($9, false) ELSE smtp_ssl END WHERE name = $1")
+            .bind(name).bind(enabled).bind(replace)
+            .bind(smtp.map(|smtp| smtp.host.as_str())).bind(smtp.map(|smtp| smtp.port))
+            .bind(smtp.and_then(|smtp| smtp.from.as_deref())).bind(smtp.and_then(|smtp| smtp.from_display_name.as_deref()))
+            .bind(smtp.map(|smtp| smtp.starttls)).bind(smtp.map(|smtp| smtp.ssl))
+            .execute(&mut *conn).await?.rows_affected();
+        if changed == 0 {
+            tx.commit().await?;
+            return Ok(false);
+        }
+        sqlx::query("INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, 'realm_updated')")
+            .bind(MASTER_REALM).bind(actor_user_id).execute(&mut *conn).await?;
+        tx.commit().await?;
+        Ok(true)
     }
 
     /// Deletes a realm and its data, recording the action in the master audit log.
