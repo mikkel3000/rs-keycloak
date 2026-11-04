@@ -5,6 +5,7 @@ mod consent;
 mod cors;
 mod group_admin;
 mod logout;
+mod mfa;
 mod realm_admin;
 mod role_admin;
 mod service_account;
@@ -12,10 +13,11 @@ mod sso;
 mod user_admin;
 
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
-pub use consent::{ConsentRecord, PendingConsent};
+pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
 pub use logout::RefreshLogout;
+pub use mfa::{CredentialRecord, MfaStep, OtpCredential};
 pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord};
 pub use role_admin::{RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
@@ -51,6 +53,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0016_logout.sql"),
     include_str!("../../../migrations/0017_sso_sessions.sql"),
     include_str!("../../../migrations/0018_consent.sql"),
+    include_str!("../../../migrations/0019_totp.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -639,7 +642,7 @@ impl Storage {
             return Ok(LoginOutcome::Denied);
         }
         sqlx::query("UPDATE login_lockouts SET failures = 0, locked_until = NULL WHERE realm_id = $1 AND user_id = $2").bind(&realm).bind(&user).execute(&mut *conn).await?;
-        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at) VALUES ($1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4))").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, mfa_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = $1 AND c.user_id = $3 AND c.credential_type = 'otp') OR 'CONFIGURE_TOTP' = ANY(u.required_actions) FROM users u WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
         sqlx::query("INSERT INTO client_sessions (realm_id, id, user_session_id, client_id) VALUES ($1, $2, $2, $3)").bind(&realm).bind(session_id).bind(&client).execute(&mut *conn).await?;
         tx.commit().await?;
         Ok(LoginOutcome::Authenticated)
@@ -849,7 +852,7 @@ impl Storage {
         };
         let realm: String = req.try_get("realm_id")?;
         let client: String = req.try_get("client_id")?;
-        let valid = sqlx::query("SELECT 1 FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND us.id = $2 AND c.id = $3 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
+        let valid = sqlx::query("SELECT 1 FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND us.id = $2 AND c.id = $3 AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND NOT us.mfa_pending AND r.enabled AND u.enabled AND c.enabled FOR SHARE OF us, u, r, cs, c")
             .bind(&realm).bind(user_session_id).bind(&client).fetch_optional(&mut *conn).await?.is_some();
         if !valid {
             tx.commit().await?;

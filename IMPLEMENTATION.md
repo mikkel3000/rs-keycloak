@@ -351,3 +351,26 @@ Remaining differences: granted scopes list the requested scope (`openid`)
 rather than Keycloak's default client scopes; the consent page is a plain
 form, not Keycloak's theme; consents are not yet audited or shown in an
 account console.
+
+## TOTP second factor
+
+Users created with `requiredActions: ["CONFIGURE_TOTP"]` get a setup form
+(`kc-totp-settings-form`) after their password, and users with an OTP
+credential get a code form (`kc-otp-login-form`), following the 13 recorded
+cases in `tests/reference/otp-observations.json`. Codes use Keycloak's default
+policy (HMAC-SHA1 over the secret's bytes, 6 digits, 30-second steps, one step
+either side), checked against RFC 6238 vectors, and each step is accepted
+once, so a code cannot be replayed. Seeds are sealed with
+`RS_KEYCLOAK_SECRET_KEY`, bound to their realm and credential, and are never
+returned. The session created by the password step is marked pending: code
+issue and SSO refuse it until the second factor passes, so a password alone
+yields neither a code nor an SSO cookie. The user representation now reports
+`totp`, `requiredActions` and `disableableCredentialTypes`, and
+`/users/{id}/credentials` lists and deletes credentials.
+`tests/public/otp_contract.py` checks the recorded sequence in 340 ms using the
+next step's code instead of the reference's 30-second wait.
+
+Remaining differences: one OTP credential per user; HOTP, other OTP policies,
+WebAuthn and recovery codes are not implemented; the `logout-sessions`
+checkbox is accepted but other sessions are not ended; setup trusts the
+posted secret as the reference does.

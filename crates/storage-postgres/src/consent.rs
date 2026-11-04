@@ -16,8 +16,8 @@ pub struct ConsentRecord {
     pub updated: i64,
 }
 
-/// A pending authorization request waiting for the user's consent.
-pub struct PendingConsent {
+/// An authorization request whose session awaits a further login step.
+pub struct PendingRequest {
     /// Authenticated user session.
     pub session_id: String,
     /// Public client identifier, shown on the consent screen.
@@ -43,19 +43,20 @@ impl Storage {
         Ok(needed.unwrap_or(false))
     }
 
-    /// Records the authenticated session on a request that awaits consent.
-    pub async fn await_consent(
+    /// Records the authenticated session on a request awaiting a further step,
+    /// such as a second factor or consent.
+    pub async fn attach_pending_session(
         &self,
         request_id: &str,
         csrf_hash: &[u8],
         session_id: &str,
-    ) -> Result<Option<PendingConsent>, StorageError> {
+    ) -> Result<Option<PendingRequest>, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let row = sqlx::query("UPDATE authorization_requests a SET pending_session_id = $3 FROM clients c WHERE c.realm_id = a.realm_id AND c.id = a.client_id AND a.id = $1 AND a.csrf_hash = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp() RETURNING c.client_id, a.scope")
             .bind(request_id).bind(csrf_hash).bind(session_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         row.map(|row| {
-            Ok(PendingConsent {
+            Ok(PendingRequest {
                 session_id: session_id.to_owned(),
                 client_identifier: row.try_get("client_id")?,
                 scope: row.try_get("scope")?,
@@ -64,18 +65,18 @@ impl Storage {
         .transpose()
     }
 
-    /// Returns the session waiting on a request's consent screen.
-    pub async fn pending_consent(
+    /// Returns the session waiting on a request for a further login step.
+    pub async fn pending_request(
         &self,
         request_id: &str,
         csrf_hash: &[u8],
-    ) -> Result<Option<PendingConsent>, StorageError> {
+    ) -> Result<Option<PendingRequest>, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let row = sqlx::query("SELECT a.pending_session_id, c.client_id, a.scope FROM authorization_requests a JOIN clients c ON c.realm_id = a.realm_id AND c.id = a.client_id JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.pending_session_id WHERE a.id = $1 AND a.csrf_hash = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
             .bind(request_id).bind(csrf_hash).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         row.map(|row| {
-            Ok(PendingConsent {
+            Ok(PendingRequest {
                 session_id: row.try_get("pending_session_id")?,
                 client_identifier: row.try_get("client_id")?,
                 scope: row.try_get("scope")?,

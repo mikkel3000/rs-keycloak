@@ -46,6 +46,14 @@ pub(super) fn routes() -> Router<OidcState> {
             get(list_consents),
         )
         .route(
+            "/admin/realms/{realm}/users/{user}/credentials",
+            get(list_credentials),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/credentials/{credential}",
+            delete(delete_credential),
+        )
+        .route(
             "/admin/realms/{realm}/users/{user}/consents/{client}",
             delete(revoke_consent),
         )
@@ -118,9 +126,12 @@ pub(super) fn representation(user: UserRecord) -> Value {
     fields.insert("emailVerified".into(), json!(user.email_verified));
     fields.insert("createdTimestamp".into(), json!(user.created_timestamp));
     fields.insert("enabled".into(), json!(user.enabled));
-    fields.insert("totp".into(), json!(false));
-    fields.insert("disableableCredentialTypes".into(), json!([]));
-    fields.insert("requiredActions".into(), json!([]));
+    fields.insert("totp".into(), json!(user.totp));
+    fields.insert(
+        "disableableCredentialTypes".into(),
+        json!(if user.totp { vec!["otp"] } else { Vec::new() }),
+    );
+    fields.insert("requiredActions".into(), json!(user.required_actions));
     fields.insert("notBefore".into(), json!(0));
     Value::Object(fields)
 }
@@ -142,7 +153,8 @@ async fn create_user(
     let actor = authorize(&state, &headers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    const SUPPORTED: [&str; 6] = [
+    const SUPPORTED: [&str; 7] = [
+        "requiredActions",
         "username",
         "enabled",
         "email",
@@ -161,8 +173,23 @@ async fn create_user(
     let email = text(&fields, "email")?.map(|email| email.to_lowercase());
     let first_name = text(&fields, "firstName")?;
     let last_name = text(&fields, "lastName")?;
+    let required_actions = match fields.get("requiredActions") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(actions)) => actions
+            .iter()
+            .map(|action| match action {
+                Value::String(action) if action == "CONFIGURE_TOTP" => Ok(action.clone()),
+                Value::String(action) => Err(AdminError::bad_request(format!(
+                    "Unsupported required action: {action}"
+                ))),
+                _ => Err(unparsable()),
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        Some(_) => return Err(unparsable()),
+    };
     let user_id = Uuid::new_v4().to_string();
     let user = NewUser {
+        required_actions: &required_actions,
         username: &username,
         email: email.as_deref(),
         email_verified: flag(&fields, "emailVerified")?,
@@ -412,6 +439,63 @@ async fn revoke_consent(
         Err(AdminError::Error(
             StatusCode::NOT_FOUND,
             "Consent nor offline token not found".into(),
+        ))
+    }
+}
+
+async fn list_credentials(
+    State(state): State<OidcState>,
+    Path((realm, user)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let credentials = state
+        .storage
+        .user_credentials(&realm_id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let listed = credentials
+        .into_iter()
+        .map(|credential| {
+            // Secrets and seeds are never returned, only algorithm parameters.
+            let data = if credential.credential_type == "otp" {
+                json!({"subType":"totp","digits":6,"period":30,"algorithm":"HmacSHA1"})
+            } else {
+                json!({"algorithm":"argon2"})
+            };
+            let mut fields = json!({
+                "id": credential.id,
+                "type": credential.credential_type,
+                "createdDate": credential.created,
+                "credentialData": data.to_string(),
+            });
+            if let Some(label) = credential.user_label {
+                fields["userLabel"] = json!(label);
+            }
+            fields
+        })
+        .collect();
+    Ok(json_response(Value::Array(listed)))
+}
+
+async fn delete_credential(
+    State(state): State<OidcState>,
+    Path((realm, user, credential)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    if state
+        .storage
+        .delete_credential(&realm_id, &user, &credential)
+        .await?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AdminError::Error(
+            StatusCode::NOT_FOUND,
+            "Credential not found".into(),
         ))
     }
 }

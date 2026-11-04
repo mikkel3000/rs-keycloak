@@ -10,3 +10,4 @@ base64 = "=0.22.1"
 sha2 = "=0.10.9"
 subtle = "=2.6.1"
 url.workspace = true
+ring = "=0.17.14"

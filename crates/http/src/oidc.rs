@@ -6,6 +6,7 @@ mod consent;
 mod cors;
 mod introspection;
 mod logout;
+mod mfa;
 mod revocation;
 
 use std::collections::BTreeMap;
@@ -27,7 +28,7 @@ use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, Storage};
+use rs_keycloak_storage_postgres::{AccessTokenStatus, MfaStep, RefreshRotation, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -110,6 +111,14 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/consent/{request_id}",
             post(consent::answer),
+        )
+        .route(
+            "/realms/{realm}/login-actions/otp/{request_id}",
+            post(mfa::verify),
+        )
+        .route(
+            "/realms/{realm}/login-actions/totp-setup/{request_id}",
+            post(mfa::configure),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/token",
@@ -461,11 +470,30 @@ async fn authenticate(
         }
         Err(_) => return unavailable(),
     };
+    match s.storage.mfa_step(&realm_id, &session_id).await {
+        Ok(MfaStep::Complete) => {
+            complete_login(&s, &realm, &realm_id, &request_id, csrf, &session_id).await
+        }
+        Ok(step) => mfa::hold(&s, &realm, &request_id, csrf, &session_id, &step).await,
+        Err(_) => unavailable(),
+    }
+}
+
+/// Finishes an authenticated login: sets the SSO cookies, then shows consent
+/// or sends the code. Only call this once every login step has passed.
+async fn complete_login(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request_id: &str,
+    csrf: &str,
+    session_id: &str,
+) -> Response {
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let sso_token = random_token();
     match s
         .storage
-        .set_sso_token(&realm_id, &session_id, &digest(&sso_token))
+        .set_sso_token(realm_id, session_id, &digest(&sso_token))
         .await
     {
         Ok(true) => (),
@@ -473,18 +501,18 @@ async fn authenticate(
         Err(_) => return unavailable(),
     }
     let request = RequestContext {
-        realm: &realm,
-        request_id: &request_id,
+        realm,
+        request_id,
         csrf,
         issuer: &issuer,
     };
-    let (mut response, consent_pending) = match consent_or_code(&s, &request, &session_id).await {
+    let (mut response, consent_pending) = match consent_or_code(s, &request, session_id).await {
         Ok(Some(Answer::Consent(response))) => (response, true),
         Ok(Some(Answer::Code(response))) => (response, false),
         Ok(None) => return failure(),
         Err(()) => return unavailable(),
     };
-    for value in sso_cookies(&s.path_prefix, &realm, Some((&sso_token, &session_id))) {
+    for value in sso_cookies(&s.path_prefix, realm, Some((&sso_token, session_id))) {
         match HeaderValue::from_str(&value) {
             Ok(value) => {
                 response.headers_mut().append(header::SET_COOKIE, value);
@@ -503,6 +531,35 @@ async fn authenticate(
         }
     }
     response
+}
+
+/// Renders a login-step page (second factor, consent) that keeps the
+/// request's CSRF cookie so the page's form stays bound to this browser.
+fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str) -> Response {
+    let html = format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title></head><body>{body}</body></html>"
+    );
+    let mut response = Html(html).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("default-src 'none'; form-action 'self'; frame-ancestors 'none'"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    let cookie = format!(
+        "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
+    );
+    match HeaderValue::from_str(&cookie) {
+        Ok(value) => {
+            headers.append(header::SET_COOKIE, value);
+            response
+        }
+        Err(_) => unavailable(),
+    }
 }
 
 /// A validated authorization request bound to its CSRF cookie.
@@ -544,7 +601,7 @@ async fn consent_or_code(
     {
         let pending = s
             .storage
-            .await_consent(request.request_id, &csrf_hash, session_id)
+            .attach_pending_session(request.request_id, &csrf_hash, session_id)
             .await
             .map_err(|_| ())?;
         return Ok(pending.map(|pending| {

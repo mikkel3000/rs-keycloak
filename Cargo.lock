@@ -1019,6 +1019,7 @@ name = "rs-keycloak-protocols"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "ring",
  "sha2",
  "subtle",
  "url",

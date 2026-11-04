@@ -20,6 +20,8 @@ pub struct NewUser<'a> {
     pub last_name: Option<&'a str>,
     /// Whether the user may sign in.
     pub enabled: bool,
+    /// Actions the user must complete at the next login.
+    pub required_actions: &'a [String],
 }
 
 /// A stored user with the fields of the admin representation.
@@ -40,6 +42,10 @@ pub struct UserRecord {
     pub enabled: bool,
     /// Creation time in Unix milliseconds.
     pub created_timestamp: i64,
+    /// Actions the user must complete at the next login.
+    pub required_actions: Vec<String>,
+    /// Whether the user has an OTP credential.
+    pub totp: bool,
 }
 
 /// Outcome of creating a user.
@@ -62,7 +68,7 @@ pub enum UsernameFilter<'a> {
     Contains(&'a str),
 }
 
-pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp";
+pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp";
 
 pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
     Ok(UserRecord {
@@ -74,6 +80,8 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
         last_name: row.try_get("last_name")?,
         enabled: row.try_get("enabled")?,
         created_timestamp: row.try_get("created_timestamp")?,
+        required_actions: row.try_get("required_actions")?,
+        totp: row.try_get("totp")?,
     })
 }
 
@@ -104,9 +112,9 @@ impl Storage {
     ) -> Result<UserCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_verified, first_name, last_name, enabled) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $7, $8) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_verified, first_name, last_name, enabled, required_actions) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(user_id).bind(user.username).bind(user.email).bind(user.email_verified)
-            .bind(user.first_name).bind(user.last_name).bind(user.enabled).fetch_optional(&mut *conn).await?;
+            .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions).fetch_optional(&mut *conn).await?;
         if created.is_none() {
             let username_taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND username_normalized = $2)")
                 .bind(realm_id).bind(user.username).fetch_one(&mut *conn).await?;
