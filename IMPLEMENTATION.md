@@ -261,3 +261,20 @@ Remaining differences: composite editing, role attributes and client roles
 are refused; deleting the default role answers 400, a response the reference
 was not recorded for; composite roles are not yet expanded into tokens or
 used for authorization, which still checks only the master `admin` role.
+
+## Groups
+
+`/admin/realms/{realm}/groups` supports list, count, create, read, delete,
+children and members; `/users/{id}/groups` supports list, join and leave.
+These follow the 25 recorded cases in
+`tests/reference/admin-group-observations.json`. Groups form a tree.
+Uniqueness among top-level groups and among siblings is enforced by partial
+unique indexes, paths come from a recursive SQL function limited to 64
+levels, and deleting a group removes its subgroups and memberships through
+cascades. Changes are audited in the master realm.
+`tests/public/admin_groups_contract.py` runs the recorded sequence in 329 ms.
+
+Remaining differences: representations omit the `access` map; group
+attributes, group role mappings, moving groups and search parameters are
+refused or missing; group membership is not yet used in tokens or
+authorization.
