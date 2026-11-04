@@ -16,6 +16,13 @@ pub enum LoginStep {
     ConfigureTotp,
     /// The user must choose a new password.
     UpdatePassword,
+    /// The user must verify their email address.
+    VerifyEmail {
+        /// User whose address is unverified.
+        user_id: String,
+        /// Address to send the link to.
+        email: String,
+    },
 }
 
 /// A user's OTP credential with its sealed seed.
@@ -91,7 +98,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT us.steps_pending, us.otp_verified, 'CONFIGURE_TOTP' = ANY(u.required_actions) AS configure, 'UPDATE_PASSWORD' = ANY(u.required_actions) AS update_password, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
+        let row = sqlx::query("SELECT us.steps_pending, us.otp_verified, 'CONFIGURE_TOTP' = ANY(u.required_actions) AS configure, 'UPDATE_PASSWORD' = ANY(u.required_actions) AS update_password, 'VERIFY_EMAIL' = ANY(u.required_actions) AS verify_email, u.id AS user_id, u.email, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
             .bind(realm_id).bind(session_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         let Some(row) = row else {
@@ -112,13 +119,25 @@ impl Storage {
                 last_step: row.try_get("otp_last_step")?,
             }));
         }
-        Ok(if configure {
-            LoginStep::ConfigureTotp
-        } else if row.try_get::<bool, _>("update_password")? {
-            LoginStep::UpdatePassword
-        } else {
-            LoginStep::Complete
-        })
+        if configure {
+            return Ok(LoginStep::ConfigureTotp);
+        }
+        if row.try_get::<bool, _>("update_password")? {
+            return Ok(LoginStep::UpdatePassword);
+        }
+        if row.try_get::<bool, _>("verify_email")?
+            && let Some(email) = row.try_get::<Option<String>, _>("email")?
+        {
+            return Ok(LoginStep::VerifyEmail {
+                user_id: row.try_get("user_id")?,
+                email,
+            });
+        }
+        // Nothing is left: clear the flag so the session can receive a code.
+        let mut tx = self.begin_request(true).await?;
+        settle_session(tx.connection(), realm_id, session_id).await?;
+        tx.commit().await?;
+        Ok(LoginStep::Complete)
     }
 
     /// Records an accepted code's step, unless a concurrent request already

@@ -10,7 +10,7 @@ use std::sync::Arc;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use rs_keycloak_storage_postgres::ActionToken;
+use rs_keycloak_storage_postgres::{ActionToken, VerifyLink};
 use serde::Deserialize;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -94,13 +94,108 @@ fn password_form(s: &OidcState, realm: &str, key: &str, error: bool) -> Response
     plain_page(StatusCode::OK, "Update your password", &body)
 }
 
+/// Handles an email-verification key, or returns `None` for other keys.
+///
+/// In the browser that started the login the address is verified and the
+/// login continues; elsewhere the user first confirms, as the reference asks.
+async fn verify_email(
+    s: &OidcState,
+    realm: &str,
+    key: Option<&str>,
+    params: &BTreeMap<String, String>,
+    headers: &HeaderMap,
+) -> Option<Response> {
+    let key = key.filter(|key| key.len() == 64)?;
+    if !valid_realm(realm) {
+        return None;
+    }
+    let realm_id = match s.storage.realm_id_by_name(realm).await {
+        Ok(Some(id)) => id,
+        Ok(None) => return None,
+        Err(_) => return Some(unavailable()),
+    };
+    let hash = digest(key);
+    let request = match s.storage.verify_link(&realm_id, &hash).await {
+        Ok(VerifyLink::Live {
+            authorization_request_id,
+        }) => authorization_request_id,
+        Ok(VerifyLink::AlreadyVerified) => {
+            return Some(plain_page(
+                StatusCode::OK,
+                "Email verified",
+                "<p>Your email address has been verified already.</p>",
+            ));
+        }
+        Ok(VerifyLink::Unknown) => return None,
+        Err(_) => return Some(unavailable()),
+    };
+    if let (Some(request_id), Some(csrf)) = (
+        request.as_deref(),
+        csrf(headers).filter(|csrf| csrf.len() == 64),
+    ) {
+        match s.storage.pending_request(request_id, &digest(csrf)).await {
+            Ok(Some(pending)) => {
+                return Some(
+                    match s
+                        .storage
+                        .redeem_verify_link(&realm_id, &hash, Some(&pending.session_id))
+                        .await
+                    {
+                        Ok(true) => {
+                            continue_login(
+                                s,
+                                realm,
+                                &realm_id,
+                                request_id,
+                                csrf,
+                                &pending.session_id,
+                            )
+                            .await
+                        }
+                        Ok(false) => expired(),
+                        Err(_) => unavailable(),
+                    },
+                );
+            }
+            Ok(None) => (),
+            Err(_) => return Some(unavailable()),
+        }
+    }
+    if params.get("confirm").map(String::as_str) == Some("1") {
+        return Some(
+            match s.storage.redeem_verify_link(&realm_id, &hash, None).await {
+                Ok(true) => plain_page(
+                    StatusCode::OK,
+                    "Email verified",
+                    "<p>Your email address has been verified.</p>",
+                ),
+                Ok(false) => expired(),
+                Err(_) => unavailable(),
+            },
+        );
+    }
+    let body = format!(
+        "<h1>Confirm validity of e-mail address</h1><p><a href=\"{proceed}&amp;confirm=1\">Click here to proceed</a></p>",
+        proceed = link(s, realm, key),
+    );
+    Some(plain_page(
+        StatusCode::OK,
+        "Confirm validity of e-mail address",
+        &body,
+    ))
+}
+
 /// Shows the info page, or the password form once the user proceeds.
 pub(super) async fn show(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
     let key = params.get("key").map(String::as_str);
+    if let Some(response) = verify_email(&s, &realm, key, &params, &headers).await {
+        return response;
+    }
     let token = match live(&s, &realm, key).await {
         Ok((_, token)) => token,
         Err(refused) => return refused.into_response(),

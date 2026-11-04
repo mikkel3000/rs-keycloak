@@ -129,7 +129,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         };
-        let created = sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = $1 AND c.user_id = $3 AND c.credential_type = 'otp') OR cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = $1 AND u.id = $3 AND u.enabled")
+        let created = sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), rs_prepare_login_steps($1, $3) FROM users u WHERE u.realm_id = $1 AND u.id = $3 AND u.enabled")
             .bind(realm_id).bind(session_id).bind(user_id).bind(f64::from(session_ttl_seconds))
             .execute(&mut *conn).await?.rows_affected();
         if created != 1 {
@@ -141,4 +141,66 @@ impl Storage {
         tx.commit().await?;
         Ok(true)
     }
+
+    /// Looks up an email-verification link, used or not.
+    pub async fn verify_link(
+        &self,
+        realm_id: &str,
+        token_hash: &[u8],
+    ) -> Result<VerifyLink, StorageError> {
+        if token_hash.len() != 32 {
+            return Ok(VerifyLink::Unknown);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let row: Option<(Option<String>, bool, bool, bool)> = sqlx::query_as("SELECT t.authorization_request_id, t.used_at IS NOT NULL, t.expires_at > clock_timestamp(), u.email_verified FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND 'VERIFY_EMAIL' = ANY(t.actions) AND u.enabled")
+            .bind(token_hash).bind(realm_id).fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(match row {
+            None => VerifyLink::Unknown,
+            Some((_, _, _, true)) => VerifyLink::AlreadyVerified,
+            Some((_, true, _, false) | (_, false, false, false)) => VerifyLink::Unknown,
+            Some((request, false, true, false)) => VerifyLink::Live {
+                authorization_request_id: request,
+            },
+        })
+    }
+
+    /// Uses a verification link once: marks the email verified, clears
+    /// VERIFY_EMAIL, and settles the login session waiting on it, if any.
+    pub async fn redeem_verify_link(
+        &self,
+        realm_id: &str,
+        token_hash: &[u8],
+        pending_session_id: Option<&str>,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let user: Option<String> = sqlx::query_scalar("UPDATE action_tokens SET used_at = clock_timestamp() WHERE token_hash = $1 AND realm_id = $2 AND used_at IS NULL AND expires_at > clock_timestamp() AND 'VERIFY_EMAIL' = ANY(actions) RETURNING user_id")
+            .bind(token_hash).bind(realm_id).fetch_optional(&mut *conn).await?;
+        let Some(user) = user else {
+            tx.commit().await?;
+            return Ok(false);
+        };
+        sqlx::query("UPDATE users SET email_verified = true, required_actions = array_remove(required_actions, 'VERIFY_EMAIL') WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id).bind(&user).execute(&mut *conn).await?;
+        if let Some(session) = pending_session_id {
+            sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2 AND us.user_id = $3")
+                .bind(realm_id).bind(session).bind(&user).execute(&mut *conn).await?;
+        }
+        tx.commit().await?;
+        Ok(true)
+    }
+}
+
+/// The state of an email-verification link.
+pub enum VerifyLink {
+    /// Usable; bound to the login request it was sent from, if any.
+    Live {
+        /// Login request to continue in the same browser.
+        authorization_request_id: Option<String>,
+    },
+    /// The user's address is already verified.
+    AlreadyVerified,
+    /// Unknown, expired or used without verifying.
+    Unknown,
 }

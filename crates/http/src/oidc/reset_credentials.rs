@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use rs_keycloak_integrations::mail::{Mail, SmtpSettings, send};
+use rs_keycloak_integrations::mail::{Mail, send};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -121,16 +121,7 @@ pub(super) async fn request(
         Ok(target) => target,
         Err(_) => return unavailable(),
     };
-    let settings = record.smtp.as_ref().and_then(|smtp| {
-        Some(SmtpSettings {
-            host: smtp.host.clone(),
-            port: u16::try_from(smtp.port).ok()?,
-            from: smtp.from.clone()?,
-            from_display_name: smtp.from_display_name.clone(),
-            starttls: smtp.starttls,
-            ssl: smtp.ssl,
-        })
-    });
+    let settings = crate::mail::settings(&record);
     if let (Some((user_id, email)), Some(settings)) = (target, settings) {
         let token = Zeroizing::new(random_token());
         let actions = ["UPDATE_PASSWORD".to_owned()];

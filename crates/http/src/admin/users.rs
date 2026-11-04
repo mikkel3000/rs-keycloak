@@ -13,7 +13,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
-use rs_keycloak_integrations::mail::{Mail, SmtpSettings, send};
+use rs_keycloak_integrations::mail::{Mail, send};
 use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UsernameFilter};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -49,6 +49,10 @@ pub(super) fn routes() -> Router<OidcState> {
         .route(
             "/admin/realms/{realm}/users/{user}/execute-actions-email",
             put(execute_actions_email),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/send-verify-email",
+            put(send_verify_email),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/credentials",
@@ -573,23 +577,10 @@ async fn execute_actions_email(
             .ok_or_else(|| AdminError::bad_request("Invalid lifespan"))?,
     };
     // The reference reports a missing sender as a delivery failure.
-    let settings = realm
-        .smtp
-        .as_ref()
-        .and_then(|smtp| {
-            Some(SmtpSettings {
-                host: smtp.host.clone(),
-                port: u16::try_from(smtp.port).ok()?,
-                from: smtp.from.clone()?,
-                from_display_name: smtp.from_display_name.clone(),
-                starttls: smtp.starttls,
-                ssl: smtp.ssl,
-            })
-        })
-        .ok_or_else(|| AdminError::Message(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Failed to send execute actions email: Invalid sender address 'null'. If the address contains UTF-8 characters in the local part please ensure the SMTP server supports the SMTPUTF8 extension and enable 'Allow UTF-8' in the email realm configuration.".into(),
-        ))?;
+    let settings = crate::mail::settings(&realm).ok_or_else(|| AdminError::Message(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Failed to send execute actions email: Invalid sender address 'null'. If the address contains UTF-8 characters in the local part please ensure the SMTP server supports the SMTPUTF8 extension and enable 'Allow UTF-8' in the email realm configuration.".into(),
+    ))?;
     let token = Zeroizing::new(random_token());
     if !state
         .storage
@@ -605,26 +596,16 @@ async fn execute_actions_email(
     {
         return Err(user_not_found());
     }
-    let link = format!(
-        "{}/realms/{}/login-actions/action-token?key={}",
-        state.issuer_base.trim_end_matches('/'),
-        realm.name,
-        *token
-    );
-    let hours = lifespan / 3600;
-    let expiry = if hours >= 1 {
-        format!("{hours} hours")
-    } else {
-        format!("{} minutes", (lifespan / 60).max(1))
-    };
+    let link = crate::mail::action_link(&state, &realm.name, &token);
+    let expiry = crate::mail::expiry(lifespan);
     let text = format!(
         "Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.\n\n{link}\n\nThis link will expire within {expiry}.\n\nIf you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.",
         realm = realm.name,
     );
     let html = format!(
         "<p>Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.</p><p><a href=\"{link}\">Link to account update</a></p><p>This link will expire within {expiry}.</p><p>If you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.</p>",
-        realm = html_escape(&realm.name),
-        link = html_escape(&link),
+        realm = crate::mail::escape(&realm.name),
+        link = crate::mail::escape(&link),
     );
     let mail = Mail {
         to: &email,
@@ -641,11 +622,61 @@ async fn execute_actions_email(
     }
 }
 
-fn html_escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
+/// Emails the user a link that verifies their address.
+async fn send_verify_email(
+    State(state): State<OidcState>,
+    Path((realm_name, user)): Path<(String, String)>,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm = state
+        .storage
+        .realm_by_name(&realm_name)
+        .await?
+        .ok_or(AdminError::RealmNotFound)?;
+    let user = state
+        .storage
+        .user(&realm.id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let email = user
+        .email
+        .ok_or_else(|| AdminError::bad_request("User email missing"))?;
+    let lifespan = match params.get("lifespan") {
+        None => ACTION_LINK_SECONDS,
+        Some(value) => value
+            .parse::<i32>()
+            .ok()
+            .filter(|seconds| *seconds > 0)
+            .ok_or_else(|| AdminError::bad_request("Invalid lifespan"))?,
+    };
+    let failed = || {
+        AdminError::Message(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to send verify email".into(),
+        )
+    };
+    let settings = crate::mail::settings(&realm).ok_or_else(failed)?;
+    let token = Zeroizing::new(random_token());
+    let actions = ["VERIFY_EMAIL".to_owned()];
+    if !state
+        .storage
+        .issue_action_token(
+            &realm.id,
+            &user.id,
+            &digest(&token),
+            &actions,
+            lifespan,
+            None,
+        )
+        .await?
+    {
+        return Err(user_not_found());
+    }
+    let link = crate::mail::action_link(&state, &realm.name, &token);
+    crate::mail::send_verification(&settings, &realm.name, &email, &link, lifespan)
+        .await
+        .map_err(|_| failed())?;
+    Ok(StatusCode::NO_CONTENT)
 }

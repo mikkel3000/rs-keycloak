@@ -9,7 +9,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
 use rs_keycloak_protocols::totp;
@@ -142,6 +142,9 @@ pub(super) async fn hold(
     match step {
         LoginStep::ConfigureTotp => setup_page(s, realm, request_id, csrf, &new_secret(), false),
         LoginStep::UpdatePassword => password_page(s, realm, request_id, csrf, false),
+        LoginStep::VerifyEmail { user_id, email } => {
+            verify_email_page(s, realm, request_id, csrf, user_id, email).await
+        }
         LoginStep::VerifyTotp(credential) => {
             code_page(s, realm, request_id, csrf, &credential.id, false)
         }
@@ -464,6 +467,86 @@ pub(super) async fn update_password(
             .await
         }
         Ok(false) => failure(),
+        Err(_) => unavailable(),
+    }
+}
+
+/// Lifespan of a link sent during login, as Keycloak's default (5 minutes).
+const LOGIN_LINK_SECONDS: i32 = 300;
+
+/// Sends a verification link bound to this login request, then shows the
+/// waiting page with a resend link.
+async fn verify_email_page(
+    s: &OidcState,
+    realm: &str,
+    request_id: &str,
+    csrf: &str,
+    user_id: &str,
+    email: &str,
+) -> Response {
+    let record = match s.storage.realm_by_name(realm).await {
+        Ok(Some(record)) => record,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    if let Some(settings) = crate::mail::settings(&record) {
+        let key = Zeroizing::new(super::random_token());
+        let actions = ["VERIFY_EMAIL".to_owned()];
+        match s
+            .storage
+            .issue_action_token(
+                &record.id,
+                user_id,
+                &digest(&key),
+                &actions,
+                LOGIN_LINK_SECONDS,
+                Some(request_id),
+            )
+            .await
+        {
+            Ok(true) => {
+                let link = crate::mail::action_link(s, realm, &key);
+                // A failed send still shows the page; the user can resend.
+                let _ = crate::mail::send_verification(
+                    &settings,
+                    realm,
+                    email,
+                    &link,
+                    LOGIN_LINK_SECONDS,
+                )
+                .await;
+            }
+            Ok(false) => return failure(),
+            Err(_) => return unavailable(),
+        }
+    }
+    let body = format!(
+        "<h1>Email verification</h1><p>You need to verify your email address to activate your account.</p><p>An email with instructions to verify your email address has been sent to your address {email}.</p><p>Haven't received a verification code in your email? <a href=\"{prefix}/realms/{realm}/login-actions/required-action?request={request_id}&amp;execution=VERIFY_EMAIL\">Click here</a> to re-send the email.</p>",
+        email = escape(email),
+        prefix = escape(&s.path_prefix),
+    );
+    step_page(&s.path_prefix, realm, csrf, "Email verification", &body)
+}
+
+/// Re-sends the verification email for a login waiting on it.
+pub(super) async fn resend(
+    State(s): State<OidcState>,
+    Path(realm): Path<String>,
+    Query(params): Query<std::collections::BTreeMap<String, String>>,
+    headers: HeaderMap,
+) -> Response {
+    let Some(request_id) = params.get("request") else {
+        return failure();
+    };
+    let held = match held(&s, &realm, request_id, &headers).await {
+        Ok(held) => held,
+        Err(rejection) => return rejection.into_response(),
+    };
+    match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::VerifyEmail { user_id, email }) => {
+            verify_email_page(&s, &realm, request_id, &held.csrf, &user_id, &email).await
+        }
+        Ok(_) => failure(),
         Err(_) => unavailable(),
     }
 }

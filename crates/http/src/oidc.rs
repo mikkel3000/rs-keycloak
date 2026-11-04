@@ -127,6 +127,10 @@ pub fn router(state: OidcState) -> Router {
             post(login_steps::update_password),
         )
         .route(
+            "/realms/{realm}/login-actions/required-action",
+            get(login_steps::resend),
+        )
+        .route(
             "/realms/{realm}/login-actions/reset-credentials",
             get(reset_credentials::form).post(reset_credentials::request),
         )

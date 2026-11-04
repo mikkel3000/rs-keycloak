@@ -12,7 +12,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, MASTER_REALM, RealmCreation, RealmDeletion, RealmSmtp, StorageError,
+    AccessTokenStatus, MASTER_REALM, RealmCreation, RealmDeletion, RealmSettings, RealmSmtp,
+    StorageError,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -133,9 +134,7 @@ async fn authorize(state: &OidcState, headers: &HeaderMap) -> Result<String, Adm
 /// The supported subset of a RealmRepresentation.
 struct NewRealm {
     name: String,
-    enabled: bool,
-    reset_password_allowed: bool,
-    smtp: Option<RealmSmtp>,
+    settings: RealmSettings,
 }
 
 /// Parses Keycloak's `smtpServer` object, whose values are strings. An empty
@@ -229,7 +228,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     if let Some(field) = fields.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed"
+            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed" | "verifyEmail"
         )
     }) {
         return Err(AdminError::bad_request(format!(
@@ -256,16 +255,19 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
         None | Some(Value::Null) => None,
         Some(value) => parse_smtp(value)?,
     };
-    let reset_password_allowed = match fields.get("resetPasswordAllowed") {
-        None | Some(Value::Null) => false,
-        Some(Value::Bool(allowed)) => *allowed,
-        Some(_) => return Err(unreadable()),
+    let flag = |name: &str| match fields.get(name) {
+        None | Some(Value::Null) => Ok(false),
+        Some(Value::Bool(value)) => Ok(*value),
+        Some(_) => Err(unreadable()),
     };
     Ok(NewRealm {
         name: name.to_owned(),
-        enabled,
-        reset_password_allowed,
-        smtp,
+        settings: RealmSettings {
+            enabled,
+            reset_password_allowed: flag("resetPasswordAllowed")?,
+            verify_email: flag("verifyEmail")?,
+            smtp,
+        },
     })
 }
 
@@ -281,9 +283,7 @@ async fn create_realm(
         .create_realm(
             &Uuid::new_v4().to_string(),
             &realm.name,
-            realm.enabled,
-            realm.reset_password_allowed,
-            realm.smtp.as_ref(),
+            &realm.settings,
             &actor,
         )
         .await?;
@@ -315,7 +315,7 @@ async fn read_realm(
         .realm_by_name(&name)
         .await?
         .ok_or(AdminError::RealmNotFound)?;
-    let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed });
+    let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed, "verifyEmail": realm.verify_email });
     if let Some(smtp) = &realm.smtp {
         representation["smtpServer"] = smtp_representation(smtp);
     }
@@ -326,7 +326,7 @@ async fn read_realm(
         .into_response())
 }
 
-/// Applies a partial realm representation: `enabled` and `smtpServer`.
+/// Applies a partial realm representation of the stored settings.
 async fn update_realm(
     State(state): State<OidcState>,
     Path(name): Path<String>,
@@ -342,7 +342,7 @@ async fn update_realm(
     if let Some(field) = fields.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed"
+            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed" | "verifyEmail"
         )
     }) {
         return Err(AdminError::bad_request(format!(
@@ -365,21 +365,22 @@ async fn update_realm(
         }
     };
     let smtp = fields.get("smtpServer").map(parse_smtp).transpose()?;
-    let reset_password_allowed = match fields.get("resetPasswordAllowed") {
-        None | Some(Value::Null) => None,
-        Some(Value::Bool(allowed)) => Some(*allowed),
-        Some(_) => {
-            return Err(AdminError::bad_request(
-                "unable to read contents from stream",
-            ));
-        }
+    let optional_flag = |name: &str| match fields.get(name) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Bool(value)) => Ok(Some(*value)),
+        Some(_) => Err(AdminError::bad_request(
+            "unable to read contents from stream",
+        )),
     };
+    let reset_password_allowed = optional_flag("resetPasswordAllowed")?;
+    let verify_email = optional_flag("verifyEmail")?;
     if state
         .storage
         .update_realm(
             &name,
             enabled,
             reset_password_allowed,
+            verify_email,
             smtp.as_ref().map(Option::as_ref),
             &actor,
         )

@@ -13,14 +13,16 @@ mod service_account;
 mod sso;
 mod user_admin;
 
-pub use action_tokens::{ActionToken, RedeemedToken};
+pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
 pub use login_steps::{CredentialRecord, LoginStep, OtpCredential};
 pub use logout::RefreshLogout;
-pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSmtp};
+pub use realm_admin::{
+    MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
+};
 pub use role_admin::{RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;
@@ -59,6 +61,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0020_required_actions.sql"),
     include_str!("../../../migrations/0021_realm_email.sql"),
     include_str!("../../../migrations/0022_reset_credentials.sql"),
+    include_str!("../../../migrations/0023_verify_email.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -647,7 +650,7 @@ impl Storage {
             return Ok(LoginOutcome::Denied);
         }
         sqlx::query("UPDATE login_lockouts SET failures = 0, locked_until = NULL WHERE realm_id = $1 AND user_id = $2").bind(&realm).bind(&user).execute(&mut *conn).await?;
-        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = $1 AND c.user_id = $3 AND c.credential_type = 'otp') OR cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), rs_prepare_login_steps($1, $3) FROM users u WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
         sqlx::query("INSERT INTO client_sessions (realm_id, id, user_session_id, client_id) VALUES ($1, $2, $2, $3)").bind(&realm).bind(session_id).bind(&client).execute(&mut *conn).await?;
         tx.commit().await?;
         Ok(LoginOutcome::Authenticated)

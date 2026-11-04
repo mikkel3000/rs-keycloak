@@ -439,3 +439,25 @@ Remaining differences: links carry only `key`, without the reference's
 `client_id`, `tab_id`, `execution` and `client_data` parameters; the reset
 form is reachable only from a live login request; there is no rate limit on
 reset requests per user yet.
+
+## Email verification
+
+Realms with `verifyEmail` add `VERIFY_EMAIL` to an unverified user with an
+email when a session starts; one SQL function, `rs_prepare_login_steps`,
+prepares every new session's steps, so password login and email-link logins
+behave the same. The step runs after TOTP and password steps, as Keycloak's
+default priorities order them. It sends a "Verify email" message with a link
+bound to the login request (5 minutes) and shows a waiting page with a resend
+link. In the same browser the link verifies the address, clears the action
+and continues the login to the client's code; elsewhere, and for admin
+`send-verify-email` links (12 hours), the user first confirms, then the
+address is verified. A used link of a verified user shows an "already
+verified" page with 200, as recorded. These follow the 14 recorded cases in
+`tests/reference/verify-email-observations.json`;
+`tests/public/verify_email_contract.py` checks 2 groups, the slowest in
+311 ms. SMTP settings, links and message escaping now live in one `mail`
+module shared by admin and login handlers.
+
+Remaining differences: user profile updates (`UPDATE_PROFILE`) and changing an
+email from an account console are not implemented, so a verified address can
+only change through the admin API, which does not reset verification.
