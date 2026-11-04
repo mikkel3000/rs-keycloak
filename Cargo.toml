@@ -12,3 +12,14 @@ license = "Apache-2.0"
 axum = "=0.8.9"
 tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 url = "=2.5.8"
+
+# Password hashing and RSA dominate test request time in unoptimized builds;
+# optimizing only these crates keeps every public contract case under 500 ms.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.dev.package.blake2]
+opt-level = 3
+
+[profile.dev.package.ring]
+opt-level = 3
