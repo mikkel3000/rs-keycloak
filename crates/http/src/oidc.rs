@@ -9,7 +9,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::client_auth::{self, ClientAuthResult, ClientAuthenticator};
+use crate::client_auth::{
+    self, ClientAuthResult, ClientAuthenticator, InvalidClientAuthentication,
+};
 use axum::extract::rejection::FormRejection;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -503,7 +505,10 @@ async fn token(
     };
     let credentials = match client_auth::parse(&headers, client_id, client_secret) {
         Ok(credentials) => credentials,
-        Err(_) => return invalid_client(headers.contains_key(header::AUTHORIZATION)),
+        Err(InvalidClientAuthentication::Missing) => return unknown_client(),
+        Err(InvalidClientAuthentication::Malformed) => {
+            return invalid_client(headers.contains_key(header::AUTHORIZATION));
+        }
     };
     let client = match s.client_auth.authenticate(&realm_id, credentials).await {
         Ok(ClientAuthResult::Authenticated(client)) => client,

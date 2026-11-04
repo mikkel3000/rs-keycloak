@@ -12,7 +12,7 @@ use rs_keycloak_storage_postgres::AccessTokenStatus;
 use serde_json::json;
 use zeroize::Zeroizing;
 
-use crate::client_auth::{self, ClientAuthResult};
+use crate::client_auth::{self, ClientAuthResult, InvalidClientAuthentication};
 
 use super::{
     OidcState, digest, invalid_client, unauthorized_client, unavailable, unknown_client,
@@ -72,7 +72,10 @@ pub(super) async fn handle(
         fields.remove("client_secret").map(Zeroizing::new),
     ) {
         Ok(credentials) => credentials,
-        Err(_) => return invalid_client(headers.contains_key(header::AUTHORIZATION)),
+        Err(InvalidClientAuthentication::Missing) => return unknown_client(),
+        Err(InvalidClientAuthentication::Malformed) => {
+            return invalid_client(headers.contains_key(header::AUTHORIZATION));
+        }
     };
     let client = match state.client_auth.authenticate(&realm_id, credentials).await {
         Ok(ClientAuthResult::Authenticated(client)) => client,

@@ -17,9 +17,14 @@ pub enum ClientCredentials {
     },
 }
 
-/// Malformed, ambiguous, or unsupported client authentication.
+/// Client authentication that cannot identify a client.
 #[derive(Debug)]
-pub struct InvalidClientAuthentication;
+pub enum InvalidClientAuthentication {
+    /// No Authorization header and no `client_id` parameter were sent.
+    Missing,
+    /// Credentials were malformed, ambiguous, or used an unsupported scheme.
+    Malformed,
+}
 
 fn form_decode(input: &str) -> Result<String, InvalidClientAuthentication> {
     let bytes = input.as_bytes();
@@ -30,7 +35,7 @@ fn form_decode(input: &str) -> Result<String, InvalidClientAuthentication> {
                 || !bytes[i + 1].is_ascii_hexdigit()
                 || !bytes[i + 2].is_ascii_hexdigit()
             {
-                return Err(InvalidClientAuthentication);
+                return Err(InvalidClientAuthentication::Malformed);
             }
             i += 3;
         } else {
@@ -41,7 +46,7 @@ fn form_decode(input: &str) -> Result<String, InvalidClientAuthentication> {
     percent_decode(text.as_bytes())
         .decode_utf8()
         .map(|value| value.into_owned())
-        .map_err(|_| InvalidClientAuthentication)
+        .map_err(|_| InvalidClientAuthentication::Malformed)
 }
 
 /// Parses one authentication method, rejecting multiple Authorization headers
@@ -54,26 +59,33 @@ pub fn parse(
     let mut values = headers.get_all(header::AUTHORIZATION).iter();
     let header = values.next();
     if values.next().is_some() {
-        return Err(InvalidClientAuthentication);
+        return Err(InvalidClientAuthentication::Malformed);
     }
     if let Some(header) = header {
         if client_secret.is_some() {
-            return Err(InvalidClientAuthentication);
+            return Err(InvalidClientAuthentication::Malformed);
         }
-        let value = header.to_str().map_err(|_| InvalidClientAuthentication)?;
-        let (scheme, value) = value.split_once(' ').ok_or(InvalidClientAuthentication)?;
+        let value = header
+            .to_str()
+            .map_err(|_| InvalidClientAuthentication::Malformed)?;
+        let (scheme, value) = value
+            .split_once(' ')
+            .ok_or(InvalidClientAuthentication::Malformed)?;
         if !scheme.eq_ignore_ascii_case("basic") || value.len() > 8192 {
-            return Err(InvalidClientAuthentication);
+            return Err(InvalidClientAuthentication::Malformed);
         }
         let decoded = Zeroizing::new(
             STANDARD
                 .decode(value)
-                .map_err(|_| InvalidClientAuthentication)?,
+                .map_err(|_| InvalidClientAuthentication::Malformed)?,
         );
-        let decoded = std::str::from_utf8(&decoded).map_err(|_| InvalidClientAuthentication)?;
-        let (id, secret) = decoded.split_once(':').ok_or(InvalidClientAuthentication)?;
+        let decoded =
+            std::str::from_utf8(&decoded).map_err(|_| InvalidClientAuthentication::Malformed)?;
+        let (id, secret) = decoded
+            .split_once(':')
+            .ok_or(InvalidClientAuthentication::Malformed)?;
         if secret.contains(':') {
-            return Err(InvalidClientAuthentication);
+            return Err(InvalidClientAuthentication::Malformed);
         }
         let id = form_decode(id)?;
         let secret = Zeroizing::new(form_decode(secret)?.into_bytes());
@@ -83,16 +95,19 @@ pub fn parse(
             || secret.len() > 1024
             || client_id.as_ref().is_some_and(|body| body != &id)
         {
-            return Err(InvalidClientAuthentication);
+            return Err(InvalidClientAuthentication::Malformed);
         }
         Ok(ClientCredentials::Confidential {
             client_id: id,
             secret,
         })
     } else {
-        let id = client_id
-            .filter(|id| !id.is_empty() && id.len() <= 255)
-            .ok_or(InvalidClientAuthentication)?;
+        let id = match client_id {
+            None => return Err(InvalidClientAuthentication::Missing),
+            Some(id) if id.is_empty() => return Err(InvalidClientAuthentication::Missing),
+            Some(id) if id.len() > 255 => return Err(InvalidClientAuthentication::Malformed),
+            Some(id) => id,
+        };
         match client_secret {
             Some(secret) if !secret.is_empty() && secret.len() <= 1024 => {
                 Ok(ClientCredentials::Confidential {
@@ -100,7 +115,7 @@ pub fn parse(
                     secret: Zeroizing::new(secret.as_bytes().to_vec()),
                 })
             }
-            Some(_) => Err(InvalidClientAuthentication),
+            Some(_) => Err(InvalidClientAuthentication::Malformed),
             None => Ok(ClientCredentials::Public(id)),
         }
     }
