@@ -257,10 +257,17 @@ changes nothing. Changes are audited in the master realm.
 `tests/public/admin_roles_contract.py` checks 3 groups of cases; the slowest
 takes 155 ms.
 
+Access tokens from the authorization-code, refresh and client-credentials
+grants carry the user's effective realm roles in `realm_access.roles`: direct
+grants plus composites, expanded recursively to 32 levels, sorted. The
+contracts check this for browser login, master and new-realm service
+accounts, and a granted role.
+
 Remaining differences: composite editing, role attributes and client roles
 are refused; deleting the default role answers 400, a response the reference
-was not recorded for; composite roles are not yet expanded into tokens or
-used for authorization, which still checks only the master `admin` role.
+was not recorded for; `resource_access` and roles inherited from groups are
+not yet in tokens; admin authorization still checks only the master `admin`
+role.
 
 ## Groups
 

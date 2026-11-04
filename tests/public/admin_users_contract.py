@@ -119,6 +119,7 @@ class AdminUsersContract(ServerCase):
         self.assertEqual(cli("client", "add-public", self.realm, "login-app", CALLBACK).returncode, 0)
         claims = self.login("reference-user", password)
         self.assertEqual(claims["sub"], user_id)
+        self.assertEqual(claims["realm_access"]["roles"], sorted([f"default-roles-{self.realm}", "offline_access", "uma_authorization"]))
         self.assertEqual(REFERENCE["login/after-reset"]["status"], 200)
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/success")
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/repeat")

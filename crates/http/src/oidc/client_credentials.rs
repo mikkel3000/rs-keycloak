@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use rs_keycloak_crypto::signing::{IdTokenClaims, TokenClaims};
+use rs_keycloak_crypto::signing::{IdTokenClaims, RealmAccess, TokenClaims};
 use rs_keycloak_storage_postgres::ServiceAccountGrant;
 use serde_json::json;
 
@@ -103,6 +103,13 @@ pub(super) async fn grant(
     let Ok(permit) = Arc::clone(&state.signing_slots).try_acquire_owned() else {
         return unavailable();
     };
+    let Ok(realm_roles) = state
+        .storage
+        .effective_realm_roles(realm_id, &account.user_id)
+        .await
+    else {
+        return unavailable();
+    };
     let issuer = format!("{}/realms/{realm}", state.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&state.signer);
     let client_id = client.client_id;
@@ -119,6 +126,9 @@ pub(super) async fn grant(
             azp: &client_id,
             sid: None,
             scope: granted,
+            realm_access: Some(RealmAccess {
+                roles: &realm_roles,
+            }),
         })?;
         let id = if has_openid_scope(granted) {
             Some(signer.sign_id_token(&IdTokenClaims {

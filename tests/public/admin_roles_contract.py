@@ -99,6 +99,19 @@ class AdminRolesContract(ServerCase):
         mapped = json.loads(self.call("GET", f"/admin/realms/{self.realm}/users/{user['id']}/role-mappings/realm")[2])
         self.assertEqual([role["name"] for role in mapped], [f"default-roles-{self.realm}"])
 
+    def test_granted_and_composite_roles_reach_tokens(self):
+        secret = secrets.token_urlsafe(40)
+        created = self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "svc", "secret": secret, "serviceAccountsEnabled": True, "standardFlowEnabled": False})
+        client = created[1]["location"].replace(ISSUER_BASE, "")
+        user = json.loads(self.call("GET", client + "/service-account-user")[2])
+        self.call("POST", self.roles, {"name": "reader"})
+        reader = json.loads(self.call("GET", self.roles + "/reader")[2])
+        self.call("POST", f"/admin/realms/{self.realm}/users/{user['id']}/role-mappings/realm", [{"id": reader["id"], "name": "reader"}])
+        status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "client_credentials", "client_id": "svc", "client_secret": secret})
+        self.assertEqual(status, 200)
+        claims = self.verify(json.loads(body)["access_token"])
+        self.assertEqual(claims["realm_access"]["roles"], sorted([f"default-roles-{self.realm}", "offline_access", "reader", "uma_authorization"]))
+
 
 if __name__ == "__main__":
     unittest.main()

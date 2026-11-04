@@ -21,7 +21,9 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
-use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedToken};
+use rs_keycloak_crypto::signing::{
+    IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
+};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::{AccessTokenStatus, Storage};
 use serde::Deserialize;
@@ -664,6 +666,13 @@ async fn token(
         return unavailable();
     };
     let refresh_expires_in = refresh_expiry.saturating_sub(now);
+    let Ok(realm_roles) = s
+        .storage
+        .effective_realm_roles(&realm_id, &grant.user_id)
+        .await
+    else {
+        return unavailable();
+    };
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
     let tokens = tokio::task::spawn_blocking(move || {
@@ -679,6 +688,9 @@ async fn token(
             azp: &grant.client_identifier,
             sid: Some(&grant.session_id),
             scope: &grant.scope,
+            realm_access: Some(RealmAccess {
+                roles: &realm_roles,
+            }),
         };
         let id_claims = IdTokenClaims {
             iss: &issuer,
@@ -699,6 +711,7 @@ async fn token(
             azp: &grant.client_identifier,
             sid: Some(&grant.session_id),
             scope: &grant.scope,
+            realm_access: None,
         };
         Some((
             signer.sign(&claims).ok()?,

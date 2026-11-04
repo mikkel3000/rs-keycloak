@@ -271,3 +271,19 @@ impl Storage {
         Ok(RoleMappingChange::Changed)
     }
 }
+
+impl Storage {
+    /// Returns a user's effective realm role names: direct grants plus every
+    /// role reachable through composites, sorted and without duplicates.
+    pub async fn effective_realm_roles(
+        &self,
+        realm_id: &str,
+        user_id: &str,
+    ) -> Result<Vec<String>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let roles = sqlx::query_scalar("WITH RECURSIVE effective(id, depth) AS (SELECT role_id, 0 FROM user_role_grants WHERE realm_id = $1 AND user_id = $2 UNION SELECT c.child_role_id, e.depth + 1 FROM role_composites c JOIN effective e ON c.realm_id = $1 AND c.role_id = e.id WHERE e.depth < 32) SELECT DISTINCT r.name FROM roles r JOIN effective e ON r.realm_id = $1 AND r.id = e.id ORDER BY r.name")
+            .bind(realm_id).bind(user_id).fetch_all(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(roles)
+    }
+}

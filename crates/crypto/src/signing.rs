@@ -56,6 +56,16 @@ pub struct TokenClaims<'a> {
     pub sid: Option<&'a str>,
     /// Granted scopes.
     pub scope: &'a str,
+    /// Effective realm roles, as Keycloak's `realm_access` claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub realm_access: Option<RealmAccess<'a>>,
+}
+
+/// The `realm_access` claim listing effective realm role names.
+#[derive(Serialize)]
+pub struct RealmAccess<'a> {
+    /// Role names.
+    pub roles: &'a [String],
 }
 
 /// ID token values bound to an authorized OpenID Connect session.

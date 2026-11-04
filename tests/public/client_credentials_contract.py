@@ -68,6 +68,8 @@ class ClientCredentialsContract(ServerCase):
         self.assertNotIn("sid", expected["access_claims"])
         self.assertNotIn("sid", claims)
         self.assertEqual(claims["azp"], OWNER)
+        self.assertIn("realm_access", expected["access_claims"])
+        self.assertEqual(claims["realm_access"]["roles"], ["default-roles-master", "offline_access", "uma_authorization"])
         if "id_token" in tokens:
             id_claims = self.verify(tokens["id_token"])
             self.assertNotIn("auth_time", expected["id_claims"])
