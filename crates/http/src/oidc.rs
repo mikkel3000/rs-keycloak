@@ -39,6 +39,8 @@ pub struct OidcState {
     client_auth: Arc<ClientAuthenticator>,
     signer: Arc<SigningKey>,
     signing_slots: Arc<Semaphore>,
+    /// Bounds concurrent password hashing for admin credential changes.
+    pub(crate) hash_slots: Arc<Semaphore>,
     pub(crate) issuer_base: String,
     path_prefix: String,
 }
@@ -59,6 +61,7 @@ impl OidcState {
             client_auth: Arc::new(client_auth),
             signer: Arc::new(signer),
             signing_slots: Arc::new(Semaphore::new(2)),
+            hash_slots: Arc::new(Semaphore::new(2)),
             issuer_base,
             path_prefix,
         })

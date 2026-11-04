@@ -183,3 +183,25 @@ refused with 400 instead of being partly applied; realm names follow the
 existing URL-safe pattern and other names get "Invalid realm name", a message
 the reference was not recorded for; admin tokens must come from the master
 realm, and the fine-grained realm-management roles are not modelled.
+
+## User administration
+
+`/admin/realms/{realm}/users` supports create, exact and contains username
+search with `first` and `max`, `count`, read, delete and
+`reset-password`, following the 21 recorded cases in
+`tests/reference/admin-user-observations.json`. Usernames and emails are stored
+lowercased and are unique per realm. A user created without `enabled` is
+disabled. Duplicate, missing-name, malformed-JSON, unknown-user and
+empty-password errors use the recorded bodies. Search and count exclude
+service-account users. Password resets hash with Argon2id behind a two-slot
+limit and replace the single password credential; pending login challenges for
+the old credential are removed with it. Creation, deletion and resets are
+audited in the master realm under the acting user.
+`tests/public/admin_users_contract.py` checks 6 groups of cases, including
+browser login in a new realm after a reset; the slowest takes 162 ms.
+
+Remaining differences: the representation omits Keycloak's `access` map, and
+always reports no TOTP, required actions or disableable credential types,
+because none of those exist yet; other user fields, other search parameters
+and temporary passwords are refused with 400; deleting a master user who has
+written audit events fails, because audit rows keep their actor.

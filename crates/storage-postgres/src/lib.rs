@@ -3,10 +3,12 @@
 mod cors;
 mod realm_admin;
 mod service_account;
+mod user_admin;
 
 pub use cors::WebOriginCheck;
 pub use realm_admin::{MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord};
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
+pub use user_admin::{NewUser, UserCreation, UserRecord, UsernameFilter};
 
 use std::time::Duration;
 
@@ -30,6 +32,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0009_response_mode.sql"),
     include_str!("../../../migrations/0010_client_web_origins.sql"),
     include_str!("../../../migrations/0011_service_accounts.sql"),
+    include_str!("../../../migrations/0012_user_profile.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
