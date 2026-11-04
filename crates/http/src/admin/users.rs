@@ -12,7 +12,7 @@ use axum::body::Bytes;
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UsernameFilter};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -40,6 +40,14 @@ pub(super) fn routes() -> Router<OidcState> {
         .route(
             "/admin/realms/{realm}/users/{user}/reset-password",
             put(reset_password),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/consents",
+            get(list_consents),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/consents/{client}",
+            delete(revoke_consent),
         )
 }
 
@@ -345,5 +353,65 @@ async fn reset_password(
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(user_not_found())
+    }
+}
+
+async fn list_consents(
+    State(state): State<OidcState>,
+    Path((realm, user)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let consents = state
+        .storage
+        .user_consents(&realm_id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let listed = consents
+        .into_iter()
+        .map(|consent| {
+            json!({
+                "clientId": consent.client_identifier,
+                "grantedClientScopes": consent.scope.split(' ').filter(|scope| !scope.is_empty()).collect::<Vec<_>>(),
+                "createdDate": consent.created,
+                "lastUpdatedDate": consent.updated,
+                "additionalGrants": [],
+            })
+        })
+        .collect();
+    Ok(json_response(Value::Array(listed)))
+}
+
+async fn revoke_consent(
+    State(state): State<OidcState>,
+    Path((realm, user, client)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AdminError> {
+    authorize(&state, &headers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    // The pinned UserResource reports an unknown client before the consent.
+    if state
+        .storage
+        .clients(&realm_id, Some(&client))
+        .await?
+        .is_empty()
+    {
+        return Err(AdminError::Error(
+            StatusCode::NOT_FOUND,
+            "Client not found".into(),
+        ));
+    }
+    if state
+        .storage
+        .revoke_consent(&realm_id, &user, &client)
+        .await?
+    {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AdminError::Error(
+            StatusCode::NOT_FOUND,
+            "Consent nor offline token not found".into(),
+        ))
     }
 }

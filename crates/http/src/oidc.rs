@@ -2,6 +2,7 @@
 
 mod authorization_response;
 mod client_credentials;
+mod consent;
 mod cors;
 mod introspection;
 mod logout;
@@ -105,6 +106,10 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/authenticate/{request_id}",
             post(authenticate),
+        )
+        .route(
+            "/realms/{realm}/login-actions/consent/{request_id}",
+            post(consent::answer),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/token",
@@ -307,6 +312,7 @@ async fn authorize(
             q.nonce.as_deref(),
             300,
             response_mode,
+            prompts.contains(&"consent"),
         )
         .await
     {
@@ -336,25 +342,16 @@ async fn authorize(
                 .is_some_and(|seconds| reauthentication_required(session.auth_time, seconds, now))
         });
         if let Some(session) = session {
-            return match sso_code(
-                &s,
-                &realm_id,
-                &q.client_id,
-                &request_id,
-                &csrf,
-                &session.session_id,
-            )
-            .await
+            let request = RequestContext {
+                realm: &realm,
+                request_id: &request_id,
+                csrf: &csrf,
+                issuer: &issuer,
+            };
+            return match sso_response(&s, &request, &realm_id, &q.client_id, &session.session_id)
+                .await
             {
-                Ok(Some(code)) => match authorization_response::build(
-                    code.0,
-                    &code.1,
-                    &session.session_id,
-                    &issuer,
-                ) {
-                    Ok(response) => response,
-                    Err(()) => unavailable(),
-                },
+                Ok(Some(answer)) => answer.into_response(),
                 Ok(None) => failure(),
                 Err(()) => unavailable(),
             };
@@ -464,16 +461,6 @@ async fn authenticate(
         }
         Err(_) => return unavailable(),
     };
-    let code = random_token();
-    let redirect = match s
-        .storage
-        .issue_authorization_code(&request_id, &csrf_hash, &session_id, &digest(&code), 60)
-        .await
-    {
-        Ok(Some(redirect)) => redirect,
-        Ok(None) => return failure(),
-        Err(_) => return unavailable(),
-    };
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let sso_token = random_token();
     match s
@@ -485,9 +472,17 @@ async fn authenticate(
         Ok(false) => return failure(),
         Err(_) => return unavailable(),
     }
-    let mut response = match authorization_response::build(redirect, &code, &session_id, &issuer) {
-        Ok(response) => response,
-        Err(_) => return unavailable(),
+    let request = RequestContext {
+        realm: &realm,
+        request_id: &request_id,
+        csrf,
+        issuer: &issuer,
+    };
+    let (mut response, consent_pending) = match consent_or_code(&s, &request, &session_id).await {
+        Ok(Some(Answer::Consent(response))) => (response, true),
+        Ok(Some(Answer::Code(response))) => (response, false),
+        Ok(None) => return failure(),
+        Err(()) => return unavailable(),
     };
     for value in sso_cookies(&s.path_prefix, &realm, Some((&sso_token, &session_id))) {
         match HeaderValue::from_str(&value) {
@@ -497,25 +492,102 @@ async fn authenticate(
             Err(_) => return unavailable(),
         }
     }
-    let path_prefix = &s.path_prefix;
-    let clear_cookie = format!(
-        "rs_auth=; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
-    );
-    if let Ok(value) = HeaderValue::from_str(&clear_cookie) {
-        response.headers_mut().append(header::SET_COOKIE, value);
+    // The consent page keeps the CSRF cookie that binds its form.
+    if !consent_pending {
+        let path_prefix = &s.path_prefix;
+        let clear_cookie = format!(
+            "rs_auth=; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=0; Secure; HttpOnly; SameSite=Strict"
+        );
+        if let Ok(value) = HeaderValue::from_str(&clear_cookie) {
+            response.headers_mut().append(header::SET_COOKIE, value);
+        }
     }
     response
 }
 
-/// Issues a code from an existing SSO session for a new authorization request.
-async fn sso_code(
+/// A validated authorization request bound to its CSRF cookie.
+struct RequestContext<'a> {
+    realm: &'a str,
+    request_id: &'a str,
+    csrf: &'a str,
+    issuer: &'a str,
+}
+
+/// How an authenticated authorization request is answered.
+enum Answer {
+    /// The consent screen, which keeps the request's CSRF cookie.
+    Consent(Response),
+    /// The authorization response carrying a code.
+    Code(Response),
+}
+
+impl Answer {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Consent(response) | Self::Code(response) => response,
+        }
+    }
+}
+
+/// Shows the consent screen if the client needs it, otherwise issues a code.
+/// Returns `None` when the request is no longer valid.
+async fn consent_or_code(
     s: &OidcState,
+    request: &RequestContext<'_>,
+    session_id: &str,
+) -> Result<Option<Answer>, ()> {
+    let csrf_hash = digest(request.csrf);
+    if s.storage
+        .consent_needed(request.request_id, &csrf_hash, session_id)
+        .await
+        .map_err(|_| ())?
+    {
+        let pending = s
+            .storage
+            .await_consent(request.request_id, &csrf_hash, session_id)
+            .await
+            .map_err(|_| ())?;
+        return Ok(pending.map(|pending| {
+            Answer::Consent(consent::page(
+                &s.path_prefix,
+                request.realm,
+                request.request_id,
+                &pending.client_identifier,
+                &pending.scope,
+                request.csrf,
+            ))
+        }));
+    }
+    let code = random_token();
+    let redirect = s
+        .storage
+        .issue_authorization_code(
+            request.request_id,
+            &csrf_hash,
+            session_id,
+            &digest(&code),
+            60,
+        )
+        .await
+        .map_err(|_| ())?;
+    match redirect {
+        Some(redirect) => {
+            authorization_response::build(redirect, &code, session_id, request.issuer)
+                .map(|response| Some(Answer::Code(response)))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Answers an authorization request from an existing SSO session, after the
+/// client joins the session.
+async fn sso_response(
+    s: &OidcState,
+    request: &RequestContext<'_>,
     realm_id: &str,
     client_id: &str,
-    request_id: &str,
-    csrf: &str,
     session_id: &str,
-) -> Result<Option<(rs_keycloak_storage_postgres::AuthorizationRedirect, String)>, ()> {
+) -> Result<Option<Answer>, ()> {
     let joined = s
         .storage
         .join_client_session(realm_id, session_id, client_id, &Uuid::new_v4().to_string())
@@ -524,13 +596,7 @@ async fn sso_code(
     if !joined {
         return Ok(None);
     }
-    let code = random_token();
-    let redirect = s
-        .storage
-        .issue_authorization_code(request_id, &digest(csrf), session_id, &digest(&code), 60)
-        .await
-        .map_err(|_| ())?;
-    Ok(redirect.map(|redirect| (redirect, code)))
+    consent_or_code(s, request, session_id).await
 }
 
 /// Grants that redeem or extend a stored user session.

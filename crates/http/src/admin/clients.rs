@@ -179,6 +179,7 @@ fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
         "implicitFlowEnabled": false,
         "directAccessGrantsEnabled": false,
         "serviceAccountsEnabled": client.service_accounts,
+        "consentRequired": client.consent_required,
         "publicClient": client.public,
         "protocol": "openid-connect",
     });
@@ -197,7 +198,8 @@ async fn create_client(
     let actor = authorize(&state, &headers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    const SUPPORTED: [&str; 14] = [
+    const SUPPORTED: [&str; 15] = [
+        "consentRequired",
         "clientId",
         "enabled",
         "publicClient",
@@ -281,6 +283,7 @@ async fn create_client(
         web_origins: &web_origins,
         post_logout_redirect_uris: &post_logout_redirect_uris,
         post_logout_uses_redirect_uris,
+        consent_required: bool_field(&fields, "consentRequired", false)?,
     };
     let created = state
         .storage

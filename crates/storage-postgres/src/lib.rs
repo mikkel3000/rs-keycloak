@@ -1,6 +1,7 @@
 //! PostgreSQL schema management and guarded application transactions.
 
 mod client_admin;
+mod consent;
 mod cors;
 mod group_admin;
 mod logout;
@@ -11,6 +12,7 @@ mod sso;
 mod user_admin;
 
 pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
+pub use consent::{ConsentRecord, PendingConsent};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
 pub use logout::RefreshLogout;
@@ -48,6 +50,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0015_groups.sql"),
     include_str!("../../../migrations/0016_logout.sql"),
     include_str!("../../../migrations/0017_sso_sessions.sql"),
+    include_str!("../../../migrations/0018_consent.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -787,6 +790,7 @@ impl Storage {
         nonce: Option<&str>,
         ttl_seconds: i32,
         response_mode: &str,
+        prompt_consent: bool,
     ) -> Result<bool, StorageError> {
         if !matches!(response_mode, "query" | "fragment" | "form_post")
             || !(1..=300).contains(&ttl_seconds)
@@ -802,8 +806,8 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled")
-            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).execute(&mut *conn).await?.rows_affected();
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode, prompt_consent) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11, $12 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled")
+            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).bind(prompt_consent).execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)
     }

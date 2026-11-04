@@ -332,3 +332,22 @@ Remaining differences: Keycloak's per-login cookies (`AUTH_SESSION_ID`,
 keeps login state in its own CSRF cookie; other `prompt` values
 (`consent`, `select_account`) are ignored; the session iframe and
 `check_session_iframe` are not implemented.
+
+## Consent
+
+Clients created with `consentRequired: true` show a consent form (`accept`,
+`cancel`) after password login or from a live SSO session, unless the user
+already consented to that client; `prompt=consent` asks again. The form is
+bound to the login request's CSRF cookie and the session waiting on it is
+stored on the authorization request. Accept stores the consent and issues the
+code; cancel consumes the request and redirects with `access_denied`.
+`/users/{id}/consents` lists consents and `DELETE .../consents/{client}`
+revokes one, with the pinned source's 404 messages for unknown clients and
+missing consents. These follow the 10 recorded cases in
+`tests/reference/consent-observations.json`;
+`tests/public/consent_contract.py` checks 3 groups, the slowest in 257 ms.
+
+Remaining differences: granted scopes list the requested scope (`openid`)
+rather than Keycloak's default client scopes; the consent page is a plain
+form, not Keycloak's theme; consents are not yet audited or shown in an
+account console.
