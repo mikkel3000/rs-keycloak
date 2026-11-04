@@ -1,7 +1,9 @@
 //! OIDC authorization-code request handling.
 
 mod authorization_response;
+mod cors;
 mod introspection;
+mod revocation;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -87,19 +89,54 @@ pub fn router(state: OidcState) -> Router {
             "/realms/{realm}/login-actions/authenticate/{request_id}",
             post(authenticate),
         )
-        .route("/realms/{realm}/protocol/openid-connect/token", post(token))
+        .route(
+            "/realms/{realm}/protocol/openid-connect/token",
+            post(token)
+                .options(|| async { StatusCode::NO_CONTENT })
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    cors::handle,
+                )),
+        )
         .route(
             "/realms/{realm}/protocol/openid-connect/token/introspect",
-            post(introspection::handle),
+            post(introspection::handle)
+                .options(|| async { StatusCode::NO_CONTENT })
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    cors::handle,
+                )),
         )
-        .route("/realms/{realm}/protocol/openid-connect/certs", get(certs))
+        .route(
+            "/realms/{realm}/protocol/openid-connect/revoke",
+            post(revocation::handle)
+                .options(|| async { StatusCode::NO_CONTENT })
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    cors::handle,
+                )),
+        )
+        .route(
+            "/realms/{realm}/protocol/openid-connect/certs",
+            get(certs)
+                .options(|| async { StatusCode::OK })
+                .layer(axum::middleware::from_fn(cors::metadata)),
+        )
         .route(
             "/realms/{realm}/protocol/openid-connect/userinfo",
-            get(userinfo).post(userinfo),
+            get(userinfo)
+                .post(userinfo)
+                .options(|| async { StatusCode::NO_CONTENT })
+                .layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    cors::handle,
+                )),
         )
         .route(
             "/realms/{realm}/.well-known/openid-configuration",
-            get(discovery),
+            get(discovery)
+                .options(|| async { StatusCode::OK })
+                .layer(axum::middleware::from_fn(cors::metadata)),
         )
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(state);
@@ -661,7 +698,7 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
         Err(_) => return unavailable(),
     }
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
+    Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
 async fn userinfo(

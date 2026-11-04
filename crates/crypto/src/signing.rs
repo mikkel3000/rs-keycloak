@@ -131,7 +131,7 @@ impl SigningKey {
 
     /// Verifies a compact access token against this key and its exact header.
     pub fn verify_access_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
-        let claims = self.verify_token(token)?;
+        let claims: VerifiedToken = self.verify_token(token)?;
         if claims.token_type != "Bearer" {
             return Err(SigningError);
         }
@@ -140,14 +140,23 @@ impl SigningKey {
 
     /// Verifies a signed refresh token and rejects other token types.
     pub fn verify_refresh_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
-        let claims = self.verify_token(token)?;
+        let claims: VerifiedToken = self.verify_token(token)?;
         if claims.token_type != "Refresh" {
             return Err(SigningError);
         }
         Ok(claims)
     }
 
-    fn verify_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
+    /// Verifies the signature and reads the token type; no grant is authorized by this alone.
+    pub fn verify_token_type(&self, token: &str) -> Result<String, SigningError> {
+        #[derive(Deserialize)]
+        struct TokenType {
+            typ: String,
+        }
+        Ok(self.verify_token::<TokenType>(token)?.typ)
+    }
+
+    fn verify_token<T: serde::de::DeserializeOwned>(&self, token: &str) -> Result<T, SigningError> {
         if token.len() > 8192 {
             return Err(SigningError);
         }
@@ -193,21 +202,21 @@ impl SigningKey {
 
     fn sign_typed_claims(
         &self,
-        claims: &TokenClaims<'_>,
+        claims: &impl Serialize,
         typ: &str,
     ) -> Result<String, SigningError> {
         #[derive(Serialize)]
-        struct TypedClaims<'a, 'b> {
+        struct TypedClaims<'a, T> {
             typ: &'a str,
             #[serde(flatten)]
-            claims: &'a TokenClaims<'b>,
+            claims: &'a T,
         }
         self.sign_claims(&TypedClaims { typ, claims })
     }
 
     /// Signs a validated OpenID Connect ID token.
     pub fn sign_id_token(&self, claims: &IdTokenClaims<'_>) -> Result<String, SigningError> {
-        self.sign_claims(claims)
+        self.sign_typed_claims(claims, "ID")
     }
 
     fn sign_claims(&self, claims: &impl Serialize) -> Result<String, SigningError> {

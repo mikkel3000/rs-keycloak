@@ -1,4 +1,5 @@
 mod client_provision;
+mod web_origin;
 
 use std::env;
 use std::future::IntoFuture;
@@ -14,7 +15,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|client add-confidential <realm> <client-id> <redirect-uri>|client rotate-secret <realm> <client-id>|version>";
+const USAGE: &str = "Usage: rs-keycloak <serve|config check|db check|db migrate|bootstrap-admin <username>|client add-public <realm> <client-id> <redirect-uri>|client add-confidential <realm> <client-id> <redirect-uri>|client rotate-secret <realm> <client-id>|client add-web-origin <realm> <client-id> <origin>|version>";
 
 struct Config {
     database_url: String,
@@ -184,6 +185,10 @@ async fn run() -> Result<(), &'static str> {
             println!(
                 "Bootstrap admin record created; sign-in and admin handover are not implemented"
             );
+        }
+        ["client", "add-web-origin", realm, client_id, origin] => {
+            web_origin::add(realm, client_id, origin).await?;
+            println!("Client web origin registered");
         }
         ["client", "rotate-secret", realm, client_id] => {
             client_provision::rotate_client_secret(realm, client_id).await?;

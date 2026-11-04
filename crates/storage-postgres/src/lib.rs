@@ -996,17 +996,30 @@ impl Storage {
         client_identifier: &str,
         client_revision: Option<i64>,
         token_hash: &[u8],
-    ) -> Result<(), StorageError> {
+    ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let client_id =
             authenticated_client(tx.connection(), realm, client_identifier, client_revision)
                 .await?;
-        if token_hash.len() == 32 {
-            sqlx::query("UPDATE refresh_families f SET revoked_at = COALESCE(f.revoked_at, clock_timestamp()) FROM refresh_tokens t WHERE t.token_hash = $1 AND t.family_id = f.id AND f.realm_id = $2 AND f.client_id = $3")
-                .bind(token_hash).bind(realm).bind(client_id).execute(tx.connection()).await?;
+        if token_hash.len() != 32 {
+            return Ok(false);
         }
+        let conn = tx.connection();
+        let row = sqlx::query("SELECT f.id AS family_id, us.id AS session_id FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND f.client_id = $3 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() FOR UPDATE OF t, f, us, cs")
+            .bind(token_hash).bind(realm).bind(&client_id).fetch_optional(&mut *conn).await?;
+        let Some(row) = row else {
+            return Ok(false);
+        };
+        let session: String = row.try_get("session_id")?;
+        let family: String = row.try_get("family_id")?;
+        sqlx::query("UPDATE refresh_families SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE id = $1")
+            .bind(family).execute(&mut *conn).await?;
+        sqlx::query("DELETE FROM client_sessions WHERE realm_id = $1 AND client_id = $2 AND user_session_id = $3")
+            .bind(realm).bind(client_id).bind(&session).execute(&mut *conn).await?;
+        sqlx::query("UPDATE user_sessions SET revoked_at = clock_timestamp() WHERE realm_id = $1 AND id = $2 AND NOT EXISTS (SELECT 1 FROM client_sessions WHERE realm_id = $1 AND user_session_id = $2)")
+            .bind(realm).bind(session).execute(&mut *conn).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// Introspect an unconsumed refresh token bound to an authenticated client.

@@ -14,6 +14,8 @@ import subprocess
 import time
 import tempfile
 import urllib.request
+
+import cors_contract
 import urllib.parse
 
 
@@ -81,6 +83,7 @@ def run(binary, username, password, prefix=""):
     )
     assert setup.returncode == 0, "OAuth client setup failed"
     public_client = client
+    cors_contract.register(binary, public_client)
     confidential_client = client + "-confidential"
     client_secret = secrets.token_urlsafe(40) + ":+%/"
     for _ in range(2):
@@ -168,9 +171,11 @@ def run(binary, username, password, prefix=""):
         callback_tokens = json.loads(callback.stdout)
         status, _, body = request("GET", "/realms/master/protocol/openid-connect/userinfo", bearer=callback_tokens["access_token"])
         assert status == 200, "Adapter callback did not produce usable tokens"
+        cors_contract.run(port, prefix, public_client, confidential_client, callback_tokens)
         for mode, replay_kind in (
             ("public", "code"), ("public", "fragment"), ("public", "form_post"), ("public", "refresh"), ("public", "refresh_race"), ("public", "adapter"),
             ("basic", "refresh"), ("post", "refresh"),
+            ("public", "revoke_access"), ("public", "revoke_refresh"), ("public", "revoke_race"), ("basic", "revoke_refresh"),
         ):
             client = public_client if mode == "public" else confidential_client
 
@@ -310,7 +315,55 @@ def run(binary, username, password, prefix=""):
                     "client_secret": previous_secret, "refresh_token": tokens["refresh_token"],
                 })
                 assert status == 401 and json.loads(body)["error"] == "unauthorized_client", "Old secret survived rotation"
-            if replay_kind == "code":
+            if replay_kind.startswith("revoke_"):
+                revoke = token_path.removesuffix("/token") + "/revoke"
+                status, _, body = token_request({"client_id": client}, path=revoke)
+                assert status == 400 and json.loads(body)["error_description"] == "Token not provided"
+                status, _, body = token_request({"client_id": client, "token": "unknown"}, path=revoke)
+                assert status == 200 and json.loads(body)["error"] == "invalid_token"
+                status, _, body = token_request({"client_id": client, "token": tokens["id_token"]}, path=revoke)
+                assert status == 400 and json.loads(body)["error"] == "unsupported_token_type"
+                outsider = {"client_id": confidential_client, "client_secret": client_secret} if mode == "public" else {"client_id": public_client}
+                status, _, body = request("POST", revoke, dict(outsider, token=tokens["refresh_token"]))
+                assert status == 400 and json.loads(body)["error_description"] == "Unmatching clients"
+                status, _, _ = request("GET", userinfo, bearer=tokens["access_token"])
+                assert status == 200, "Other client revoked the session"
+                refresh = {"grant_type": "refresh_token", "client_id": client, "refresh_token": tokens["refresh_token"]}
+                if replay_kind == "revoke_access":
+                    status, _, body = token_request({"client_id": client, "token": tokens["access_token"]}, path=revoke)
+                    assert status == 200 and not body
+                    status, _, _ = request("GET", userinfo, bearer=tokens["access_token"])
+                    assert status == 401
+                    status, _, body = token_request(refresh)
+                    assert status == 200, "Access revocation unexpectedly revoked refresh"
+                    replacement = json.loads(body)
+                    status, _, _ = request("GET", userinfo, bearer=replacement["access_token"])
+                    assert status == 200
+                    status, _, body = token_request({"client_id": client, "token": replacement["refresh_token"]}, path=revoke)
+                    assert status == 200 and not body
+                    status, _, _ = request("GET", userinfo, bearer=replacement["access_token"])
+                    assert status == 401, "Refresh revocation left replacement access usable"
+                elif replay_kind == "revoke_race":
+                    with ThreadPoolExecutor(max_workers=2) as executor:
+                        revoking = executor.submit(token_request, {"client_id": client, "token": tokens["refresh_token"]}, path=revoke)
+                        refreshing = executor.submit(token_request, refresh)
+                        revoked_reply, refresh_reply = revoking.result(), refreshing.result()
+                    assert revoked_reply[0] == 200
+                    assert refresh_reply[0] in (200, 400), "Revocation race failed transactionally"
+                    if refresh_reply[0] == 200:
+                        replacement = json.loads(refresh_reply[2])
+                        status, _, _ = request("GET", userinfo, bearer=replacement["access_token"])
+                        assert status == 401, "Concurrent refresh escaped revocation"
+                        status, _, _ = token_request(dict(refresh, refresh_token=replacement["refresh_token"]))
+                        assert status == 400
+                else:
+                    status, _, body = token_request({"client_id": client, "token": tokens["refresh_token"]}, path=revoke)
+                    assert status == 200 and not body
+                status, _, body = token_request(refresh)
+                assert status == 400 and json.loads(body)["error"] == "invalid_grant"
+                status, _, _ = token_request({"client_id": client, "token": tokens["refresh_token"]}, path=revoke)
+                assert status == 200, "Repeat revocation was not idempotent"
+            elif replay_kind == "code":
                 status, _, body = token_request(token_form)
                 assert status == 400 and json.loads(body)["error"] == "invalid_grant", "Code replay accepted"
             else:

@@ -1,0 +1,2321 @@
+{
+  "keycloak_version": "26.8.1",
+  "paired": false,
+  "observations": {
+    "introspect/public-owner/access_token": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "introspect/public-owner/refresh_token": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "introspect/public-owner/id_token": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "introspect/public-owner/unknown": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "introspect/public-owner/missing": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "introspect/public-owner/unsupported-hint": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Client not allowed."
+      }
+    },
+    "revoke/public-owner/unknown": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Invalid token"
+      }
+    },
+    "revoke/public-owner/missing": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Token not provided"
+      }
+    },
+    "revoke/public-owner/id-token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "unsupported_token_type",
+        "error_description": "Unsupported token type"
+      }
+    },
+    "introspect/conf-owner/access_token": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "introspect/conf-owner/refresh_token": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "introspect/conf-owner/id_token": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "introspect/conf-owner/unknown": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "introspect/conf-owner/missing": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Token not provided."
+      }
+    },
+    "introspect/conf-owner/unsupported-hint": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Unsupported token type."
+      }
+    },
+    "revoke/conf-owner/unknown": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Invalid token"
+      }
+    },
+    "revoke/conf-owner/missing": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Token not provided"
+      }
+    },
+    "revoke/conf-owner/id-token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "unsupported_token_type",
+        "error_description": "Unsupported token type"
+      }
+    },
+    "token/introspect/no-client": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "token/introspect/missing-secret": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Client authentication failed."
+      }
+    },
+    "token/introspect/valid-secret-basic": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "token/introspect/unknown-client": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "token/introspect/wrong-secret-post": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Client authentication failed."
+      }
+    },
+    "token/introspect/wrong-secret-basic": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Client authentication failed."
+      }
+    },
+    "revoke/no-client": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "revoke/missing-secret": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "unauthorized_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "revoke/valid-secret-basic": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Invalid token"
+      }
+    },
+    "revoke/unknown-client": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "revoke/wrong-secret-post": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "unauthorized_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "revoke/wrong-secret-basic": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "unauthorized_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      }
+    },
+    "token/introspect/duplicate-token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "duplicated parameter"
+      }
+    },
+    "revoke/duplicate-token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "duplicated parameter"
+      }
+    },
+    "introspect/ownership/access_token": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "revoke/ownership/access_token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Unmatching clients"
+      }
+    },
+    "introspect/ownership/refresh_token": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "revoke/ownership/refresh_token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Unmatching clients"
+      }
+    },
+    "introspect/default-token-owner-not-in-audience": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "introspect/public-token-audience-client": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "introspect/public-refresh-not-owner": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "revoke/public-caller-not-owner": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Unmatching clients"
+      }
+    },
+    "revoke/confidential-caller-public-token": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Unmatching clients"
+      }
+    },
+    "introspect/refresh-with-access-hint": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "effects/public-owner/access-before-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "effects/public-owner/revoke-access": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/public-owner/access-after-access-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/public-owner/userinfo-after-access-revoke": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"Token verification failed\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/public-owner/refresh-after-access-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "access_token",
+        "expires_in",
+        "id_token",
+        "not-before-policy",
+        "refresh_expires_in",
+        "refresh_token",
+        "scope",
+        "session_state",
+        "token_type"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/public-owner/refresh-after-access-revoke-introspect": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/public-owner/revoke-refresh": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/public-owner/refresh-after-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/public-owner/access-after-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/public-owner/userinfo-after-refresh-revoke": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"user_session_not_found\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/public-owner/refresh-grant-after-refresh-revoke": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Session not active"
+      }
+    },
+    "effects/public-owner/repeat-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Invalid token"
+      }
+    },
+    "effects/conf-owner/access-before-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "effects/conf-owner/revoke-access": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/conf-owner/access-after-access-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/conf-owner/userinfo-after-access-revoke": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"Token verification failed\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/conf-owner/refresh-after-access-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "access_token",
+        "expires_in",
+        "id_token",
+        "not-before-policy",
+        "refresh_expires_in",
+        "refresh_token",
+        "scope",
+        "session_state",
+        "token_type"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/conf-owner/refresh-after-access-revoke-introspect": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "effects/conf-owner/revoke-refresh": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/conf-owner/refresh-after-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/conf-owner/access-after-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "active"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": false
+      }
+    },
+    "effects/conf-owner/userinfo-after-refresh-revoke": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"user_session_not_found\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "effects/conf-owner/refresh-grant-after-refresh-revoke": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Session not active"
+      }
+    },
+    "effects/conf-owner/repeat-refresh-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_token",
+        "error_description": "Invalid token"
+      }
+    },
+    "expired/introspect-access": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "expired/revoke-access": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "expired/refresh-grant": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "access_token",
+        "expires_in",
+        "id_token",
+        "not-before-policy",
+        "refresh_expires_in",
+        "refresh_token",
+        "scope",
+        "session_state",
+        "token_type"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "shared-session/sibling-before-revoke": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "shared-session/revoke-owner-refresh": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "shared-session/sibling-access": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "shared-session/sibling-refresh": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr",
+        "active",
+        "allowed-origins",
+        "aud",
+        "auth_time",
+        "azp",
+        "client_id",
+        "email",
+        "email_verified",
+        "exp",
+        "family_name",
+        "given_name",
+        "iat",
+        "iss",
+        "jti",
+        "name",
+        "preferred_username",
+        "scope",
+        "sid",
+        "sub",
+        "token_type",
+        "typ",
+        "username"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "active": true
+      }
+    },
+    "shared-session/sibling-userinfo": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "email",
+        "email_verified",
+        "family_name",
+        "given_name",
+        "name",
+        "preferred_username",
+        "sub"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "shared-session/sibling-refresh-grant": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "access_token",
+        "expires_in",
+        "id_token",
+        "not-before-policy",
+        "refresh_expires_in",
+        "refresh_token",
+        "scope",
+        "session_state",
+        "token_type"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/token/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/userinfo/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/certs/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/certs/get": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "keys"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/discovery/get": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr_values_supported",
+        "authorization_encryption_alg_values_supported",
+        "authorization_encryption_enc_values_supported",
+        "authorization_endpoint",
+        "authorization_response_iss_parameter_supported",
+        "authorization_signing_alg_values_supported",
+        "backchannel_authentication_endpoint",
+        "backchannel_authentication_request_signing_alg_values_supported",
+        "backchannel_logout_session_supported",
+        "backchannel_logout_supported",
+        "backchannel_token_delivery_modes_supported",
+        "check_session_iframe",
+        "claim_types_supported",
+        "claims_parameter_supported",
+        "claims_supported",
+        "code_challenge_methods_supported",
+        "device_authorization_endpoint",
+        "dpop_signing_alg_values_supported",
+        "end_session_endpoint",
+        "frontchannel_logout_session_supported",
+        "frontchannel_logout_supported",
+        "grant_types_supported",
+        "id_token_encryption_alg_values_supported",
+        "id_token_encryption_enc_values_supported",
+        "id_token_signing_alg_values_supported",
+        "introspection_endpoint",
+        "introspection_endpoint_auth_methods_supported",
+        "introspection_endpoint_auth_signing_alg_values_supported",
+        "issuer",
+        "jwks_uri",
+        "mtls_endpoint_aliases",
+        "prompt_values_supported",
+        "pushed_authorization_request_endpoint",
+        "registration_endpoint",
+        "request_object_encryption_alg_values_supported",
+        "request_object_encryption_enc_values_supported",
+        "request_object_signing_alg_values_supported",
+        "request_parameter_supported",
+        "request_uri_parameter_supported",
+        "require_pushed_authorization_requests",
+        "require_request_uri_registration",
+        "response_modes_supported",
+        "response_types_supported",
+        "revocation_endpoint",
+        "revocation_endpoint_auth_methods_supported",
+        "revocation_endpoint_auth_signing_alg_values_supported",
+        "scopes_supported",
+        "subject_types_supported",
+        "tls_client_certificate_bound_access_tokens",
+        "token_endpoint",
+        "token_endpoint_auth_methods_supported",
+        "token_endpoint_auth_signing_alg_values_supported",
+        "userinfo_encryption_alg_values_supported",
+        "userinfo_encryption_enc_values_supported",
+        "userinfo_endpoint",
+        "userinfo_signing_alg_values_supported"
+      ],
+      "cache_control": "no-cache, must-revalidate, no-transform, no-store",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/discovery/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/registered/userinfo/get": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "email",
+        "email_verified",
+        "family_name",
+        "given_name",
+        "name",
+        "preferred_username",
+        "sub"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/token/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/userinfo/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/certs/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/certs/get": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "keys"
+      ],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/discovery/get": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "acr_values_supported",
+        "authorization_encryption_alg_values_supported",
+        "authorization_encryption_enc_values_supported",
+        "authorization_endpoint",
+        "authorization_response_iss_parameter_supported",
+        "authorization_signing_alg_values_supported",
+        "backchannel_authentication_endpoint",
+        "backchannel_authentication_request_signing_alg_values_supported",
+        "backchannel_logout_session_supported",
+        "backchannel_logout_supported",
+        "backchannel_token_delivery_modes_supported",
+        "check_session_iframe",
+        "claim_types_supported",
+        "claims_parameter_supported",
+        "claims_supported",
+        "code_challenge_methods_supported",
+        "device_authorization_endpoint",
+        "dpop_signing_alg_values_supported",
+        "end_session_endpoint",
+        "frontchannel_logout_session_supported",
+        "frontchannel_logout_supported",
+        "grant_types_supported",
+        "id_token_encryption_alg_values_supported",
+        "id_token_encryption_enc_values_supported",
+        "id_token_signing_alg_values_supported",
+        "introspection_endpoint",
+        "introspection_endpoint_auth_methods_supported",
+        "introspection_endpoint_auth_signing_alg_values_supported",
+        "issuer",
+        "jwks_uri",
+        "mtls_endpoint_aliases",
+        "prompt_values_supported",
+        "pushed_authorization_request_endpoint",
+        "registration_endpoint",
+        "request_object_encryption_alg_values_supported",
+        "request_object_encryption_enc_values_supported",
+        "request_object_signing_alg_values_supported",
+        "request_parameter_supported",
+        "request_uri_parameter_supported",
+        "require_pushed_authorization_requests",
+        "require_request_uri_registration",
+        "response_modes_supported",
+        "response_types_supported",
+        "revocation_endpoint",
+        "revocation_endpoint_auth_methods_supported",
+        "revocation_endpoint_auth_signing_alg_values_supported",
+        "scopes_supported",
+        "subject_types_supported",
+        "tls_client_certificate_bound_access_tokens",
+        "token_endpoint",
+        "token_endpoint_auth_methods_supported",
+        "token_endpoint_auth_signing_alg_values_supported",
+        "userinfo_encryption_alg_values_supported",
+        "userinfo_encryption_enc_values_supported",
+        "userinfo_endpoint",
+        "userinfo_signing_alg_values_supported"
+      ],
+      "cache_control": "no-cache, must-revalidate, no-transform, no-store",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/discovery/preflight": {
+      "status": 200,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": "https://unregistered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET",
+        "Access-Control-Allow-Headers": "Origin, X-Requested-With, Accept, Access-Control-Request-Method, Access-Control-Request-Headers, DPoP, Content-Type, Authorization",
+        "Vary": null
+      },
+      "body": {}
+    },
+    "cors/unregistered/userinfo/get": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "Invalid origin"
+      }
+    },
+    "cors/unregistered/token/code-exchange": {
+      "status": 403,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "Invalid origin"
+      }
+    },
+    "cors/registered/token/same-code-after-unregistered": {
+      "status": 200,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "access_token",
+        "expires_in",
+        "id_token",
+        "not-before-policy",
+        "refresh_expires_in",
+        "refresh_token",
+        "scope",
+        "session_state",
+        "token_type"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": "https://registered.example.invalid",
+        "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    }
+  },
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "scope": "Selected token activation/error/header/session-effect and CORS checks; token and claim values are not snapshot parity evidence.",
+  "normalization": "Only the random fixture realm in WWW-Authenticate is replaced with {realm}."
+}

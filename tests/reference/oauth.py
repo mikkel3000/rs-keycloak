@@ -205,10 +205,12 @@ def run(base, client_secret, confidential=False):
         request(base + '/admin/realms/' + realm, token=admin, method='DELETE', expected=204)
 
 
-def main():
+def main(runner=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--archive', required=True, type=pathlib.Path)
     parser.add_argument('--port', type=int, default=18081)
+    if runner:
+        parser.add_argument('--record', action='store_true', help='Emit redacted reference observations without comparing the checked-in baseline')
     args = parser.parse_args()
     lock = json.loads((pathlib.Path(__file__).resolve().parents[2] / 'compatibility/reference.lock').read_text())
     digest = hashlib.sha256(args.archive.read_bytes()).hexdigest()
@@ -233,7 +235,7 @@ def main():
                     time.sleep(1)
             else:
                 raise RuntimeError('reference readiness deadline')
-            print(json.dumps({'cases': [run(base, client_secret), run(base, client_secret, confidential=True)], 'paired': False}))
+            print(json.dumps(runner(base, client_secret, record=args.record) if runner else {'cases': [run(base, client_secret), run(base, client_secret, confidential=True)], 'paired': False}))
         finally:
             process.terminate()
             try:
