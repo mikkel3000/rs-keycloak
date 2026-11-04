@@ -53,3 +53,9 @@ requests, read, list, user realm role mappings (add, repeat, unknown, remove)
 and the users holding a role. Every new realm has `default-roles-{realm}`,
 `offline_access` and `uma_authorization`, and new users hold the default
 role. The baseline passed a second, comparing run.
+
+`admin_groups.py` records 25 group cases in `admin-group-observations.json`:
+top-level and child groups, duplicate names among top-level groups and
+siblings, missing names, list, count, read, children, user membership (join,
+repeat, unknown group, leave), members, and delete with its children. The
+baseline passed a second, comparing run.

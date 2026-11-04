@@ -1,0 +1,300 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Group and subgroup create, read, list, count, membership and delete through the admin API; names and selected fields only.",
+  "normalization": "The random realm name and base URL are replaced with {realm} and {base}; created IDs are replaced with {id}.",
+  "observations": {
+    "list/initial": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [],
+      "item_fields": []
+    },
+    "create/top": {
+      "status": 201,
+      "location_pattern": "{base}/admin/realms/{realm}/groups/{id}",
+      "empty_body": true
+    },
+    "create/duplicate": {
+      "status": 409,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Top level group named 'staff' already exists."
+      }
+    },
+    "create/missing-name": {
+      "status": 400,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Group name is missing"
+      }
+    },
+    "create/malformed-json": {
+      "status": 400,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "body": {
+        "error": "invalid_request",
+        "error_description": "Cannot parse the JSON"
+      }
+    },
+    "create/no-token": {
+      "status": 401,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "HTTP 401 Unauthorized"
+      }
+    },
+    "create/child": {
+      "status": 201,
+      "location_pattern": "{base}/admin/realms/{realm}/groups/{id}",
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "attributes",
+        "clientRoles",
+        "id",
+        "name",
+        "parentId",
+        "path",
+        "realmRoles",
+        "subGroups"
+      ],
+      "body": {
+        "name": "engineering",
+        "path": "/staff/engineering"
+      }
+    },
+    "create/child-duplicate": {
+      "status": 409,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Sibling group named 'engineering' already exists."
+      }
+    },
+    "list/after-create": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [
+        "staff"
+      ],
+      "item_fields": [
+        "access",
+        "id",
+        "name",
+        "path",
+        "subGroupCount",
+        "subGroups"
+      ]
+    },
+    "count": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "count"
+      ],
+      "body": {
+        "count": 2
+      }
+    },
+    "get/top": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "attributes",
+        "clientRoles",
+        "id",
+        "name",
+        "path",
+        "realmRoles",
+        "subGroupCount",
+        "subGroups"
+      ],
+      "body": {
+        "name": "staff",
+        "path": "/staff",
+        "subGroupCount": 1
+      }
+    },
+    "get/unknown": {
+      "status": 404,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find group by id"
+      }
+    },
+    "children": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [
+        "engineering"
+      ],
+      "item_fields": [
+        "access",
+        "attributes",
+        "clientRoles",
+        "id",
+        "name",
+        "parentId",
+        "path",
+        "realmRoles",
+        "subGroupCount",
+        "subGroups"
+      ]
+    },
+    "get/child": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "access",
+        "attributes",
+        "clientRoles",
+        "id",
+        "name",
+        "parentId",
+        "path",
+        "realmRoles",
+        "subGroupCount",
+        "subGroups"
+      ],
+      "body": {
+        "name": "engineering",
+        "path": "/staff/engineering",
+        "subGroupCount": 0
+      }
+    },
+    "membership/initial": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [],
+      "item_fields": []
+    },
+    "membership/join": {
+      "status": 204,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "membership/join-repeat": {
+      "status": 204,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "membership/join-unknown": {
+      "status": 404,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Group not found"
+      }
+    },
+    "membership/after-join": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [
+        "engineering"
+      ],
+      "item_fields": [
+        "id",
+        "name",
+        "parentId",
+        "path",
+        "subGroups"
+      ]
+    },
+    "members": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [
+        "member"
+      ],
+      "item_fields": [
+        "createdTimestamp",
+        "disableableCredentialTypes",
+        "emailVerified",
+        "enabled",
+        "id",
+        "notBefore",
+        "requiredActions",
+        "totp",
+        "username"
+      ]
+    },
+    "membership/leave": {
+      "status": 204,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "membership/after-leave": {
+      "status": 200,
+      "location_pattern": null,
+      "empty_body": false,
+      "names": [],
+      "item_fields": []
+    },
+    "delete/top": {
+      "status": 204,
+      "location_pattern": null,
+      "empty_body": true
+    },
+    "delete/repeat": {
+      "status": 404,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find group by id"
+      }
+    },
+    "get/child-after-parent-delete": {
+      "status": 404,
+      "location_pattern": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find group by id"
+      }
+    }
+  }
+}
