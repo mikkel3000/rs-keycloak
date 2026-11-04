@@ -1,0 +1,218 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Client role create, read, list and delete, user client-role mappings, the account client roles and default-role composites, and resource_access in tokens; names and selected fields only.",
+  "normalization": "The random realm name, base URL and client ID are replaced with placeholders.",
+  "observations": {
+    "account/roles": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "delete-account",
+        "manage-account",
+        "manage-account-links",
+        "manage-consent",
+        "view-applications",
+        "view-consent",
+        "view-groups",
+        "view-profile"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "default-role/composites": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "manage-account",
+        "offline_access",
+        "uma_authorization",
+        "view-profile"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "create/success": {
+      "status": 201,
+      "location": "{base}/admin/realms/{realm}/clients/{client}/roles/editor",
+      "empty_body": true
+    },
+    "create/duplicate": {
+      "status": 409,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "errorMessage"
+      ],
+      "body": {
+        "errorMessage": "Role with name editor already exists"
+      }
+    },
+    "create/missing-name": {
+      "status": 400,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "role has no name"
+      }
+    },
+    "create/unknown-client": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find client"
+      }
+    },
+    "list": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "editor"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "get": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "attributes",
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ],
+      "body": {
+        "name": "editor",
+        "description": "Edits",
+        "composite": false,
+        "clientRole": true
+      },
+      "client_role": true,
+      "container_is_client": true
+    },
+    "get/unknown": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find role"
+      }
+    },
+    "mappings/initial": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [],
+      "item_fields": []
+    },
+    "mappings/add": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "mappings/add-unknown": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Role not found"
+      }
+    },
+    "mappings/after-add": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [
+        "editor"
+      ],
+      "item_fields": [
+        "clientRole",
+        "composite",
+        "containerId",
+        "description",
+        "id",
+        "name"
+      ]
+    },
+    "token/resource_access": {
+      "account": [
+        "manage-account",
+        "manage-account-links",
+        "view-profile"
+      ],
+      "roles-app": [
+        "editor"
+      ]
+    },
+    "token/aud": {
+      "aud": "account"
+    },
+    "mappings/remove": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "mappings/after-remove": {
+      "status": 200,
+      "location": null,
+      "empty_body": false,
+      "names": [],
+      "item_fields": []
+    },
+    "delete": {
+      "status": 204,
+      "location": null,
+      "empty_body": true
+    },
+    "delete/repeat": {
+      "status": 404,
+      "location": null,
+      "empty_body": false,
+      "body_fields": [
+        "error"
+      ],
+      "body": {
+        "error": "Could not find role"
+      }
+    }
+  }
+}

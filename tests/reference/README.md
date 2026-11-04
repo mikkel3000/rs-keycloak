@@ -143,3 +143,11 @@ validation errors, and the credential and session lists. The reference
 authorizes by the account client roles in the token, which users receive
 through the realm's default roles when they are created through the admin
 API. The baseline passed a second, comparing run.
+
+`client_roles.py` records 19 client role cases in
+`client-role-observations.json`: the eight roles of the built-in `account`
+client and the default role's composites (which include `account`'s
+`view-profile` and `manage-account`), client role create, duplicate,
+unnamed, unknown-client, list, read and delete, user client-role mappings,
+and the token's `resource_access` and `aud` once a client role is granted.
+The baseline passed a second, comparing run.
