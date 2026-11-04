@@ -59,3 +59,11 @@ top-level and child groups, duplicate names among top-level groups and
 siblings, missing names, list, count, read, children, user membership (join,
 repeat, unknown group, leave), members, and delete with its children. The
 baseline passed a second, comparing run.
+
+`logout.py` records 16 OIDC logout cases in `logout-observations.json`:
+refresh-token POST logout (success, repeat, missing token, no client, another
+client's token) and RP-initiated GET logout (registered and unregistered
+post-logout redirects, missing and invalid `id_token_hint`, and no redirect),
+each followed by refresh and userinfo checks of the ended session. Redirects
+are observed without following them. The baseline passed a second, comparing
+run.

@@ -1,0 +1,327 @@
+{
+  "keycloak_version": "26.8.1",
+  "source_revision": "24ed1dadf3f246a555adb6d3d4a99e9b3003fb3b",
+  "paired": false,
+  "scope": "Refresh-token POST logout and RP-initiated GET logout with and without id_token_hint and registered post-logout redirect; status, headers, redirect shape and token effects only.",
+  "normalization": "The random realm name and base URL are replaced with {realm} and {base}; redirect query values are reduced to parameter names.",
+  "observations": {
+    "post/missing-refresh-token": {
+      "status": 200,
+      "content_type": "text/html;charset=utf-8",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": true
+    },
+    "post/no-client": {
+      "status": 401,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_client",
+        "error_description": "Invalid client or Invalid client credentials"
+      },
+      "html": false
+    },
+    "post/other-client": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": null,
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Invalid refresh token. Token client and authorized client don't match"
+      },
+      "html": false
+    },
+    "post/success": {
+      "status": 204,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": false
+    },
+    "post/after/refresh": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Session not active"
+      }
+    },
+    "post/after/userinfo": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"user_session_not_found\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "post/repeat": {
+      "status": 204,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": false
+    },
+    "get/unregistered-redirect": {
+      "status": 400,
+      "content_type": "text/html;charset=utf-8",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": true
+    },
+    "get/no-hint": {
+      "status": 302,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "location": "{base}/callback/logged-out",
+      "location_params": [],
+      "html": false
+    },
+    "get/invalid-hint": {
+      "status": 400,
+      "content_type": "text/html;charset=utf-8",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": true
+    },
+    "get/redirect": {
+      "status": 302,
+      "content_type": null,
+      "www_authenticate": null,
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "location": "{base}/callback/logged-out",
+      "location_params": [
+        "state"
+      ],
+      "html": false
+    },
+    "get/after/refresh": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Session not active"
+      }
+    },
+    "get/after/userinfo": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"user_session_not_found\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    },
+    "get/hint-without-redirect": {
+      "status": 200,
+      "content_type": "text/html;charset=utf-8",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [],
+      "cache_control": "no-cache",
+      "pragma": null,
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {},
+      "html": true
+    },
+    "get/without-redirect-after/refresh": {
+      "status": 400,
+      "content_type": "application/json",
+      "www_authenticate": null,
+      "empty_body": false,
+      "body_fields": [
+        "error",
+        "error_description"
+      ],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {
+        "error": "invalid_grant",
+        "error_description": "Session not active"
+      }
+    },
+    "get/without-redirect-after/userinfo": {
+      "status": 401,
+      "content_type": "text/plain;charset=utf-8",
+      "www_authenticate": "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"user_session_not_found\"",
+      "empty_body": true,
+      "body_fields": [],
+      "cache_control": "no-store",
+      "pragma": "no-cache",
+      "cors": {
+        "Access-Control-Allow-Origin": null,
+        "Access-Control-Allow-Credentials": null,
+        "Access-Control-Allow-Methods": null,
+        "Access-Control-Allow-Headers": null,
+        "Vary": null
+      },
+      "body": {}
+    }
+  }
+}
