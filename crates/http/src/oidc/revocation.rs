@@ -8,6 +8,7 @@ use axum::extract::rejection::FormRejection;
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use rs_keycloak_storage_postgres::AccessTokenStatus;
 use serde_json::json;
 use zeroize::Zeroizing;
 
@@ -160,8 +161,10 @@ pub(super) async fn handle(
             )
             .await
         {
-            Ok(Some(_)) => (),
-            Ok(None) => return invalid_token(),
+            Ok(AccessTokenStatus::Active(_)) => (),
+            Ok(AccessTokenStatus::Revoked | AccessTokenStatus::SessionNotFound) => {
+                return invalid_token();
+            }
             Err(_) => return unavailable(),
         }
         let Ok(expiry) = i64::try_from(claims.exp) else {

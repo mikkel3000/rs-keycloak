@@ -297,6 +297,26 @@ fn active_session_row(row: &PgRow) -> Result<ActiveSession, StorageError> {
     })
 }
 
+/// Access token state, checked in the reference order: revocation, then session.
+pub enum AccessTokenStatus {
+    /// The token is unrevoked and its session, user, client and realm are active.
+    Active(ActiveSession),
+    /// The token ID is on the revocation list.
+    Revoked,
+    /// No active session binds this user and client.
+    SessionNotFound,
+}
+
+impl AccessTokenStatus {
+    /// Returns the session for an active token and discards the failure reason.
+    pub fn into_active(self) -> Option<ActiveSession> {
+        match self {
+            Self::Active(session) => Some(session),
+            Self::Revoked | Self::SessionNotFound => None,
+        }
+    }
+}
+
 /// Rotated session and the scopes granted to its refresh family.
 pub struct RefreshGrant {
     /// Fixed refresh family expiry as Unix seconds.
@@ -359,10 +379,18 @@ async fn lookup_access_token(
     session_id: &str,
     user_id: &str,
     jti_hash: &[u8],
-) -> Result<Option<ActiveSession>, StorageError> {
-    let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled AND NOT EXISTS (SELECT 1 FROM revoked_access_tokens a WHERE a.realm_id = us.realm_id AND a.jti_hash = $5 AND a.expires_at > clock_timestamp())")
-        .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).bind(jti_hash).fetch_optional(connection).await?;
-    row.as_ref().map(active_session_row).transpose()
+) -> Result<AccessTokenStatus, StorageError> {
+    let revoked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM revoked_access_tokens WHERE realm_id = $1 AND jti_hash = $2 AND expires_at > clock_timestamp())")
+        .bind(realm).bind(jti_hash).fetch_one(&mut *connection).await?;
+    if revoked {
+        return Ok(AccessTokenStatus::Revoked);
+    }
+    let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled")
+        .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).fetch_optional(connection).await?;
+    Ok(match row {
+        Some(row) => AccessTokenStatus::Active(active_session_row(&row)?),
+        None => AccessTokenStatus::SessionNotFound,
+    })
 }
 
 /// Separate bounded request and worker pools for primary-only access.
@@ -915,9 +943,9 @@ impl Storage {
         session_id: &str,
         user_id: &str,
         jti_hash: &[u8],
-    ) -> Result<Option<ActiveSession>, StorageError> {
+    ) -> Result<AccessTokenStatus, StorageError> {
         if jti_hash.len() != 32 {
-            return Ok(None);
+            return Ok(AccessTokenStatus::SessionNotFound);
         }
         let mut tx = self.begin_request(true).await?;
         let result = lookup_access_token(
@@ -956,6 +984,7 @@ impl Storage {
                 jti_hash,
             )
             .await?
+            .into_active()
         } else {
             None
         };

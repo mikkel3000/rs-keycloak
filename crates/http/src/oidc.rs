@@ -19,7 +19,7 @@ use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::signing::{IdTokenClaims, SigningKey, TokenClaims, VerifiedToken};
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::Storage;
+use rs_keycloak_storage_postgres::{AccessTokenStatus, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -701,6 +701,32 @@ async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Res
     Json(json!({"issuer":issuer,"authorization_endpoint":format!("{issuer}/protocol/openid-connect/auth"),"token_endpoint":format!("{issuer}/protocol/openid-connect/token"),"jwks_uri":format!("{issuer}/protocol/openid-connect/certs"),"userinfo_endpoint":format!("{issuer}/protocol/openid-connect/userinfo"),"introspection_endpoint":format!("{issuer}/protocol/openid-connect/token/introspect"),"revocation_endpoint":format!("{issuer}/protocol/openid-connect/revoke"),"grant_types_supported":["authorization_code","refresh_token"],"response_types_supported":["code"],"response_modes_supported":["query","fragment","form_post"],"authorization_response_iss_parameter_supported":true,"subject_types_supported":["public"],"id_token_signing_alg_values_supported":["RS256"],"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none","client_secret_basic","client_secret_post"],"scopes_supported":["openid"]})).into_response()
 }
 
+/// Builds a userinfo 401 with the reference Bearer challenge and empty body.
+fn userinfo_challenge(realm: &str, description: Option<&str>) -> Response {
+    let challenge = match description {
+        Some(description) => format!(
+            "Bearer realm=\"{realm}\", error=\"invalid_token\", error_description=\"{description}\""
+        ),
+        None => format!("Bearer realm=\"{realm}\""),
+    };
+    let Ok(challenge) = HeaderValue::from_str(&challenge) else {
+        return failure();
+    };
+    (
+        StatusCode::UNAUTHORIZED,
+        [
+            (header::WWW_AUTHENTICATE, challenge),
+            (header::CACHE_CONTROL, HeaderValue::from_static("no-store")),
+            (header::PRAGMA, HeaderValue::from_static("no-cache")),
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/plain;charset=utf-8"),
+            ),
+        ],
+    )
+        .into_response()
+}
+
 async fn userinfo(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
@@ -709,34 +735,22 @@ async fn userinfo(
     if !valid_realm(&realm) {
         return failure();
     }
-    let invalid = || {
-        (
-            StatusCode::UNAUTHORIZED,
-            [
-                (header::WWW_AUTHENTICATE, "Bearer error=\"invalid_token\""),
-                (header::CACHE_CONTROL, "no-store"),
-            ],
-        )
-            .into_response()
-    };
     let Some(token) = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
     else {
-        return invalid();
+        return userinfo_challenge(&realm, None);
     };
-    if token.len() > 8192 {
-        return invalid();
-    }
+    let verification_failed = || userinfo_challenge(&realm, Some("Token verification failed"));
     let claims = match verified_access(&s, &realm, token).await {
         Ok(Some(claims)) => claims,
-        Ok(None) => return invalid(),
+        Ok(None) => return verification_failed(),
         Err(()) => return unavailable(),
     };
     let realm_id = match s.storage.realm_id_by_name(&realm).await {
         Ok(Some(id)) => id,
-        Ok(None) => return invalid(),
+        Ok(None) => return verification_failed(),
         Err(_) => return unavailable(),
     };
     match s
@@ -750,12 +764,18 @@ async fn userinfo(
         )
         .await
     {
-        Ok(Some(_)) => (
-            [(header::CACHE_CONTROL, "no-store")],
+        Ok(AccessTokenStatus::Active(_)) => (
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
             Json(json!({"sub":claims.sub})),
         )
             .into_response(),
-        Ok(None) => invalid(),
+        Ok(AccessTokenStatus::Revoked) => verification_failed(),
+        Ok(AccessTokenStatus::SessionNotFound) => {
+            userinfo_challenge(&realm, Some("user_session_not_found"))
+        }
         Err(_) => unavailable(),
     }
 }

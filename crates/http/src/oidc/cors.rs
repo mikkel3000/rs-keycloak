@@ -94,6 +94,10 @@ fn preflight(origin: &str, methods: &'static str) -> Response {
         header::ACCESS_CONTROL_ALLOW_HEADERS,
         HeaderValue::from_static(ALLOWED_HEADERS),
     );
+    headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("3600"),
+    );
     response
 }
 
@@ -180,7 +184,16 @@ pub(super) async fn handle(
             },
             None => None,
         };
-        (request, id)
+        // The reference allows every origin until a verified token names the
+        // client whose registered origins apply; the handler then answers 401.
+        let Some(id) = id else {
+            let mut response = next.run(request).await;
+            vary(&mut response);
+            allow(&mut response, &origin);
+            expose_userinfo_headers(&mut response);
+            return response;
+        };
+        (request, Some(id))
     };
     let permitted = if let Some(id) = client_id {
         match state
@@ -200,7 +213,23 @@ pub(super) async fn handle(
     let mut response = next.run(request).await;
     vary(&mut response);
     allow(&mut response, &origin);
+    if !is_form {
+        expose_userinfo_headers(&mut response);
+    }
     response
+}
+
+/// Exposes the headers the reference userinfo endpoint lists for scripts.
+fn expose_userinfo_headers(response: &mut Response) {
+    let exposed = if response.headers().contains_key(header::WWW_AUTHENTICATE) {
+        "Access-Control-Allow-Methods, WWW-Authenticate"
+    } else {
+        "Access-Control-Allow-Methods"
+    };
+    response.headers_mut().insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(exposed),
+    );
 }
 
 /// Allows cross-origin reads of public discovery and signing-key metadata.

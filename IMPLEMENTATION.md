@@ -117,6 +117,15 @@ Unit tests compare preflight and metadata CORS headers with every recorded
 reference observation without a database. The database-backed revocation, race
 and CORS public tests in `tests/public/oidc_contract.py` exceed the 500 ms test
 budget and were not re-run for this record; the commit `23f960f` reports them
-passing. Userinfo errors for requests with an origin but no valid bearer token
-return 403 rather than the reference's unrecorded response, and remain to be
-checked against the reference.
+passing.
+
+Userinfo follows the pinned UserInfoEndpoint order: every origin is allowed
+until a token with a valid signature names its client, then that client's
+registered origins apply. Missing tokens get `Bearer realm="<realm>"`; failed
+signatures and revoked tokens get "Token verification failed"; missing sessions
+get "user_session_not_found", matching the recorded challenges. Preflights send
+the reference one-hour max age. `tests/public/userinfo_contract.py` checks these
+cases through HTTP with independently signed tokens; each case takes under
+50 ms after one shared server start. A verified token naming an unknown client
+still returns 403, where the reference allows all origins and answers
+"Client not found".

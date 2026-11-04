@@ -62,3 +62,4 @@ python3 tests/public/bootstrap_contract.py "$bin"
 [[ $(sql "SELECT count(*) FROM audit_events WHERE event_type = 'bootstrap_admin_created'") == 1 ]]
 python3 tests/public/lifecycle_contract.py "$bin"
 python3 tests/public/client_contract.py "$bin"
+python3 tests/public/userinfo_contract.py "$bin"
