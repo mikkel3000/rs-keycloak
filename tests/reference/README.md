@@ -190,3 +190,13 @@ mappings after joining the child group, after an unmapping and after the
 child group's deletion. Members inherit the roles of the group and its
 parents; direct user mappings and a role's user list leave them out. The
 baseline passed a second, comparing run.
+
+`role_composites.py` records 24 composite role cases in
+`role-composite-observations.json`: adding realm and client roles to realm
+and client roles, repeats, unknown children ("Could not find composite
+role") and parents ("Could not find role"), malformed bodies (400
+`unknown_error`), listings in all and by container, removal, creation with
+`composites`, and a service account's effective roles and token after each
+change. A role may include itself and composites may form cycles, so a role
+that includes itself stays composite. The baseline passed a second,
+comparing run.
