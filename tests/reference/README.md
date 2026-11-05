@@ -151,3 +151,13 @@ client and the default role's composites (which include `account`'s
 unnamed, unknown-client, list, read and delete, user client-role mappings,
 and the token's `resource_access` and `aud` once a client role is granted.
 The baseline passed a second, comparing run.
+
+`bearer_only.py` records 23 cases in `bearer-only-observations.json`: the six
+built-in clients with their URLs and roles, the `realm-admin`, `view-users`,
+`view-clients` and `manage-account` composites, and a bearer-only client's
+creation (plain, public and with a service account), read, secret,
+authorization, token grants, introspection and revocation. A bearer-only
+client may authenticate to introspection, which reports a token without its
+audience as inactive, while the authorization endpoint answers 403 and the
+token and revocation endpoints answer `Bearer-only not allowed`. The baseline
+passed a second, comparing run.
