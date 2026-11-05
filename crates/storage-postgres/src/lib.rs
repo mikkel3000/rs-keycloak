@@ -28,7 +28,8 @@ pub use realm_admin::{
     MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
 };
 pub use role_admin::{
-    EffectiveRoles, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleRecord,
+    CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
+    RoleRecord,
 };
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;

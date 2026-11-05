@@ -6,8 +6,9 @@
 //! `tests/reference/group-role-observations.json`. Realm roles live under
 //! `/roles`, client roles under `/clients/{id}/roles`; both share these
 //! handlers through a resolved container, and users and groups share the
-//! role-mapping handlers through a role holder. Composites can be read; composite
-//! editing and role attributes are not modelled and are refused.
+//! role-mapping handlers through a role holder. Composites follow
+//! `tests/reference/role-composite-observations.json`; role attributes are
+//! not modelled and are refused.
 
 use std::collections::HashMap;
 
@@ -19,7 +20,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use rs_keycloak_storage_postgres::{
-    RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleRecord,
+    CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
+    RoleRecord,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -51,7 +53,17 @@ pub(super) fn routes() -> Router<OidcState> {
         .route("/admin/realms/{realm}/roles/{role}/users", get(role_users))
         .route(
             "/admin/realms/{realm}/roles/{role}/composites",
-            get(role_composites),
+            get(role_composites)
+                .post(add_composites)
+                .delete(remove_composites),
+        )
+        .route(
+            "/admin/realms/{realm}/roles/{role}/composites/realm",
+            get(realm_composites),
+        )
+        .route(
+            "/admin/realms/{realm}/roles/{role}/composites/clients/{child_client}",
+            get(client_composites),
         )
         .route(
             "/admin/realms/{realm}/clients/{client}/roles",
@@ -67,7 +79,17 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route(
             "/admin/realms/{realm}/clients/{client}/roles/{role}/composites",
-            get(role_composites),
+            get(role_composites)
+                .post(add_composites)
+                .delete(remove_composites),
+        )
+        .route(
+            "/admin/realms/{realm}/clients/{client}/roles/{role}/composites/realm",
+            get(realm_composites),
+        )
+        .route(
+            "/admin/realms/{realm}/clients/{client}/roles/{role}/composites/clients/{child_client}",
+            get(client_composites),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/role-mappings/realm",
@@ -151,6 +173,54 @@ fn role_access(params: &HashMap<String, String>, client: Access, realm: Access) 
     }
 }
 
+fn composite_not_found() -> AdminError {
+    AdminError::Error(
+        StatusCode::NOT_FOUND,
+        "Could not find composite role".into(),
+    )
+}
+
+/// Parses a creation body's `composites`: realm role names under `realm`,
+/// and client role names by public client identifier under `client`. Each
+/// name is kept once.
+fn requested_composites(value: Option<&Value>) -> Result<RoleNames, AdminError> {
+    let names = |value: &Value| -> Result<Vec<String>, AdminError> {
+        let Value::Array(items) = value else {
+            return Err(unparsable());
+        };
+        let mut names = items
+            .iter()
+            .map(|item| item.as_str().map(str::to_owned).ok_or_else(unparsable))
+            .collect::<Result<Vec<_>, _>>()?;
+        names.sort();
+        names.dedup();
+        Ok(names)
+    };
+    let mut composites = RoleNames::default();
+    let fields = match value {
+        None | Some(Value::Null) => return Ok(composites),
+        Some(Value::Object(fields)) => fields,
+        Some(_) => return Err(unparsable()),
+    };
+    for (key, value) in fields {
+        match (key.as_str(), value) {
+            (_, Value::Null) => (),
+            ("realm", value) => composites.realm = names(value)?,
+            ("client", Value::Object(clients)) => {
+                for (client, value) in clients {
+                    composites.clients.insert(client.clone(), names(value)?);
+                }
+            }
+            _ => {
+                return Err(AdminError::bad_request(format!(
+                    "Unsupported role composites field: {key}"
+                )));
+            }
+        }
+    }
+    Ok(composites)
+}
+
 fn role_not_found() -> AdminError {
     AdminError::Error(StatusCode::NOT_FOUND, "Could not find role".into())
 }
@@ -208,22 +278,21 @@ async fn create_role(
     if let Some(field) = fields.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "name" | "description" | "composite" | "clientRole"
+            "name" | "description" | "composite" | "clientRole" | "composites"
         )
     }) {
         return Err(AdminError::bad_request(format!(
             "Unsupported role field: {field}"
         )));
     }
-    match fields.get("composite") {
-        None | Some(Value::Null | Value::Bool(false)) => (),
-        Some(Value::Bool(true)) => {
-            return Err(AdminError::bad_request(
-                "Unsupported role setting: composite",
-            ));
-        }
-        Some(_) => return Err(unparsable()),
+    // The reference derives `composite` from `composites`.
+    if !matches!(
+        fields.get("composite"),
+        None | Some(Value::Null | Value::Bool(_))
+    ) {
+        return Err(unparsable());
     }
+    let composites = requested_composites(fields.get("composites"))?;
     match fields.get("clientRole") {
         None | Some(Value::Null) => (),
         Some(Value::Bool(client_role)) if *client_role == container.client.is_some() => (),
@@ -253,9 +322,12 @@ async fn create_role(
         .create_role(
             &container.realm_id,
             container.client.as_deref(),
-            &Uuid::new_v4().to_string(),
-            name,
-            description,
+            &NewRole {
+                id: &Uuid::new_v4().to_string(),
+                name,
+                description,
+                composites: &composites,
+            },
             &actor,
         )
         .await?
@@ -278,6 +350,7 @@ async fn create_role(
             StatusCode::CONFLICT,
             format!("Role with name {name} already exists"),
         )),
+        RoleCreation::CompositeNotFound => Err(composite_not_found()),
     }
 }
 
@@ -312,10 +385,19 @@ async fn read_role(
     Ok(json_response(fields))
 }
 
-async fn role_composites(
-    State(state): State<OidcState>,
-    Path(params): Params,
+/// Which children a composite listing shows.
+enum Children {
+    All,
+    Realm,
+    /// Roles of the client named by the `child_client` path parameter.
+    Client,
+}
+
+async fn list_composites(
+    state: OidcState,
+    params: HashMap<String, String>,
     headers: HeaderMap,
+    children: Children,
 ) -> Result<Response, AdminError> {
     authorize(
         &state,
@@ -325,7 +407,20 @@ async fn role_composites(
     )
     .await?;
     let container = container(&state, &params).await?;
-    let roles = state
+    let child_client = match children {
+        Children::Client => Some(
+            state
+                .storage
+                .client(&container.realm_id, param(&params, "child_client")?)
+                .await?
+                .ok_or_else(|| {
+                    AdminError::Error(StatusCode::NOT_FOUND, "Could not find client".into())
+                })?
+                .id,
+        ),
+        Children::All | Children::Realm => None,
+    };
+    let mut roles = state
         .storage
         .role_composites(
             &container.realm_id,
@@ -334,7 +429,96 @@ async fn role_composites(
         )
         .await?
         .ok_or_else(role_not_found)?;
+    match children {
+        Children::All => (),
+        Children::Realm => roles.retain(|role| role.client.is_none()),
+        Children::Client => roles.retain(|role| role.client == child_client),
+    }
     Ok(role_array(&roles, &container.realm_id))
+}
+
+async fn role_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    list_composites(state, params, headers, Children::All).await
+}
+
+async fn realm_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    list_composites(state, params, headers, Children::Realm).await
+}
+
+async fn client_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    list_composites(state, params, headers, Children::Client).await
+}
+
+async fn change_composites(
+    state: OidcState,
+    params: HashMap<String, String>,
+    headers: HeaderMap,
+    body: Bytes,
+    grant: bool,
+) -> Result<StatusCode, AdminError> {
+    let actor = authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ManageClients, Access::ManageRealm),
+    )
+    .await?;
+    let container = container(&state, &params).await?;
+    let children = role_list(&body).map_err(|error| match error {
+        RoleListError::Malformed => AdminError::OAuth(
+            StatusCode::BAD_REQUEST,
+            "unknown_error",
+            "Cannot parse the JSON",
+        ),
+        RoleListError::Incomplete => composite_not_found(),
+        RoleListError::TooMany => AdminError::bad_request("Too many roles"),
+    })?;
+    match state
+        .storage
+        .change_composites(
+            &container.realm_id,
+            container.client.as_deref(),
+            param(&params, "role")?,
+            &children,
+            grant,
+            &actor,
+        )
+        .await?
+    {
+        CompositeChange::Changed => Ok(StatusCode::NO_CONTENT),
+        CompositeChange::RoleNotFound => Err(role_not_found()),
+        CompositeChange::ChildNotFound => Err(composite_not_found()),
+    }
+}
+
+async fn add_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    change_composites(state, params, headers, body, true).await
+}
+
+async fn remove_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    change_composites(state, params, headers, body, false).await
 }
 
 async fn delete_role(
@@ -464,22 +648,28 @@ async fn effective_user_roles(
     Ok(role_array(&roles, &container.realm_id))
 }
 
+/// Why a role list body was refused.
+enum RoleListError {
+    /// The body is not a JSON array.
+    Malformed,
+    /// An item lacks a string `id` or `name`.
+    Incomplete,
+    TooMany,
+}
+
 /// Parses a role list body into `(id, name)` pairs.
-fn role_list(body: &[u8]) -> Result<Vec<(String, String)>, AdminError> {
+fn role_list(body: &[u8]) -> Result<Vec<(String, String)>, RoleListError> {
     let Ok(Value::Array(items)) = serde_json::from_slice::<Value>(body) else {
-        return Err(unparsable());
+        return Err(RoleListError::Malformed);
     };
     if items.len() > 100 {
-        return Err(AdminError::bad_request("Too many roles"));
+        return Err(RoleListError::TooMany);
     }
     items
         .iter()
         .map(|item| match (item.get("id"), item.get("name")) {
             (Some(Value::String(id)), Some(Value::String(name))) => Ok((id.clone(), name.clone())),
-            _ => Err(AdminError::Error(
-                StatusCode::NOT_FOUND,
-                "Role not found".into(),
-            )),
+            _ => Err(RoleListError::Incomplete),
         })
         .collect()
 }
@@ -500,7 +690,13 @@ async fn change_holder_roles(
     .await?;
     let container = container(&state, &params).await?;
     let (holder, not_found) = holder(&params)?;
-    let roles = role_list(&body)?;
+    let roles = role_list(&body).map_err(|error| match error {
+        RoleListError::Malformed => unparsable(),
+        RoleListError::Incomplete => {
+            AdminError::Error(StatusCode::NOT_FOUND, "Role not found".into())
+        }
+        RoleListError::TooMany => AdminError::bad_request("Too many roles"),
+    })?;
     match state
         .storage
         .change_holder_roles(

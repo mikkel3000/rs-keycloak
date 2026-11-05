@@ -262,8 +262,8 @@ grants plus composites, expanded recursively to 32 levels, sorted. The
 contracts check this for browser login, master and new-realm service
 accounts, and a granted role.
 
-Remaining differences: composite editing and role attributes are refused;
-deleting the default role answers 400, a response the reference was not
+Remaining differences: role attributes are refused (composite editing came
+later, see below); deleting the default role answers 400, a response the reference was not
 recorded for. Client roles, `resource_access` and group roles came later
 (see below).
 
@@ -604,3 +604,21 @@ groups, the slowest in 423 ms.
 Remaining differences: subgroup lists show empty `realmRoles` and
 `clientRoles`, because mapped roles are read only for a single group; the
 combined `/role-mappings` endpoint is missing.
+
+## Composite role editing
+
+`POST` and `DELETE /roles/{name}/composites` (and the client role form) add
+and remove children from any container of the realm, and composites are
+listed in all, `/realm` and `/clients/{client}` forms, following the 24
+recorded cases in `tests/reference/role-composite-observations.json`. As in
+the reference, repeats answer 204, a role may include itself, and cycles are
+accepted; the effective-role query bounds its depth, so cycles end. A role
+may be created with `composites` (realm names and client names by public
+client identifier), resolved in the creating transaction, which rolls back
+if a name is unknown. `RoleNames` (renamed from `EffectiveRoles`) carries
+role names by container for effective roles, group reads and these
+requests. `tests/public/role_composites_contract.py` checks 4 groups, the
+slowest in 425 ms.
+
+Remaining differences: an unknown composite at creation answers 404 "Could
+not find composite role", a response the reference was not recorded for.

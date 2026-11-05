@@ -22,12 +22,36 @@ pub struct RoleRecord {
     pub client: Option<String>,
 }
 
+/// A role to create in a container.
+pub struct NewRole<'a> {
+    /// Role identifier.
+    pub id: &'a str,
+    /// Role name, unique in its container.
+    pub name: &'a str,
+    /// Optional description.
+    pub description: Option<&'a str>,
+    /// Roles the new role includes, by name in their containers.
+    pub composites: &'a RoleNames,
+}
+
 /// Outcome of creating a role.
 pub enum RoleCreation {
     /// The role was created.
     Created,
     /// A role with this name already exists in the realm.
     Exists,
+    /// A requested composite names no role of the realm.
+    CompositeNotFound,
+}
+
+/// Outcome of changing a role's composites.
+pub enum CompositeChange {
+    /// Every named role was added or removed.
+    Changed,
+    /// The parent role does not exist.
+    RoleNotFound,
+    /// A child's name and identifier did not match a role of the realm.
+    ChildNotFound,
 }
 
 /// Outcome of deleting a role.
@@ -198,16 +222,86 @@ impl Storage {
             .map(Some)
     }
 
+    /// Adds or removes children of a container's role. Children may come
+    /// from any container of the realm, and self-inclusion and cycles are
+    /// allowed, as in the reference.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn change_composites(
+        &self,
+        realm_id: &str,
+        client: Option<&str>,
+        name: &str,
+        children: &[(String, String)],
+        grant: bool,
+        actor: &Actor,
+    ) -> Result<CompositeChange, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let parent: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM roles WHERE realm_id = $1 AND name = $2 AND client_id IS NOT DISTINCT FROM $3 FOR UPDATE",
+        )
+        .bind(realm_id)
+        .bind(name)
+        .bind(client)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(parent) = parent else {
+            tx.commit().await?;
+            return Ok(CompositeChange::RoleNotFound);
+        };
+        let mut ids = Vec::with_capacity(children.len());
+        for (id, name) in children {
+            let found: Option<String> = sqlx::query_scalar(
+                "SELECT id FROM roles WHERE realm_id = $1 AND id = $2 AND name = $3",
+            )
+            .bind(realm_id)
+            .bind(id)
+            .bind(name)
+            .fetch_optional(&mut *conn)
+            .await?;
+            match found {
+                Some(found) => ids.push(found),
+                None => {
+                    tx.commit().await?;
+                    return Ok(CompositeChange::ChildNotFound);
+                }
+            }
+        }
+        let statement = if grant {
+            "INSERT INTO role_composites (realm_id, role_id, child_role_id) SELECT $1, $2, unnest($3::text[]) ON CONFLICT DO NOTHING"
+        } else {
+            "DELETE FROM role_composites WHERE realm_id = $1 AND role_id = $2 AND child_role_id = ANY($3)"
+        };
+        sqlx::query(statement)
+            .bind(realm_id)
+            .bind(&parent)
+            .bind(&ids)
+            .execute(&mut *conn)
+            .await?;
+        let event = if grant {
+            "role_composites_added"
+        } else {
+            "role_composites_removed"
+        };
+        audit(conn, actor, event).await?;
+        tx.commit().await?;
+        Ok(CompositeChange::Changed)
+    }
+
     /// Creates a role in a container unless the name is taken there.
     pub async fn create_role(
         &self,
         realm_id: &str,
         client: Option<&str>,
-        id: &str,
-        name: &str,
-        description: Option<&str>,
+        role: &NewRole<'_>,
         actor: &Actor,
     ) -> Result<RoleCreation, StorageError> {
+        let NewRole {
+            id,
+            name,
+            description,
+            composites,
+        } = role;
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
         let created: Option<String> = sqlx::query_scalar("INSERT INTO roles (realm_id, id, name, description, client_id) VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING id")
@@ -216,6 +310,22 @@ impl Storage {
             tx.commit().await?;
             return Ok(RoleCreation::Exists);
         }
+        // Callers pass each name once per container.
+        let requested =
+            composites.realm.len() + composites.clients.values().map(Vec::len).sum::<usize>();
+        // Names resolve in their container; a client is named by its public identifier.
+        let children: Vec<String> = sqlx::query_scalar("SELECT r.id FROM roles r LEFT JOIN clients c ON c.realm_id = r.realm_id AND c.id = r.client_id WHERE r.realm_id = $1 AND ((r.client_id IS NULL AND r.name = ANY($2)) OR (c.client_id, r.name) IN (SELECT * FROM unnest($3::text[], $4::text[])))")
+            .bind(realm_id)
+            .bind(&composites.realm)
+            .bind(composites.clients.iter().flat_map(|(client, names)| names.iter().map(move |_| client.as_str())).collect::<Vec<_>>())
+            .bind(composites.clients.values().flatten().map(String::as_str).collect::<Vec<_>>())
+            .fetch_all(&mut *conn).await?;
+        if children.len() != requested {
+            // Dropping the transaction rolls the new role back.
+            return Ok(RoleCreation::CompositeNotFound);
+        }
+        sqlx::query("INSERT INTO role_composites (realm_id, role_id, child_role_id) SELECT $1, $2, unnest($3::text[]) ON CONFLICT DO NOTHING")
+            .bind(realm_id).bind(id).bind(&children).execute(&mut *conn).await?;
         audit(conn, actor, "role_created").await?;
         tx.commit().await?;
         Ok(RoleCreation::Created)
@@ -349,14 +459,14 @@ const EFFECTIVE_ROLES: &str = "WITH RECURSIVE member_groups(id, parent_id, depth
 
 /// Role names by container: realm roles, and client roles by client.
 #[derive(Default)]
-pub struct EffectiveRoles {
+pub struct RoleNames {
     /// Realm role names, sorted.
     pub realm: Vec<String>,
     /// Client role names keyed by public client identifier, sorted.
     pub clients: BTreeMap<String, Vec<String>>,
 }
 
-impl EffectiveRoles {
+impl RoleNames {
     /// Groups `(client identifier, role name)` rows, realm roles first.
     fn from_rows(rows: Vec<(Option<String>, String)>) -> Self {
         let mut roles = Self::default();
@@ -377,12 +487,12 @@ impl Storage {
         &self,
         realm_id: &str,
         user_id: &str,
-    ) -> Result<EffectiveRoles, StorageError> {
+    ) -> Result<RoleNames, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let rows: Vec<(Option<String>, String)> = sqlx::query_as(&format!("{EFFECTIVE_ROLES} SELECT DISTINCT c.client_id, r.name FROM roles r JOIN effective e ON r.realm_id = $1 AND r.id = e.id LEFT JOIN clients c ON c.realm_id = r.realm_id AND c.id = r.client_id ORDER BY 1 NULLS FIRST, 2"))
             .bind(realm_id).bind(user_id).fetch_all(tx.connection()).await?;
         tx.commit().await?;
-        Ok(EffectiveRoles::from_rows(rows))
+        Ok(RoleNames::from_rows(rows))
     }
 
     /// Lists a user's effective roles in one container (the realm when
@@ -413,18 +523,17 @@ impl Storage {
         Ok(roles)
     }
 
-    /// Returns the names of a holder's directly mapped roles, in the same
-    /// shape as effective roles.
+    /// Returns the names of a holder's directly mapped roles.
     pub async fn holder_role_names(
         &self,
         realm_id: &str,
         holder: RoleHolder<'_>,
-    ) -> Result<EffectiveRoles, StorageError> {
+    ) -> Result<RoleNames, StorageError> {
         let (_, grants, column) = holder.tables();
         let mut tx = self.begin_request(false).await?;
         let rows: Vec<(Option<String>, String)> = sqlx::query_as(&format!("SELECT c.client_id, r.name FROM roles r JOIN {grants} g ON g.realm_id = r.realm_id AND g.role_id = r.id LEFT JOIN clients c ON c.realm_id = r.realm_id AND c.id = r.client_id WHERE r.realm_id = $1 AND g.{column} = $2 ORDER BY 1 NULLS FIRST, 2"))
             .bind(realm_id).bind(holder.id()).fetch_all(tx.connection()).await?;
         tx.commit().await?;
-        Ok(EffectiveRoles::from_rows(rows))
+        Ok(RoleNames::from_rows(rows))
     }
 }

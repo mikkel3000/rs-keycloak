@@ -30,7 +30,7 @@ use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, EffectiveRoles, RefreshRotation, Storage};
+use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, RoleNames, Storage};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -1147,7 +1147,7 @@ fn userinfo_challenge(realm: &str, description: Option<&str>) -> Response {
 
 /// The `resource_access` claim for a user's client roles, or `None` when
 /// the user has none, as the reference omits it then.
-fn resource_access(roles: &EffectiveRoles) -> Option<BTreeMap<&str, RealmAccess<'_>>> {
+fn resource_access(roles: &RoleNames) -> Option<BTreeMap<&str, RealmAccess<'_>>> {
     (!roles.clients.is_empty()).then(|| {
         roles
             .clients

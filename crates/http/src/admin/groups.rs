@@ -10,7 +10,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use rs_keycloak_storage_postgres::{
-    EffectiveRoles, GroupCreation, GroupRecord, MembershipChange, RoleHolder,
+    GroupCreation, GroupRecord, MembershipChange, RoleHolder, RoleNames,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
@@ -67,7 +67,7 @@ fn brief(group: &GroupRecord) -> Value {
 }
 
 /// The full form returned for a single group, with its mapped role names.
-fn full(group: &GroupRecord, roles: &EffectiveRoles) -> Value {
+fn full(group: &GroupRecord, roles: &RoleNames) -> Value {
     let mut fields = brief(group);
     fields["attributes"] = json!({});
     fields["realmRoles"] = json!(roles.realm);
@@ -121,7 +121,7 @@ async fn create(
             let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
             // The reference returns the new group only for subgroups.
             if parent_id.is_some() {
-                let mut fields = full(&group, &EffectiveRoles::default());
+                let mut fields = full(&group, &RoleNames::default());
                 if let Some(object) = fields.as_object_mut() {
                     object.remove("subGroupCount");
                 }
@@ -194,7 +194,7 @@ async fn list(
     // Subgroups are listed in the full form; their mapped roles are not
     // read for lists.
     let render = |group: &GroupRecord| match parent {
-        Some(_) => full(group, &EffectiveRoles::default()),
+        Some(_) => full(group, &RoleNames::default()),
         None => brief(group),
     };
     Ok(json_response(Value::Array(
