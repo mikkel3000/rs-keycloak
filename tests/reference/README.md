@@ -200,3 +200,12 @@ role") and parents ("Could not find role"), malformed bodies (400
 change. A role may include itself and composites may form cycles, so a role
 that includes itself stays composite. The baseline passed a second,
 comparing run.
+
+`admin_user_update.py` records 27 user update cases in
+`admin-user-update-observations.json`. Updates are partial and ignore a body
+`id`. An email change is lowercased and keeps `emailVerified`; a taken email
+answers 409, an invalid one 400 `error-invalid-email`. The username is
+read-only (400 `error-user-attribute-read-only`) unless unchanged, an empty
+name removes it, and `requiredActions` replaces the list. A disabled user's
+browser login does not complete, and completes again once enabled. The
+baseline passed a second, comparing run.
