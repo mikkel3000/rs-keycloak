@@ -171,3 +171,13 @@ public and confidential, which drops the secret and generates a new one.
 Each change is followed by a client-credentials grant or a read. A client
 created with redirect URIs and no web origins gets their origins. The
 baseline passed a second, comparing run.
+
+`admin_permissions.py` records 228 cases in
+`admin-permission-observations.json`: 19 admin operations for service-account
+tokens of the managed realm holding no role or one of 11 `realm-management`
+roles. `query-*` roles list, `view-*` roles read, `manage-*` roles also
+write, and `realm-admin` does everything in its realm. Any role reads the
+realm, but without `view-realm` only 4 fields; realm listing shows only the
+token's realm. No role reaches another realm or creates realms, and a token
+without roles is refused everywhere. `create-client` alone cannot use
+`POST /clients`. The baseline passed a second, comparing run.
