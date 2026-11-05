@@ -125,6 +125,9 @@ pub(super) async fn post(
         Ok(ClientAuthResult::Unauthorized) => return client_error("unauthorized_client"),
         Err(_) => return unavailable(),
     };
+    if client.bearer_only {
+        return client_auth::bearer_only_refused();
+    }
     let claims = match verified_refresh(&state, &realm, &refresh_token).await {
         Ok(Some(claims)) => claims,
         Ok(None) => return invalid_grant("Invalid refresh token"),

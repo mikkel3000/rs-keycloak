@@ -3,8 +3,8 @@
 //! Follows `tests/reference/admin-role-observations.json` and
 //! `tests/reference/client-role-observations.json`. Realm roles live under
 //! `/roles`, client roles under `/clients/{id}/roles`; both share these
-//! handlers through a resolved container. Composite editing and role
-//! attributes are not modelled and are refused.
+//! handlers through a resolved container. Composites can be read; composite
+//! editing and role attributes are not modelled and are refused.
 
 use std::collections::HashMap;
 
@@ -45,6 +45,10 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route("/admin/realms/{realm}/roles/{role}/users", get(role_users))
         .route(
+            "/admin/realms/{realm}/roles/{role}/composites",
+            get(role_composites),
+        )
+        .route(
             "/admin/realms/{realm}/clients/{client}/roles",
             get(list_roles).post(create_role),
         )
@@ -55,6 +59,10 @@ pub(super) fn routes() -> Router<OidcState> {
         .route(
             "/admin/realms/{realm}/clients/{client}/roles/{role}/users",
             get(role_users),
+        )
+        .route(
+            "/admin/realms/{realm}/clients/{client}/roles/{role}/composites",
+            get(role_composites),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/role-mappings/realm",
@@ -78,13 +86,6 @@ struct Container {
     realm_id: String,
     /// Internal client identifier for client roles.
     client: Option<String>,
-}
-
-impl Container {
-    /// The identifier reported as a role's `containerId`.
-    fn id(&self) -> &str {
-        self.client.as_deref().unwrap_or(&self.realm_id)
-    }
 }
 
 fn param<'a>(params: &'a HashMap<String, String>, name: &str) -> Result<&'a str, AdminError> {
@@ -120,13 +121,14 @@ fn role_not_found() -> AdminError {
     AdminError::Error(StatusCode::NOT_FOUND, "Could not find role".into())
 }
 
-fn representation(role: &RoleRecord, container: &Container) -> Value {
+/// A role's representation; its container is its client, or else the realm.
+fn representation(role: &RoleRecord, realm_id: &str) -> Value {
     let mut fields = json!({
         "id": role.id,
         "name": role.name,
         "composite": role.composite,
-        "clientRole": container.client.is_some(),
-        "containerId": container.id(),
+        "clientRole": role.client.is_some(),
+        "containerId": role.client.as_deref().unwrap_or(realm_id),
     });
     if let Some(description) = &role.description {
         fields["description"] = json!(description);
@@ -148,7 +150,7 @@ async fn list_roles(
     Ok(json_response(Value::Array(
         roles
             .iter()
-            .map(|role| representation(role, &container))
+            .map(|role| representation(role, &container.realm_id))
             .collect(),
     )))
 }
@@ -258,9 +260,33 @@ async fn read_role(
     authorize(&state, &headers).await?;
     let container = container(&state, &params).await?;
     let role = find_role(&state, &container, param(&params, "role")?).await?;
-    let mut fields = representation(&role, &container);
+    let mut fields = representation(&role, &container.realm_id);
     fields["attributes"] = json!({});
     Ok(json_response(fields))
+}
+
+async fn role_composites(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers).await?;
+    let container = container(&state, &params).await?;
+    let roles = state
+        .storage
+        .role_composites(
+            &container.realm_id,
+            container.client.as_deref(),
+            param(&params, "role")?,
+        )
+        .await?
+        .ok_or_else(role_not_found)?;
+    Ok(json_response(Value::Array(
+        roles
+            .iter()
+            .map(|role| representation(role, &container.realm_id))
+            .collect(),
+    )))
 }
 
 async fn delete_role(
@@ -324,7 +350,7 @@ async fn user_roles(
     Ok(json_response(Value::Array(
         roles
             .iter()
-            .map(|role| representation(role, &container))
+            .map(|role| representation(role, &container.realm_id))
             .collect(),
     )))
 }

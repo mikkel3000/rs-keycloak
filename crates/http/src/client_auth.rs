@@ -1,11 +1,14 @@
 //! OAuth client authentication input parsing.
 
-use axum::http::{HeaderMap, header};
+use axum::Json;
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use percent_encoding::percent_decode;
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_storage_postgres::client_secret_context;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
@@ -130,6 +133,22 @@ pub struct AuthenticatedClient {
     pub client_id: String,
     /// Confidential client revision, or `None` for a public client.
     pub revision: Option<i64>,
+    /// Bearer-only clients may only authenticate to introspection.
+    pub bearer_only: bool,
+}
+
+/// The reference answer when a bearer-only client asks for tokens, revokes
+/// or logs out; only introspection accepts these clients.
+pub fn bearer_only_refused() -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(json!({"error": "invalid_client", "error_description": "Bearer-only not allowed"})),
+    )
+        .into_response()
 }
 
 /// Client authentication result matching the public OAuth error distinction.
@@ -172,21 +191,24 @@ impl ClientAuthenticator {
         credentials: ClientCredentials,
     ) -> Result<ClientAuthResult, rs_keycloak_authentication::PasswordWorkError> {
         use rs_keycloak_authentication::PasswordWorkError;
-        use rs_keycloak_storage_postgres::ClientAuthMaterial;
+        use rs_keycloak_storage_postgres::{ClientAuthEntry, ClientAuthMaterial};
         let client_id = match &credentials {
             ClientCredentials::Public(id) => id,
             ClientCredentials::Confidential { client_id, .. } => client_id,
         };
-        let material = self
+        let entry = self
             .storage
             .client_auth_material(realm, client_id)
             .await
             .map_err(|_| PasswordWorkError)?;
+        let bearer_only = entry.as_ref().is_some_and(|entry| entry.bearer_only);
+        let material = entry.map(|ClientAuthEntry { material, .. }| material);
         match (credentials, material) {
             (ClientCredentials::Public(client_id), Some(ClientAuthMaterial::Public)) => {
                 Ok(ClientAuthResult::Authenticated(AuthenticatedClient {
                     client_id,
                     revision: None,
+                    bearer_only,
                 }))
             }
             (
@@ -201,6 +223,7 @@ impl ClientAuthenticator {
                     Ok(ClientAuthResult::Authenticated(AuthenticatedClient {
                         client_id,
                         revision: Some(revision),
+                        bearer_only,
                     }))
                 } else {
                     Ok(ClientAuthResult::Unauthorized)
@@ -228,6 +251,7 @@ impl ClientAuthenticator {
                     Ok(ClientAuthResult::Authenticated(AuthenticatedClient {
                         client_id,
                         revision: Some(revision),
+                        bearer_only,
                     }))
                 } else {
                     Ok(ClientAuthResult::Unauthorized)

@@ -3,7 +3,7 @@
 use std::io::{self, IsTerminal, Read};
 
 use rs_keycloak_storage_postgres::{
-    ClientAuthMaterial, ConfidentialRegistration, Storage, StorageError,
+    ClientAuthEntry, ClientAuthMaterial, ConfidentialRegistration, Storage, StorageError,
 };
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -81,8 +81,12 @@ pub(crate) async fn add_confidential_client(
             .await
             .map_err(|_| "Confidential client registration failed")?
         {
-            Some(ClientAuthMaterial::Confidential {
-                revision: current, ..
+            Some(ClientAuthEntry {
+                material:
+                    ClientAuthMaterial::Confidential {
+                        revision: current, ..
+                    },
+                ..
             }) if current == revision => (),
             _ => return Err("Confidential client changed during registration"),
         }
@@ -139,9 +143,13 @@ pub(crate) async fn rotate_client_secret(realm: &str, client_id: &str) -> Result
         .await
         .map_err(|_| "Client lookup failed")?
     {
-        Some(ClientAuthMaterial::Confidential {
-            secret_phc,
-            revision,
+        Some(ClientAuthEntry {
+            material:
+                ClientAuthMaterial::Confidential {
+                    secret_phc,
+                    revision,
+                },
+            ..
         }) => (Zeroizing::new(secret_phc), revision),
         _ => return Err("Client secret rotation failed"),
     };

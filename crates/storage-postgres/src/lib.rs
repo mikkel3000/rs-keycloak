@@ -66,6 +66,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0023_verify_email.sql"),
     include_str!("../../../migrations/0024_update_profile.sql"),
     include_str!("../../../migrations/0025_client_roles.sql"),
+    include_str!("../../../migrations/0026_bearer_only.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -412,6 +413,16 @@ pub enum ClientAuthMaterial {
         /// Revision to recheck after verifying the secret.
         revision: i64,
     },
+    /// A confidential client without a secret, which cannot authenticate.
+    NoSecret,
+}
+
+/// A client's authentication material and whether it is bearer-only.
+pub struct ClientAuthEntry {
+    /// How the client authenticates.
+    pub material: ClientAuthMaterial,
+    /// Bearer-only clients may only authenticate to introspection.
+    pub bearer_only: bool,
 }
 
 /// Associated data that binds a sealed client secret to one client row.
@@ -746,30 +757,37 @@ impl Storage {
         &self,
         realm: &str,
         client_identifier: &str,
-    ) -> Result<Option<ClientAuthMaterial>, StorageError> {
+    ) -> Result<Option<ClientAuthEntry>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT c.id, c.public_client, c.secret_phc, c.secret_sealed, c.secret_key_id, c.revision FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
+        let row = sqlx::query("SELECT c.id, c.public_client, c.bearer_only, c.secret_phc, c.secret_sealed, c.secret_key_id, c.revision FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
             .bind(realm).bind(client_identifier).fetch_optional(tx.connection()).await?;
-        let result = match row {
-            None => None,
-            Some(row) if row.try_get::<bool, _>("public_client")? => {
-                Some(ClientAuthMaterial::Public)
-            }
-            Some(row) => match row.try_get::<Option<Vec<u8>>, _>("secret_sealed")? {
-                Some(sealed) => Some(ClientAuthMaterial::Sealed {
-                    client_id: row.try_get("id")?,
-                    sealed,
-                    key_id: row.try_get("secret_key_id")?,
-                    revision: row.try_get("revision")?,
-                }),
-                None => Some(ClientAuthMaterial::Confidential {
-                    secret_phc: row.try_get("secret_phc")?,
-                    revision: row.try_get("revision")?,
-                }),
-            },
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
         };
+        let material = if row.try_get::<bool, _>("public_client")? {
+            ClientAuthMaterial::Public
+        } else if let Some(sealed) = row.try_get::<Option<Vec<u8>>, _>("secret_sealed")? {
+            ClientAuthMaterial::Sealed {
+                client_id: row.try_get("id")?,
+                sealed,
+                key_id: row.try_get("secret_key_id")?,
+                revision: row.try_get("revision")?,
+            }
+        } else if let Some(secret_phc) = row.try_get::<Option<Vec<u8>>, _>("secret_phc")? {
+            ClientAuthMaterial::Confidential {
+                secret_phc,
+                revision: row.try_get("revision")?,
+            }
+        } else {
+            ClientAuthMaterial::NoSecret
+        };
+        let bearer_only = row.try_get("bearer_only")?;
         tx.commit().await?;
-        Ok(result)
+        Ok(Some(ClientAuthEntry {
+            material,
+            bearer_only,
+        }))
     }
 
     /// Replace a confidential client secret only if its observed revision is current.
@@ -821,10 +839,23 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode, prompt_consent) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11, $12 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled")
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode, prompt_consent) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11, $12 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled AND NOT c.bearer_only")
             .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).bind(prompt_consent).execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)
+    }
+
+    /// Reports whether an enabled client of an enabled realm is bearer-only.
+    pub async fn client_is_bearer_only(
+        &self,
+        realm: &str,
+        client_identifier: &str,
+    ) -> Result<bool, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let bearer_only = sqlx::query_scalar("SELECT c.bearer_only FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
+            .bind(realm).bind(client_identifier).fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(bearer_only.unwrap_or(false))
     }
 
     /// Resolve a live request to its realm and internal client after CSRF binding.

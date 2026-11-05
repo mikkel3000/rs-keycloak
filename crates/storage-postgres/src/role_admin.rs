@@ -19,6 +19,8 @@ pub struct RoleRecord {
     pub description: Option<String>,
     /// Whether the role includes other roles.
     pub composite: bool,
+    /// Internal identifier of the owning client, or `None` for a realm role.
+    pub client: Option<String>,
 }
 
 /// Outcome of creating a role.
@@ -49,7 +51,7 @@ pub enum RoleMappingChange {
     RoleNotFound,
 }
 
-const ROLE_COLUMNS: &str = "r.id, r.name, r.description, EXISTS (SELECT 1 FROM role_composites c WHERE c.realm_id = r.realm_id AND c.role_id = r.id) AS composite";
+const ROLE_COLUMNS: &str = "r.id, r.name, r.description, r.client_id, EXISTS (SELECT 1 FROM role_composites c WHERE c.realm_id = r.realm_id AND c.role_id = r.id) AS composite";
 
 fn role_row(row: &PgRow) -> Result<RoleRecord, StorageError> {
     Ok(RoleRecord {
@@ -57,6 +59,7 @@ fn role_row(row: &PgRow) -> Result<RoleRecord, StorageError> {
         name: row.try_get("name")?,
         description: row.try_get("description")?,
         composite: row.try_get("composite")?,
+        client: row.try_get("client_id")?,
     })
 }
 
@@ -140,6 +143,41 @@ impl Storage {
         .await?;
         tx.commit().await?;
         row.as_ref().map(role_row).transpose()
+    }
+
+    /// Lists the roles a role directly includes, from any container, or
+    /// `None` if the role does not exist.
+    pub async fn role_composites(
+        &self,
+        realm_id: &str,
+        client: Option<&str>,
+        name: &str,
+    ) -> Result<Option<Vec<RoleRecord>>, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let parent: Option<String> = sqlx::query_scalar(
+            "SELECT id FROM roles WHERE realm_id = $1 AND name = $2 AND client_id IS NOT DISTINCT FROM $3",
+        )
+        .bind(realm_id)
+        .bind(name)
+        .bind(client)
+        .fetch_optional(tx.connection())
+        .await?;
+        let Some(parent) = parent else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let rows = sqlx::query(&format!(
+            "SELECT {ROLE_COLUMNS} FROM roles r JOIN role_composites c ON c.realm_id = r.realm_id AND c.child_role_id = r.id WHERE c.realm_id = $1 AND c.role_id = $2 ORDER BY r.name, r.id"
+        ))
+        .bind(realm_id)
+        .bind(&parent)
+        .fetch_all(tx.connection())
+        .await?;
+        tx.commit().await?;
+        rows.iter()
+            .map(role_row)
+            .collect::<Result<_, _>>()
+            .map(Some)
     }
 
     /// Creates a role in a container unless the name is taken there.

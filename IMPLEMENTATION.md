@@ -232,10 +232,9 @@ takes 165 ms. Redirect URI and web origin rules moved to
 `rs_keycloak_protocols::client_urls`, shared by the CLI and the API; the API
 does not allow loopback HTTP.
 
-Remaining differences: new realms have no built-in clients (`account`,
-`admin-cli`, `broker` and others), so unfiltered lists are shorter; the
-representation lists only the 13 modelled settings of the reference's 26
-fields; direct access, implicit, bearer-only, non-OIDC protocols, other
+Remaining differences: the representation lists only the 13 modelled
+settings of the reference's 26 fields; direct access, implicit, non-OIDC
+protocols, other
 authenticators, attributes other than S256 PKCE, and client updates are
 refused or missing; the CLI cannot rotate a sealed secret.
 
@@ -516,8 +515,30 @@ access tokens carry `resource_access`. The account API now checks the real
 to change. `tests/public/client_roles_contract.py` checks 2 groups, the
 slowest in 381 ms; a fresh install with bootstrap creates the built-ins.
 
-Remaining differences: `broker`, `realm-management` and
-`security-admin-console` are not created, because bearer-only clients are
-not modelled; built-in clients have no redirect URIs, so `account-console`
-cannot sign in yet; token `aud` still names the token's own client rather
+Remaining differences: built-in clients have no redirect URIs, so
+`account-console` and `security-admin-console` cannot sign in yet; token `aud` still names the token's own client rather
 than the clients whose roles it carries.
+
+## Bearer-only clients
+
+Clients may be bearer-only, set through `bearerOnly` at creation. Such a
+client may authenticate only to introspection; the authorization endpoint
+shows a 403 page, and the token, revocation and logout endpoints answer
+`invalid_client` "Bearer-only not allowed" after the client authenticates.
+Every realm, including existing ones through migration 26, now has the
+bearer-only `broker` (role `read-token`) and `realm-management` (22 roles;
+`realm-admin` includes the other 21, `view-users` includes `query-users` and
+`query-groups`, `view-clients` includes `query-clients`) clients, which have
+no secret and so cannot authenticate, and the public
+`security-admin-console`. `GET .../roles/{role}/composites` lists a realm or
+client role's direct composites. This follows the 23 recorded cases in
+`tests/reference/bearer-only-observations.json`;
+`tests/public/bearer_only_contract.py` checks 4 groups, the slowest in
+259 ms.
+
+Remaining differences: the authorization endpoint checks PKCE and other
+request parameters before it checks for a bearer-only client, where the
+reference checks the client first; the `realm-management` roles grant
+nothing yet, because admin access still comes from the master `admin` role;
+the logout refusal is applied by analogy with the token and revocation
+endpoints and was not recorded.

@@ -83,6 +83,9 @@ pub(super) async fn handle(
         Ok(ClientAuthResult::Unauthorized) => return unauthorized_client(),
         Err(_) => return unavailable(),
     };
+    if client.bearer_only {
+        return client_auth::bearer_only_refused();
+    }
     let Some(token) = fields.remove("token").map(Zeroizing::new) else {
         return error(
             StatusCode::BAD_REQUEST,

@@ -56,6 +56,8 @@ class ClientRolesContract(AdminCase):
         self.assertEqual(status, 200)
         self.assertTrue(json.loads(body)["composite"])
         self.assertEqual(self.call("GET", default)[0], 200)
+        composites = self.case(self.call("GET", default + "/composites"), "default-role/composites")
+        self.assertEqual(sorted({field for item in composites for field in item}), REFERENCE["default-role/composites"]["item_fields"])
 
     def test_client_role_lifecycle_and_mappings(self):
         roles = f"{self.base}/clients/{self.app}/roles"

@@ -174,7 +174,7 @@ fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
         "clientAuthenticatorType": "client-secret",
         "redirectUris": client.redirect_uris,
         "webOrigins": client.web_origins,
-        "bearerOnly": false,
+        "bearerOnly": client.bearer_only,
         "standardFlowEnabled": client.standard_flow,
         "implicitFlowEnabled": false,
         "directAccessGrantsEnabled": false,
@@ -222,11 +222,7 @@ async fn create_client(
     }
     require_value(&fields, "protocol", &json!("openid-connect"))?;
     require_value(&fields, "clientAuthenticatorType", &json!("client-secret"))?;
-    for excluded in [
-        "directAccessGrantsEnabled",
-        "implicitFlowEnabled",
-        "bearerOnly",
-    ] {
+    for excluded in ["directAccessGrantsEnabled", "implicitFlowEnabled"] {
         require_value(&fields, excluded, &json!(false))?;
     }
     let (post_logout_redirect_uris, post_logout_uses_redirect_uris) =
@@ -279,6 +275,7 @@ async fn create_client(
         public,
         standard_flow: bool_field(&fields, "standardFlowEnabled", true)?,
         service_accounts,
+        bearer_only: bool_field(&fields, "bearerOnly", false)?,
         redirect_uris: &redirect_uris,
         web_origins: &web_origins,
         post_logout_redirect_uris: &post_logout_redirect_uris,

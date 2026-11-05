@@ -27,6 +27,8 @@ pub struct NewClient<'a> {
     pub standard_flow: bool,
     /// Whether the client-credentials grant is allowed.
     pub service_accounts: bool,
+    /// Whether the client only verifies tokens and never obtains them.
+    pub bearer_only: bool,
     /// Exact redirect URIs.
     pub redirect_uris: &'a [String],
     /// Exact web origins.
@@ -53,6 +55,8 @@ pub struct ClientRecord {
     pub standard_flow: bool,
     /// Whether the client-credentials grant is allowed.
     pub service_accounts: bool,
+    /// Whether the client only verifies tokens and never obtains them.
+    pub bearer_only: bool,
     /// Whether users must consent before the client receives a code.
     pub consent_required: bool,
     /// Exact redirect URIs, sorted.
@@ -71,7 +75,7 @@ pub enum ClientCreation {
     Exists,
 }
 
-const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins";
+const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.bearer_only, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins";
 
 fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
     let sealed: Option<Vec<u8>> = row.try_get("secret_sealed")?;
@@ -83,6 +87,7 @@ fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
         public: row.try_get("public_client")?,
         standard_flow: row.try_get("standard_flow_enabled")?,
         service_accounts: row.try_get("service_accounts_enabled")?,
+        bearer_only: row.try_get("bearer_only")?,
         consent_required: row.try_get("consent_required")?,
         redirect_uris: row.try_get("redirect_uris")?,
         web_origins: row.try_get("web_origins")?,
@@ -126,12 +131,13 @@ impl Storage {
         }
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id, post_logout_uses_redirect_uris, consent_required) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id, post_logout_uses_redirect_uris, consent_required, bearer_only) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(id).bind(client.client_identifier).bind(client.enabled).bind(client.public)
             .bind(client.standard_flow).bind(client.service_accounts)
             .bind(secret.map(|secret| secret.sealed.as_slice())).bind(secret.map(|secret| secret.key_id.as_str()))
             .bind(client.post_logout_uses_redirect_uris)
             .bind(client.consent_required)
+            .bind(client.bearer_only)
             .fetch_optional(&mut *conn).await?;
         if created.is_none() {
             tx.commit().await?;

@@ -1,8 +1,8 @@
 """Client administration compared with recorded Keycloak 26.8.1 behavior.
 
 Expected cases come from tests/reference/admin-client-observations.json.
-Known differences, listed in IMPLEMENTATION.md: new realms have no built-in
-clients, and the representation lists only the modelled settings.
+Known difference, listed in IMPLEMENTATION.md: the representation lists only
+the modelled settings.
 """
 
 import base64
@@ -90,7 +90,7 @@ class AdminClientsContract(ServerCase):
         self.assert_case(self.call("POST", self.clients, raw="{"), "create/malformed-json")
         self.assert_case(self.call("POST", "/admin/realms/unknown-" + RUN + "/clients", {"clientId": "x"}), "create/unknown-realm")
         self.assert_case(self.call("POST", self.clients, {"clientId": "x"}, token=False), "create/no-token")
-        for setting in ({"directAccessGrantsEnabled": True}, {"implicitFlowEnabled": True}, {"bearerOnly": True}, {"protocol": "saml"}, {"redirectUris": ["http://app.example/cb"]}, {"webOrigins": ["*"]}):
+        for setting in ({"directAccessGrantsEnabled": True}, {"implicitFlowEnabled": True}, {"protocol": "saml"}, {"redirectUris": ["http://app.example/cb"]}, {"webOrigins": ["*"]}):
             status, _, _ = self.call("POST", self.clients, dict({"clientId": "bad-" + secrets.token_hex(3)}, **setting))
             self.assertEqual(status, 400, setting)
 
@@ -101,10 +101,8 @@ class AdminClientsContract(ServerCase):
         status, _, body = self.assert_case(self.call("GET", self.clients + "?clientId=missing-app"), "search/client-id-unknown")
         self.assertEqual(json.loads(body), [])
         listed = {item["clientId"] for item in json.loads(self.call("GET", self.clients)[2])}
-        # The reference lists six built-in clients; broker, realm-management
-        # and security-admin-console are not created here yet, and this test
-        # does not create the client with a generated clientId.
-        expected = set(REFERENCE["search/all-count"]["client_ids"]) - {"broker", "realm-management", "security-admin-console", "{generated}"}
+        # This test does not create the client with a generated clientId.
+        expected = set(REFERENCE["search/all-count"]["client_ids"]) - {"{generated}"}
         self.assertEqual(listed, expected)
 
     def test_secret_read_and_regenerate_change_authentication(self):

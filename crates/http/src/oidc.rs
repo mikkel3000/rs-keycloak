@@ -349,7 +349,21 @@ async fn authorize(
         .await
     {
         Ok(true) => (),
-        Ok(false) => return failure(),
+        Ok(false) => {
+            return match s
+                .storage
+                .client_is_bearer_only(&realm_id, &q.client_id)
+                .await
+            {
+                Ok(true) => plain_page(
+                    StatusCode::FORBIDDEN,
+                    "Error",
+                    "<p>Bearer-only applications are not allowed to initiate browser login.</p>",
+                ),
+                Ok(false) => failure(),
+                Err(_) => unavailable(),
+            };
+        }
         Err(_) => return unavailable(),
     }
     let redirect = rs_keycloak_storage_postgres::AuthorizationRedirect {
@@ -881,6 +895,9 @@ async fn token(
         Ok(ClientAuthResult::Unauthorized) => return unauthorized_client(),
         Err(_) => return unavailable(),
     };
+    if client.bearer_only {
+        return client_auth::bearer_only_refused();
+    }
     let q = match q {
         TokenForm::Session(grant) => grant,
         TokenForm::ClientCredentials { scope } => {
