@@ -262,10 +262,10 @@ grants plus composites, expanded recursively to 32 levels, sorted. The
 contracts check this for browser login, master and new-realm service
 accounts, and a granted role.
 
-Remaining differences: composite editing, role attributes and client roles
-are refused; deleting the default role answers 400, a response the reference
-was not recorded for; `resource_access` and roles inherited from groups are
-not yet in tokens.
+Remaining differences: composite editing and role attributes are refused;
+deleting the default role answers 400, a response the reference was not
+recorded for. Client roles, `resource_access` and group roles came later
+(see below).
 
 ## Groups
 
@@ -586,3 +586,21 @@ master per-realm clients (`{realm}-realm`) and fine-grained admin
 permissions are not modelled; the full realm representation still has 5 of
 the reference's 104 fields; realm deletion by a realm's own `manage-realm`
 was not recorded and is refused.
+
+## Group role mappings
+
+Groups hold realm and client roles under `/groups/{id}/role-mappings/realm`
+and `.../clients/{client}`, following the 20 recorded cases in
+`tests/reference/group-role-observations.json`. Members' effective roles,
+used for tokens, the account API and admin access, now include the roles of
+each of their groups and those groups' ancestors; one shared query builds
+them. `/users/{id}/role-mappings/realm/composite` (and the client form)
+lists a user's effective roles, while direct mappings and a role's user list
+leave group roles out. A group read lists its `realmRoles` and
+`clientRoles`. Users and groups share the mapping storage and handlers
+through a role holder. `tests/public/group_roles_contract.py` checks 2
+groups, the slowest in 423 ms.
+
+Remaining differences: subgroup lists show empty `realmRoles` and
+`clientRoles`, because mapped roles are read only for a single group; the
+combined `/role-mappings` endpoint is missing.

@@ -1,9 +1,12 @@
-//! Admin REST routes for realm and client roles and user role mappings.
+//! Admin REST routes for realm and client roles and user and group role
+//! mappings.
 //!
-//! Follows `tests/reference/admin-role-observations.json` and
-//! `tests/reference/client-role-observations.json`. Realm roles live under
+//! Follows `tests/reference/admin-role-observations.json`,
+//! `tests/reference/client-role-observations.json` and
+//! `tests/reference/group-role-observations.json`. Realm roles live under
 //! `/roles`, client roles under `/clients/{id}/roles`; both share these
-//! handlers through a resolved container. Composites can be read; composite
+//! handlers through a resolved container, and users and groups share the
+//! role-mapping handlers through a role holder. Composites can be read; composite
 //! editing and role attributes are not modelled and are refused.
 
 use std::collections::HashMap;
@@ -15,7 +18,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
-use rs_keycloak_storage_postgres::{RoleCreation, RoleDeletion, RoleMappingChange, RoleRecord};
+use rs_keycloak_storage_postgres::{
+    RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleRecord,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -66,15 +71,35 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route(
             "/admin/realms/{realm}/users/{user}/role-mappings/realm",
-            get(user_roles)
-                .post(add_user_roles)
-                .delete(remove_user_roles),
+            get(holder_roles)
+                .post(add_holder_roles)
+                .delete(remove_holder_roles),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/role-mappings/clients/{client}",
-            get(user_roles)
-                .post(add_user_roles)
-                .delete(remove_user_roles),
+            get(holder_roles)
+                .post(add_holder_roles)
+                .delete(remove_holder_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/role-mappings/realm/composite",
+            get(effective_user_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/role-mappings/clients/{client}/composite",
+            get(effective_user_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{group}/role-mappings/realm",
+            get(holder_roles)
+                .post(add_holder_roles)
+                .delete(remove_holder_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{group}/role-mappings/clients/{client}",
+            get(holder_roles)
+                .post(add_holder_roles)
+                .delete(remove_holder_roles),
         )
 }
 
@@ -162,12 +187,7 @@ async fn list_roles(
         .storage
         .roles(&container.realm_id, container.client.as_deref())
         .await?;
-    Ok(json_response(Value::Array(
-        roles
-            .iter()
-            .map(|role| representation(role, &container.realm_id))
-            .collect(),
-    )))
+    Ok(role_array(&roles, &container.realm_id))
 }
 
 async fn create_role(
@@ -314,12 +334,7 @@ async fn role_composites(
         )
         .await?
         .ok_or_else(role_not_found)?;
-    Ok(json_response(Value::Array(
-        roles
-            .iter()
-            .map(|role| representation(role, &container.realm_id))
-            .collect(),
-    )))
+    Ok(role_array(&roles, &container.realm_id))
 }
 
 async fn delete_role(
@@ -376,7 +391,55 @@ async fn role_users(
     )))
 }
 
-async fn user_roles(
+/// The user or group a role-mapping route names, with the error for a
+/// missing one.
+fn holder(params: &HashMap<String, String>) -> Result<(RoleHolder<'_>, AdminError), AdminError> {
+    match (params.get("user"), params.get("group")) {
+        (Some(user), None) => Ok((
+            RoleHolder::User(user),
+            AdminError::Error(StatusCode::NOT_FOUND, "User not found".into()),
+        )),
+        (None, Some(group)) => Ok((
+            RoleHolder::Group(group),
+            AdminError::Error(StatusCode::NOT_FOUND, "Could not find group by id".into()),
+        )),
+        _ => Err(AdminError::Unavailable),
+    }
+}
+
+fn role_array(roles: &[RoleRecord], realm_id: &str) -> Response {
+    json_response(Value::Array(
+        roles
+            .iter()
+            .map(|role| representation(role, realm_id))
+            .collect(),
+    ))
+}
+
+async fn holder_roles(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        Access::ViewUsers,
+    )
+    .await?;
+    let container = container(&state, &params).await?;
+    let (holder, not_found) = holder(&params)?;
+    let roles = state
+        .storage
+        .holder_roles(&container.realm_id, container.client.as_deref(), holder)
+        .await?
+        .ok_or(not_found)?;
+    Ok(role_array(&roles, &container.realm_id))
+}
+
+/// A user's effective roles in one container, including those of groups.
+async fn effective_user_roles(
     State(state): State<OidcState>,
     Path(params): Params,
     headers: HeaderMap,
@@ -391,19 +454,14 @@ async fn user_roles(
     let container = container(&state, &params).await?;
     let roles = state
         .storage
-        .user_roles(
+        .effective_role_records(
             &container.realm_id,
             container.client.as_deref(),
             param(&params, "user")?,
         )
         .await?
         .ok_or_else(|| AdminError::Error(StatusCode::NOT_FOUND, "User not found".into()))?;
-    Ok(json_response(Value::Array(
-        roles
-            .iter()
-            .map(|role| representation(role, &container.realm_id))
-            .collect(),
-    )))
+    Ok(role_array(&roles, &container.realm_id))
 }
 
 /// Parses a role list body into `(id, name)` pairs.
@@ -426,7 +484,7 @@ fn role_list(body: &[u8]) -> Result<Vec<(String, String)>, AdminError> {
         .collect()
 }
 
-async fn change_user_roles(
+async fn change_holder_roles(
     state: OidcState,
     params: HashMap<String, String>,
     headers: HeaderMap,
@@ -441,13 +499,14 @@ async fn change_user_roles(
     )
     .await?;
     let container = container(&state, &params).await?;
+    let (holder, not_found) = holder(&params)?;
     let roles = role_list(&body)?;
     match state
         .storage
-        .change_user_roles(
+        .change_holder_roles(
             &container.realm_id,
             container.client.as_deref(),
-            param(&params, "user")?,
+            holder,
             &roles,
             grant,
             &actor,
@@ -455,10 +514,7 @@ async fn change_user_roles(
         .await?
     {
         RoleMappingChange::Changed => Ok(StatusCode::NO_CONTENT),
-        RoleMappingChange::UserNotFound => Err(AdminError::Error(
-            StatusCode::NOT_FOUND,
-            "User not found".into(),
-        )),
+        RoleMappingChange::HolderNotFound => Err(not_found),
         RoleMappingChange::RoleNotFound => Err(AdminError::Error(
             StatusCode::NOT_FOUND,
             "Role not found".into(),
@@ -466,20 +522,20 @@ async fn change_user_roles(
     }
 }
 
-async fn add_user_roles(
+async fn add_holder_roles(
     State(state): State<OidcState>,
     Path(params): Params,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    change_user_roles(state, params, headers, body, true).await
+    change_holder_roles(state, params, headers, body, true).await
 }
 
-async fn remove_user_roles(
+async fn remove_holder_roles(
     State(state): State<OidcState>,
     Path(params): Params,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    change_user_roles(state, params, headers, body, false).await
+    change_holder_roles(state, params, headers, body, false).await
 }

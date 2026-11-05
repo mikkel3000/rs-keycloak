@@ -9,7 +9,9 @@ use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
-use rs_keycloak_storage_postgres::{GroupCreation, GroupRecord, MembershipChange};
+use rs_keycloak_storage_postgres::{
+    EffectiveRoles, GroupCreation, GroupRecord, MembershipChange, RoleHolder,
+};
 use serde_json::{Value, json};
 use uuid::Uuid;
 
@@ -64,12 +66,12 @@ fn brief(group: &GroupRecord) -> Value {
     fields
 }
 
-/// The full form returned for a single group.
-fn full(group: &GroupRecord) -> Value {
+/// The full form returned for a single group, with its mapped role names.
+fn full(group: &GroupRecord, roles: &EffectiveRoles) -> Value {
     let mut fields = brief(group);
     fields["attributes"] = json!({});
-    fields["realmRoles"] = json!([]);
-    fields["clientRoles"] = json!({});
+    fields["realmRoles"] = json!(roles.realm);
+    fields["clientRoles"] = json!(roles.clients);
     fields
 }
 
@@ -119,7 +121,7 @@ async fn create(
             let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
             // The reference returns the new group only for subgroups.
             if parent_id.is_some() {
-                let mut fields = full(&group);
+                let mut fields = full(&group, &EffectiveRoles::default());
                 if let Some(object) = fields.as_object_mut() {
                     object.remove("subGroupCount");
                 }
@@ -189,7 +191,12 @@ async fn list(
             .ok_or_else(group_not_found)?;
     }
     let groups = state.storage.groups(&realm_id, parent).await?;
-    let render = if parent.is_some() { full } else { brief };
+    // Subgroups are listed in the full form; their mapped roles are not
+    // read for lists.
+    let render = |group: &GroupRecord| match parent {
+        Some(_) => full(group, &EffectiveRoles::default()),
+        None => brief(group),
+    };
     Ok(json_response(Value::Array(
         groups.iter().map(render).collect(),
     )))
@@ -235,7 +242,11 @@ async fn read_group(
         .group(&realm_id, &id)
         .await?
         .ok_or_else(group_not_found)?;
-    Ok(json_response(full(&group)))
+    let roles = state
+        .storage
+        .holder_role_names(&realm_id, RoleHolder::Group(&group.id))
+        .await?;
+    Ok(json_response(full(&group, &roles)))
 }
 
 async fn delete_group(
