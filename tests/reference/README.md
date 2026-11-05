@@ -161,3 +161,13 @@ client may authenticate to introspection, which reports a token without its
 audience as inactive, while the authorization endpoint answers 403 and the
 token and revocation endpoints answer `Bearer-only not allowed`. The baseline
 passed a second, comparing run.
+
+`admin_client_update.py` records 27 client update cases in
+`admin-client-update-observations.json`. Updates are partial: absent fields
+keep their values, and a body `id` naming another client is ignored. They
+cover enabling, URLs, secret replacement, renaming (with a duplicate
+answering 409 "Duplicate resource error"), flows, and switching between
+public and confidential, which drops the secret and generates a new one.
+Each change is followed by a client-credentials grant or a read. A client
+created with redirect URIs and no web origins gets their origins. The
+baseline passed a second, comparing run.
