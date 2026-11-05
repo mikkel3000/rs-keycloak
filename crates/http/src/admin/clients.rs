@@ -1,6 +1,7 @@
 //! Admin REST routes for OpenID Connect clients within a realm.
 //!
-//! Follows the recorded cases in `tests/reference/admin-client-observations.json`.
+//! Follows the recorded cases in `tests/reference/admin-client-observations.json`
+//! and `tests/reference/admin-client-update-observations.json`.
 //! Confidential clients created here get secrets sealed with the operator
 //! key, so the secret can be returned later as the reference does. Settings
 //! for excluded or unmodelled features are refused, not ignored.
@@ -15,9 +16,11 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use rs_keycloak_protocols::client_urls::{validate_redirect_uri, validate_web_origin};
 use rs_keycloak_storage_postgres::{
-    ClientCreation, ClientRecord, NewClient, SealedSecret, client_secret_context,
+    ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
+    client_secret_context,
 };
 use serde_json::{Map, Value, json};
+use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -35,7 +38,7 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route(
             "/admin/realms/{realm}/clients/{client}",
-            get(read_client).delete(delete_client),
+            get(read_client).put(update_client).delete(delete_client),
         )
         .route(
             "/admin/realms/{realm}/clients/{client}/client-secret",
@@ -59,16 +62,18 @@ fn bool_field(fields: &Map<String, Value>, name: &str, default: bool) -> Result<
     }
 }
 
-fn string_list(fields: &Map<String, Value>, name: &str) -> Result<Vec<String>, AdminError> {
+/// Reads a string list, or `None` when the field is absent.
+fn string_list(fields: &Map<String, Value>, name: &str) -> Result<Option<Vec<String>>, AdminError> {
     match fields.get(name) {
-        None | Some(Value::Null) => Ok(Vec::new()),
+        None | Some(Value::Null) => Ok(None),
         Some(Value::Array(values)) if values.len() <= 64 => values
             .iter()
             .map(|value| match value {
                 Value::String(value) => Ok(value.clone()),
                 _ => Err(unparsable()),
             })
-            .collect(),
+            .collect::<Result<_, _>>()
+            .map(Some),
         Some(_) => Err(unparsable()),
     }
 }
@@ -91,11 +96,9 @@ fn require_value(
 /// Reads the supported client attributes: PKCE, which is always S256, and
 /// post-logout redirect URIs as a `##`-separated list, where `+` stands for
 /// the client's redirect URIs.
-fn client_attributes(attributes: Option<&Value>) -> Result<(Vec<String>, bool), AdminError> {
-    let attributes = match attributes {
-        None | Some(Value::Null) => return Ok((Vec::new(), false)),
-        Some(Value::Object(attributes)) => attributes,
-        Some(_) => return Err(unparsable()),
+fn client_attributes(attributes: &Value) -> Result<(Vec<String>, bool), AdminError> {
+    let Value::Object(attributes) = attributes else {
+        return Err(unparsable());
     };
     let mut uris = Vec::new();
     let mut uses_redirects = false;
@@ -189,6 +192,177 @@ fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
     fields
 }
 
+/// Request fields a client representation may carry here; the rest are
+/// refused rather than ignored.
+const SUPPORTED: [&str; 15] = [
+    "consentRequired",
+    "clientId",
+    "enabled",
+    "publicClient",
+    "secret",
+    "serviceAccountsEnabled",
+    "standardFlowEnabled",
+    "redirectUris",
+    "webOrigins",
+    "protocol",
+    "clientAuthenticatorType",
+    "directAccessGrantsEnabled",
+    "implicitFlowEnabled",
+    "bearerOnly",
+    "attributes",
+];
+
+/// Client settings, from the creation defaults or a stored client, with a
+/// request's fields applied on top.
+struct Settings {
+    enabled: bool,
+    public: bool,
+    standard_flow: bool,
+    service_accounts: bool,
+    bearer_only: bool,
+    consent_required: bool,
+    redirect_uris: Vec<String>,
+    web_origins: Vec<String>,
+    post_logout_redirect_uris: Vec<String>,
+    post_logout_uses_redirect_uris: bool,
+}
+
+impl Settings {
+    /// The reference defaults: a confidential client with standard flow.
+    fn defaults() -> Self {
+        Self {
+            enabled: true,
+            public: false,
+            standard_flow: true,
+            service_accounts: false,
+            bearer_only: false,
+            consent_required: false,
+            redirect_uris: Vec::new(),
+            web_origins: Vec::new(),
+            post_logout_redirect_uris: Vec::new(),
+            post_logout_uses_redirect_uris: false,
+        }
+    }
+
+    fn stored(client: &ClientRecord) -> Self {
+        Self {
+            enabled: client.enabled,
+            public: client.public,
+            standard_flow: client.standard_flow,
+            service_accounts: client.service_accounts,
+            bearer_only: client.bearer_only,
+            consent_required: client.consent_required,
+            redirect_uris: client.redirect_uris.clone(),
+            web_origins: client.web_origins.clone(),
+            post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
+            post_logout_uses_redirect_uris: client.post_logout_uses_redirect_uris,
+        }
+    }
+
+    /// Applies and validates the fields present; absent fields keep their
+    /// value, as reference updates do.
+    fn apply(mut self, fields: &Map<String, Value>, allowed: &[&str]) -> Result<Self, AdminError> {
+        if let Some(field) = fields
+            .keys()
+            .find(|key| !SUPPORTED.contains(&key.as_str()) && !allowed.contains(&key.as_str()))
+        {
+            return Err(AdminError::bad_request(format!(
+                "Unsupported client field: {field}"
+            )));
+        }
+        require_value(fields, "protocol", &json!("openid-connect"))?;
+        require_value(fields, "clientAuthenticatorType", &json!("client-secret"))?;
+        for excluded in ["directAccessGrantsEnabled", "implicitFlowEnabled"] {
+            require_value(fields, excluded, &json!(false))?;
+        }
+        self.enabled = bool_field(fields, "enabled", self.enabled)?;
+        self.public = bool_field(fields, "publicClient", self.public)?;
+        self.standard_flow = bool_field(fields, "standardFlowEnabled", self.standard_flow)?;
+        self.service_accounts =
+            bool_field(fields, "serviceAccountsEnabled", self.service_accounts)?;
+        self.bearer_only = bool_field(fields, "bearerOnly", self.bearer_only)?;
+        self.consent_required = bool_field(fields, "consentRequired", self.consent_required)?;
+        if self.public && self.service_accounts {
+            return Err(AdminError::bad_request(
+                "Public clients cannot use service accounts",
+            ));
+        }
+        if let Some(uris) = string_list(fields, "redirectUris")? {
+            for uri in &uris {
+                validate_redirect_uri(uri, false).map_err(AdminError::bad_request)?;
+            }
+            self.redirect_uris = uris;
+        }
+        if let Some(origins) = string_list(fields, "webOrigins")? {
+            for origin in &origins {
+                validate_web_origin(origin, false).map_err(AdminError::bad_request)?;
+            }
+            self.web_origins = origins;
+        }
+        if let Some(attributes) = fields.get("attributes").filter(|value| !value.is_null()) {
+            (
+                self.post_logout_redirect_uris,
+                self.post_logout_uses_redirect_uris,
+            ) = client_attributes(attributes)?;
+        }
+        Ok(self)
+    }
+
+    fn client<'a>(&'a self, client_identifier: &'a str) -> NewClient<'a> {
+        NewClient {
+            client_identifier,
+            enabled: self.enabled,
+            public: self.public,
+            standard_flow: self.standard_flow,
+            service_accounts: self.service_accounts,
+            bearer_only: self.bearer_only,
+            redirect_uris: &self.redirect_uris,
+            web_origins: &self.web_origins,
+            post_logout_redirect_uris: &self.post_logout_redirect_uris,
+            post_logout_uses_redirect_uris: self.post_logout_uses_redirect_uris,
+            consent_required: self.consent_required,
+        }
+    }
+}
+
+/// Reads a requested `clientId`, or `None` when the field is absent.
+fn client_identifier(fields: &Map<String, Value>) -> Result<Option<String>, AdminError> {
+    match fields.get("clientId") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if !value.is_empty() && value.len() <= 255 => {
+            Ok(Some(value.clone()))
+        }
+        Some(_) => Err(AdminError::bad_request("Invalid clientId")),
+    }
+}
+
+/// Reads a requested secret, or `None` when the field is absent.
+fn requested_secret(fields: &Map<String, Value>) -> Result<Option<Zeroizing<String>>, AdminError> {
+    match fields.get("secret") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(secret)) if (32..=1024).contains(&secret.len()) => {
+            Ok(Some(Zeroizing::new(secret.clone())))
+        }
+        Some(_) => Err(AdminError::bad_request(
+            "Client secret must be 32-1024 bytes",
+        )),
+    }
+}
+
+/// The origins of redirect URIs, which the reference gives a new client
+/// created without web origins.
+fn redirect_origins(redirect_uris: &[String]) -> Vec<String> {
+    let mut origins: Vec<String> = redirect_uris
+        .iter()
+        .filter_map(|uri| Url::parse(uri).ok())
+        .map(|uri| uri.origin().ascii_serialization())
+        .filter(|origin| validate_web_origin(origin, false).is_ok())
+        .collect();
+    origins.sort();
+    origins.dedup();
+    origins
+}
+
 async fn create_client(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -198,96 +372,29 @@ async fn create_client(
     let actor = authorize(&state, &headers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    const SUPPORTED: [&str; 15] = [
-        "consentRequired",
-        "clientId",
-        "enabled",
-        "publicClient",
-        "secret",
-        "serviceAccountsEnabled",
-        "standardFlowEnabled",
-        "redirectUris",
-        "webOrigins",
-        "protocol",
-        "clientAuthenticatorType",
-        "directAccessGrantsEnabled",
-        "implicitFlowEnabled",
-        "bearerOnly",
-        "attributes",
-    ];
-    if let Some(field) = fields.keys().find(|key| !SUPPORTED.contains(&key.as_str())) {
-        return Err(AdminError::bad_request(format!(
-            "Unsupported client field: {field}"
-        )));
+    let mut settings = Settings::defaults().apply(&fields, &[])?;
+    if !fields.contains_key("webOrigins") {
+        settings.web_origins = redirect_origins(&settings.redirect_uris);
     }
-    require_value(&fields, "protocol", &json!("openid-connect"))?;
-    require_value(&fields, "clientAuthenticatorType", &json!("client-secret"))?;
-    for excluded in ["directAccessGrantsEnabled", "implicitFlowEnabled"] {
-        require_value(&fields, excluded, &json!(false))?;
-    }
-    let (post_logout_redirect_uris, post_logout_uses_redirect_uris) =
-        client_attributes(fields.get("attributes"))?;
     let id = Uuid::new_v4().to_string();
     // The reference generates a client identifier when none is given.
-    let client_identifier = match fields.get("clientId") {
-        None | Some(Value::Null) => id.clone(),
-        Some(Value::String(value)) if !value.is_empty() && value.len() <= 255 => value.clone(),
-        Some(_) => return Err(AdminError::bad_request("Invalid clientId")),
-    };
-    let public = bool_field(&fields, "publicClient", false)?;
-    let service_accounts = bool_field(&fields, "serviceAccountsEnabled", false)?;
-    if public && service_accounts {
-        return Err(AdminError::bad_request(
-            "Public clients cannot use service accounts",
-        ));
-    }
-    let redirect_uris = string_list(&fields, "redirectUris")?;
-    for uri in &redirect_uris {
-        validate_redirect_uri(uri, false).map_err(AdminError::bad_request)?;
-    }
-    let web_origins = string_list(&fields, "webOrigins")?;
-    for origin in &web_origins {
-        validate_web_origin(origin, false).map_err(AdminError::bad_request)?;
-    }
-    let secret = match (public, fields.get("secret")) {
-        (true, None | Some(Value::Null)) => None,
+    let client_identifier = client_identifier(&fields)?.unwrap_or_else(|| id.clone());
+    let secret = match (settings.public, requested_secret(&fields)?) {
+        (true, None) => None,
         (true, Some(_)) => {
             return Err(AdminError::bad_request(
                 "Public clients cannot have a secret",
             ));
         }
-        (false, None | Some(Value::Null)) => {
-            Some(seal(&state, &realm_id, &id, random_token().as_bytes())?)
-        }
-        (false, Some(Value::String(secret))) if (32..=1024).contains(&secret.len()) => {
-            let secret = Zeroizing::new(secret.clone());
-            Some(seal(&state, &realm_id, &id, secret.as_bytes())?)
-        }
-        (false, Some(_)) => {
-            return Err(AdminError::bad_request(
-                "Client secret must be 32-1024 bytes",
-            ));
-        }
-    };
-    let client = NewClient {
-        client_identifier: &client_identifier,
-        enabled: bool_field(&fields, "enabled", true)?,
-        public,
-        standard_flow: bool_field(&fields, "standardFlowEnabled", true)?,
-        service_accounts,
-        bearer_only: bool_field(&fields, "bearerOnly", false)?,
-        redirect_uris: &redirect_uris,
-        web_origins: &web_origins,
-        post_logout_redirect_uris: &post_logout_redirect_uris,
-        post_logout_uses_redirect_uris,
-        consent_required: bool_field(&fields, "consentRequired", false)?,
+        (false, None) => Some(seal(&state, &realm_id, &id, random_token().as_bytes())?),
+        (false, Some(secret)) => Some(seal(&state, &realm_id, &id, secret.as_bytes())?),
     };
     let created = state
         .storage
         .create_client(
             &realm_id,
             &id,
-            &client,
+            &settings.client(&client_identifier),
             secret.as_ref(),
             &Uuid::new_v4().to_string(),
             &actor,
@@ -305,6 +412,65 @@ async fn create_client(
         ClientCreation::Exists => Err(AdminError::Message(
             StatusCode::CONFLICT,
             format!("Client {client_identifier} already exists"),
+        )),
+    }
+}
+
+/// Applies a partial representation; a body `id` is ignored, as the
+/// reference ignores it.
+async fn update_client(
+    State(state): State<OidcState>,
+    Path((realm, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let actor = authorize(&state, &headers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let stored = state
+        .storage
+        .client(&realm_id, &id)
+        .await?
+        .ok_or_else(client_not_found)?;
+    let fields = json_object(&body)?;
+    let settings = Settings::stored(&stored).apply(&fields, &["id"])?;
+    let client_identifier = client_identifier(&fields)?.unwrap_or(stored.client_identifier);
+    let sealed = match (settings.public, requested_secret(&fields)?) {
+        (true, Some(_)) => {
+            return Err(AdminError::bad_request(
+                "Public clients cannot have a secret",
+            ));
+        }
+        (true, None) => None,
+        (false, Some(secret)) => Some(seal(&state, &realm_id, &id, secret.as_bytes())?),
+        // A client that becomes confidential gets a new secret.
+        (false, None) if stored.public => {
+            Some(seal(&state, &realm_id, &id, random_token().as_bytes())?)
+        }
+        (false, None) => None,
+    };
+    let secret = match (&sealed, settings.public && !stored.public) {
+        (Some(sealed), _) => SecretChange::Replace(sealed),
+        (None, true) => SecretChange::Remove,
+        (None, false) => SecretChange::Keep,
+    };
+    let updated = state
+        .storage
+        .update_client(
+            &realm_id,
+            &id,
+            &settings.client(&client_identifier),
+            secret,
+            &Uuid::new_v4().to_string(),
+            &actor,
+        )
+        .await?;
+    match updated {
+        ClientUpdate::Updated => Ok(StatusCode::NO_CONTENT),
+        ClientUpdate::NotFound => Err(client_not_found()),
+        ClientUpdate::Exists => Err(AdminError::OAuth(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Duplicate resource error",
         )),
     }
 }

@@ -63,6 +63,10 @@ pub struct ClientRecord {
     pub redirect_uris: Vec<String>,
     /// Exact web origins, sorted.
     pub web_origins: Vec<String>,
+    /// Exact post-logout redirect URIs, sorted.
+    pub post_logout_redirect_uris: Vec<String>,
+    /// Whether every redirect URI is also a post-logout redirect URI.
+    pub post_logout_uses_redirect_uris: bool,
     /// Recoverable secret, if the client has one; hashed secrets are absent.
     pub secret: Option<SealedSecret>,
 }
@@ -75,7 +79,27 @@ pub enum ClientCreation {
     Exists,
 }
 
-const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.bearer_only, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins";
+/// What an update does to a client's secret.
+pub enum SecretChange<'a> {
+    /// The stored secret, sealed or hashed, stays.
+    Keep,
+    /// The client gets this sealed secret.
+    Replace(&'a SealedSecret),
+    /// The client becomes public and loses its secret.
+    Remove,
+}
+
+/// Outcome of updating a client.
+pub enum ClientUpdate {
+    /// The client was updated.
+    Updated,
+    /// No client has this internal identifier.
+    NotFound,
+    /// Another client of the realm has the requested identifier.
+    Exists,
+}
+
+const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.bearer_only, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id ORDER BY p.redirect_uri) AS post_logout_redirect_uris, c.post_logout_uses_redirect_uris";
 
 fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
     let sealed: Option<Vec<u8>> = row.try_get("secret_sealed")?;
@@ -91,6 +115,8 @@ fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
         consent_required: row.try_get("consent_required")?,
         redirect_uris: row.try_get("redirect_uris")?,
         web_origins: row.try_get("web_origins")?,
+        post_logout_redirect_uris: row.try_get("post_logout_redirect_uris")?,
+        post_logout_uses_redirect_uris: row.try_get("post_logout_uses_redirect_uris")?,
         secret: sealed
             .zip(key_id)
             .map(|(sealed, key_id)| SealedSecret { sealed, key_id }),
@@ -167,6 +193,108 @@ impl Storage {
         audit(conn, actor_user_id, "client_created").await?;
         tx.commit().await?;
         Ok(ClientCreation::Created)
+    }
+
+    /// Replaces a client's settings, redirects and origins. A rename renames
+    /// the service-account user, and enabling service accounts creates that
+    /// user if the client has none.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn update_client(
+        &self,
+        realm_id: &str,
+        id: &str,
+        client: &NewClient<'_>,
+        secret: SecretChange<'_>,
+        service_account_user_id: &str,
+        actor_user_id: &str,
+    ) -> Result<ClientUpdate, StorageError> {
+        let secret_fits = match secret {
+            SecretChange::Keep => true,
+            SecretChange::Replace(_) => !client.public,
+            SecretChange::Remove => client.public,
+        };
+        if !secret_fits || (client.public && client.service_accounts) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let current: Option<(String, bool)> = sqlx::query_as(
+            "SELECT client_id, public_client FROM clients WHERE realm_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(realm_id)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some((current_identifier, was_public)) = current else {
+            tx.commit().await?;
+            return Ok(ClientUpdate::NotFound);
+        };
+        if matches!(secret, SecretChange::Keep) && was_public != client.public {
+            return Err(StorageError::InvalidInput);
+        }
+        if current_identifier != client.client_identifier {
+            let taken: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM clients WHERE realm_id = $1 AND client_id = $2)",
+            )
+            .bind(realm_id)
+            .bind(client.client_identifier)
+            .fetch_one(&mut *conn)
+            .await?;
+            if taken {
+                tx.commit().await?;
+                return Ok(ClientUpdate::Exists);
+            }
+        }
+        let (change_secret, sealed) = match secret {
+            SecretChange::Keep => (false, None),
+            SecretChange::Replace(sealed) => (true, Some(sealed)),
+            SecretChange::Remove => (true, None),
+        };
+        sqlx::query("UPDATE clients SET client_id = $3, enabled = $4, public_client = $5, standard_flow_enabled = $6, service_accounts_enabled = $7, consent_required = $8, bearer_only = $9, post_logout_uses_redirect_uris = $10, secret_phc = CASE WHEN $11 THEN NULL ELSE secret_phc END, secret_sealed = CASE WHEN $11 THEN $12 ELSE secret_sealed END, secret_key_id = CASE WHEN $11 THEN $13 ELSE secret_key_id END WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id).bind(id).bind(client.client_identifier).bind(client.enabled).bind(client.public)
+            .bind(client.standard_flow).bind(client.service_accounts).bind(client.consent_required)
+            .bind(client.bearer_only).bind(client.post_logout_uses_redirect_uris).bind(change_secret)
+            .bind(sealed.map(|secret| secret.sealed.as_slice())).bind(sealed.map(|secret| secret.key_id.as_str()))
+            .execute(&mut *conn).await?;
+        for table in [
+            "client_redirect_uris",
+            "client_post_logout_redirect_uris",
+            "client_web_origins",
+        ] {
+            sqlx::query(&format!(
+                "DELETE FROM {table} WHERE realm_id = $1 AND client_id = $2"
+            ))
+            .bind(realm_id)
+            .bind(id)
+            .execute(&mut *conn)
+            .await?;
+        }
+        for uri in client.redirect_uris {
+            sqlx::query("INSERT INTO client_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+                .bind(realm_id).bind(id).bind(uri).execute(&mut *conn).await?;
+        }
+        for uri in client.post_logout_redirect_uris {
+            sqlx::query("INSERT INTO client_post_logout_redirect_uris (realm_id, client_id, redirect_uri) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+                .bind(realm_id).bind(id).bind(uri).execute(&mut *conn).await?;
+        }
+        for origin in client.web_origins {
+            sqlx::query("INSERT INTO client_web_origins (realm_id, client_id, origin) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING")
+                .bind(realm_id).bind(id).bind(origin).execute(&mut *conn).await?;
+        }
+        let username = service_account_username(client.client_identifier);
+        let renamed = sqlx::query("UPDATE users SET username = $3, username_normalized = $3 WHERE realm_id = $1 AND service_account_client_id = $2")
+            .bind(realm_id).bind(id).bind(&username).execute(&mut *conn).await?.rows_affected();
+        if client.service_accounts && renamed == 0 {
+            let inserted = sqlx::query("INSERT INTO users (realm_id, id, username, username_normalized, service_account_client_id, enabled) VALUES ($1, $2, $3, $3, $4, true) ON CONFLICT DO NOTHING")
+                .bind(realm_id).bind(service_account_user_id).bind(&username).bind(id)
+                .execute(&mut *conn).await?.rows_affected();
+            if inserted == 0 {
+                return Err(StorageError::Conflict);
+            }
+        }
+        audit(conn, actor_user_id, "client_updated").await?;
+        tx.commit().await?;
+        Ok(ClientUpdate::Updated)
     }
 
     /// Reads one client by internal identifier.

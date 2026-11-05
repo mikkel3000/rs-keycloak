@@ -234,9 +234,9 @@ does not allow loopback HTTP.
 
 Remaining differences: the representation lists only the 13 modelled
 settings of the reference's 26 fields; direct access, implicit, non-OIDC
-protocols, other
-authenticators, attributes other than S256 PKCE, and client updates are
-refused or missing; the CLI cannot rotate a sealed secret.
+protocols, other authenticators and attributes other than S256 PKCE and
+post-logout redirect URIs are refused; the CLI cannot rotate a sealed
+secret.
 
 ## Realm roles and role mappings
 
@@ -542,3 +542,23 @@ reference checks the client first; the `realm-management` roles grant
 nothing yet, because admin access still comes from the master `admin` role;
 the logout refusal is applied by analogy with the token and revocation
 endpoints and was not recorded.
+
+## Client updates
+
+`PUT /admin/realms/{realm}/clients/{id}` applies a partial representation,
+following the 27 recorded cases in
+`tests/reference/admin-client-update-observations.json`: absent fields keep
+their values, a body `id` is ignored, and a taken `clientId` answers 409
+"Duplicate resource error". Creation and update share one settings parser
+over either the creation defaults or the stored client, so both accept and
+refuse the same fields. A rename renames the service-account user; enabling
+service accounts creates that user if missing; becoming public drops the
+secret and becoming confidential seals a new one. Every update bumps the
+client revision, so authentications in flight with old settings fail. A
+client created with redirect URIs and no web origins now gets their
+origins, as in the reference. `tests/public/admin_client_update_contract.py`
+checks 3 groups, the slowest in 263 ms.
+
+Remaining differences: unmodelled fields such as `description`, `name`,
+`rootUrl` and `baseUrl` are refused rather than stored; a client changed to
+confidential that has a hashed secret from the CLI keeps it.

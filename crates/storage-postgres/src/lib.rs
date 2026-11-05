@@ -16,7 +16,9 @@ mod user_admin;
 
 pub use account::AccountSession;
 pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
-pub use client_admin::{ClientCreation, ClientRecord, NewClient, SealedSecret};
+pub use client_admin::{
+    ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
+};
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
