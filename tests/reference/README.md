@@ -181,3 +181,12 @@ realm, but without `view-realm` only 4 fields; realm listing shows only the
 token's realm. No role reaches another realm or creates realms, and a token
 without roles is refused everywhere. `create-client` alone cannot use
 `POST /clients`. The baseline passed a second, comparing run.
+
+`group_roles.py` records 20 group role cases in `group-role-observations.json`:
+realm and client role mappings on a parent and a child group, unknown roles
+("Role not found") and groups ("Could not find group by id"), the
+`realmRoles` of a group read, and a service account's token and effective
+mappings after joining the child group, after an unmapping and after the
+child group's deletion. Members inherit the roles of the group and its
+parents; direct user mappings and a role's user list leave them out. The
+baseline passed a second, comparing run.
