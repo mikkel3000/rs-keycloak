@@ -1,4 +1,6 @@
-//! Keycloak admin REST routes for realms, authorized by master `admin` tokens.
+//! Keycloak admin REST routes for realms. Master `admin` tokens reach every
+//! realm; a realm's own tokens reach that realm through its
+//! `realm-management` roles.
 //!
 //! Responses follow the recorded 26.8.1 cases in
 //! `tests/reference/admin-realm-observations.json`. Only the representation
@@ -12,13 +14,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, MASTER_REALM, RealmCreation, RealmDeletion, RealmSettings, RealmSmtp,
-    StorageError,
+    AccessTokenStatus, Actor, MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord,
+    RealmSettings, RealmSmtp, StorageError,
 };
 use serde_json::{Value, json};
 use uuid::Uuid;
 
-use crate::oidc::{OidcState, digest, valid_realm, verified_access};
+use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 
 mod clients;
 mod groups;
@@ -32,7 +34,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(groups::routes())
         .merge(roles::routes())
         .merge(users::routes())
-        .route("/admin/realms", post(create_realm))
+        .route("/admin/realms", post(create_realm).get(list_realms))
         .route(
             "/admin/realms/{realm}",
             get(read_realm).put(update_realm).delete(delete_realm),
@@ -43,7 +45,7 @@ pub(crate) fn routes() -> Router<OidcState> {
 enum AdminError {
     /// Missing, invalid, revoked or sessionless-and-unknown token.
     Unauthorized,
-    /// The token holder lacks the master `admin` role.
+    /// The token holder lacks the access the request needs.
     Forbidden,
     /// The named realm does not exist.
     RealmNotFound,
@@ -97,21 +99,87 @@ impl IntoResponse for AdminError {
     }
 }
 
-/// Resolves the acting master-realm user from the bearer token.
-async fn authorize(state: &OidcState, headers: &HeaderMap) -> Result<String, AdminError> {
+/// What an admin request needs in its realm, following the recorded cases
+/// in `tests/reference/admin-permission-observations.json`.
+#[derive(Clone, Copy)]
+enum Access {
+    /// Any `realm-management` role, enough to read the realm's name.
+    AnyRole,
+    QueryUsers,
+    ViewUsers,
+    ManageUsers,
+    QueryGroups,
+    QueryClients,
+    ViewClients,
+    ManageClients,
+    ViewRealm,
+    ManageRealm,
+}
+
+impl Access {
+    /// The `realm-management` roles that grant this access. `realm-admin`
+    /// reaches every one through its composites.
+    fn roles(self) -> &'static [&'static str] {
+        match self {
+            Self::AnyRole => &[],
+            Self::QueryUsers => &["query-users", "view-users", "manage-users"],
+            Self::ViewUsers => &["view-users", "manage-users"],
+            Self::ManageUsers => &["manage-users"],
+            Self::QueryGroups => &["query-groups", "view-users", "manage-users"],
+            Self::QueryClients => &["query-clients", "view-clients", "manage-clients"],
+            Self::ViewClients => &["view-clients", "manage-clients"],
+            Self::ManageClients => &["manage-clients"],
+            Self::ViewRealm => &["view-realm", "manage-realm"],
+            Self::ManageRealm => &["manage-realm"],
+        }
+    }
+}
+
+/// What an authenticated admin may do in the requested realm.
+enum Grants {
+    /// A master `admin` reaches every realm.
+    All,
+    /// A token of the managed realm holds these effective
+    /// `realm-management` roles.
+    Roles(Vec<String>),
+}
+
+impl Grants {
+    fn allows(&self, access: Access) -> bool {
+        match self {
+            Self::All => true,
+            Self::Roles(roles) if matches!(access, Access::AnyRole) => !roles.is_empty(),
+            Self::Roles(roles) => access
+                .roles()
+                .iter()
+                .any(|needed| roles.iter().any(|role| role == needed)),
+        }
+    }
+}
+
+/// Resolves the bearer token to its live user, in the realm that issued it.
+async fn token_holder(
+    state: &OidcState,
+    headers: &HeaderMap,
+) -> Result<(String, Actor), AdminError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "))
         .ok_or(AdminError::Unauthorized)?;
-    let claims = verified_access(state, MASTER_REALM, token)
+    let (realm, claims) = verified_access_any(state, token)
         .await
         .map_err(|()| AdminError::Unavailable)?
+        .ok_or(AdminError::Unauthorized)?;
+    let realm_id = state
+        .storage
+        .realm_id_by_name(&realm)
+        .await?
         .ok_or(AdminError::Unauthorized)?;
     let user_id = match state
         .storage
         .active_access_token(
-            MASTER_REALM,
+            &realm_id,
             &claims.azp,
             claims.sid.as_deref(),
             &claims.sub,
@@ -125,10 +193,66 @@ async fn authorize(state: &OidcState, headers: &HeaderMap) -> Result<String, Adm
         | AccessTokenStatus::Revoked
         | AccessTokenStatus::SessionNotFound => return Err(AdminError::Unauthorized),
     };
-    if !state.storage.is_master_admin(&user_id).await? {
+    Ok((realm, Actor { realm_id, user_id }))
+}
+
+/// Resolves the bearer token and what it may do in the named realm. Only
+/// master tokens reach other realms; any other realm's token is refused.
+async fn admin(
+    state: &OidcState,
+    headers: &HeaderMap,
+    realm: &str,
+) -> Result<(Actor, Grants), AdminError> {
+    let (token_realm, actor) = token_holder(state, headers).await?;
+    let grants = grants(state, &token_realm, &actor, realm).await?;
+    Ok((actor, grants))
+}
+
+/// What a token holder of `token_realm` may do in `realm`.
+async fn grants(
+    state: &OidcState,
+    token_realm: &str,
+    actor: &Actor,
+    realm: &str,
+) -> Result<Grants, AdminError> {
+    Ok(if actor.realm_id == MASTER_REALM {
+        if !state.storage.is_master_admin(&actor.user_id).await? {
+            return Err(AdminError::Forbidden);
+        }
+        Grants::All
+    } else if token_realm == realm {
+        let mut roles = state
+            .storage
+            .effective_roles(&actor.realm_id, &actor.user_id)
+            .await?;
+        Grants::Roles(roles.clients.remove("realm-management").unwrap_or_default())
+    } else {
+        return Err(AdminError::Forbidden);
+    })
+}
+
+/// Authorizes one kind of access to the named realm.
+async fn authorize(
+    state: &OidcState,
+    headers: &HeaderMap,
+    realm: &str,
+    access: Access,
+) -> Result<Actor, AdminError> {
+    let (actor, grants) = admin(state, headers, realm).await?;
+    if grants.allows(access) {
+        Ok(actor)
+    } else {
+        Err(AdminError::Forbidden)
+    }
+}
+
+/// Authorizes a master `admin`, the only one who creates or deletes realms.
+async fn authorize_master(state: &OidcState, headers: &HeaderMap) -> Result<Actor, AdminError> {
+    let (_, actor) = token_holder(state, headers).await?;
+    if actor.realm_id != MASTER_REALM || !state.storage.is_master_admin(&actor.user_id).await? {
         return Err(AdminError::Forbidden);
     }
-    Ok(user_id)
+    Ok(actor)
 }
 
 /// The supported subset of a RealmRepresentation.
@@ -276,7 +400,7 @@ async fn create_realm(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize_master(&state, &headers).await?;
     let realm = parse_new_realm(&body)?;
     let created = state
         .storage
@@ -309,21 +433,81 @@ async fn read_realm(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    let (_, grants) = admin(&state, &headers, &name).await?;
+    if !grants.allows(Access::AnyRole) {
+        return Err(AdminError::Forbidden);
+    }
     let realm = state
         .storage
         .realm_by_name(&name)
         .await?
         .ok_or(AdminError::RealmNotFound)?;
+    if !grants.allows(Access::ViewRealm) {
+        // The reference's brief representation; only its field names were
+        // recorded, and these values are the defaults this server has.
+        let mut brief = json!({
+            "realm": realm.name,
+            "bruteForceProtected": false,
+            "organizationsEnabled": false,
+            "supportedLocales": [],
+        });
+        if grants.allows(Access::ViewUsers) {
+            brief["registrationEmailAsUsername"] = json!(false);
+        }
+        return Ok(json_text(&brief));
+    }
+    Ok(json_text(&realm_representation(&realm)))
+}
+
+fn realm_representation(realm: &RealmRecord) -> Value {
     let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed, "verifyEmail": realm.verify_email });
     if let Some(smtp) = &realm.smtp {
         representation["smtpServer"] = smtp_representation(smtp);
     }
-    Ok((
+    representation
+}
+
+/// Lists the realms a token reaches: every realm for a master `admin`, and
+/// only its own realm, by name alone without `view-realm`, for a realm's
+/// token.
+async fn list_realms(
+    State(state): State<OidcState>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    let (token_realm, actor) = token_holder(&state, &headers).await?;
+    let grants = grants(&state, &token_realm, &actor, &token_realm).await?;
+    let listed: Vec<Value> = match grants {
+        Grants::All => state
+            .storage
+            .realms()
+            .await?
+            .iter()
+            .map(realm_representation)
+            .collect(),
+        grants if grants.allows(Access::AnyRole) => {
+            let realm = state
+                .storage
+                .realm_by_name(&token_realm)
+                .await?
+                .ok_or(AdminError::Unauthorized)?;
+            if grants.allows(Access::ViewRealm) {
+                vec![realm_representation(&realm)]
+            } else {
+                vec![json!({ "realm": realm.name })]
+            }
+        }
+        _ => return Err(AdminError::Forbidden),
+    };
+    Ok(json_text(&Value::Array(listed)))
+}
+
+/// A JSON body with the reference's content type.
+fn json_text(value: &Value) -> Response {
+    (
         [(header::CONTENT_TYPE, "application/json;charset=UTF-8")],
-        representation.to_string(),
+        value.to_string(),
     )
-        .into_response())
+        .into_response()
 }
 
 /// Applies a partial realm representation of the stored settings.
@@ -333,7 +517,7 @@ async fn update_realm(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &name, Access::ManageRealm).await?;
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(&body) else {
         return Err(AdminError::bad_request(
             "unable to read contents from stream",
@@ -397,7 +581,7 @@ async fn delete_realm(
     Path(name): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize_master(&state, &headers).await?;
     match state.storage.delete_realm(&name, &actor).await? {
         RealmDeletion::Deleted => Ok(StatusCode::NO_CONTENT),
         RealmDeletion::NotFound => Err(AdminError::RealmNotFound),

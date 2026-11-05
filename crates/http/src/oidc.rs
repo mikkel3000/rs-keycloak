@@ -1249,6 +1249,19 @@ pub(crate) async fn verified_access(
     realm: &str,
     token: &str,
 ) -> Result<Option<VerifiedToken>, ()> {
+    Ok(verified_access_any(s, token)
+        .await?
+        .filter(|(issuer, _)| issuer == realm)
+        .map(|(_, claims)| claims))
+}
+
+/// Verifies a live access token from any realm; returns the issuing realm's
+/// name with the claims. All realms share the signing key, so one
+/// verification is enough to trust the issuer.
+pub(crate) async fn verified_access_any(
+    s: &OidcState,
+    token: &str,
+) -> Result<Option<(String, VerifiedToken)>, ()> {
     if token.len() > 8192 {
         return Ok(None);
     }
@@ -1268,11 +1281,18 @@ pub(crate) async fn verified_access(
         .duration_since(UNIX_EPOCH)
         .map_err(|_| ())?
         .as_secs();
-    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
-    if claims.iss != issuer || claims.iat > now || claims.exp <= now || claims.aud != claims.azp {
+    let prefix = format!("{}/realms/", s.issuer_base.trim_end_matches('/'));
+    let Some(realm) = claims
+        .iss
+        .strip_prefix(&prefix)
+        .filter(|realm| valid_realm(realm))
+    else {
+        return Ok(None);
+    };
+    if claims.iat > now || claims.exp <= now || claims.aud != claims.azp {
         return Ok(None);
     }
-    Ok(Some(claims))
+    Ok(Some((realm.to_owned(), claims)))
 }
 
 async fn verified_refresh(

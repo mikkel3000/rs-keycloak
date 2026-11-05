@@ -69,8 +69,36 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0024_update_profile.sql"),
     include_str!("../../../migrations/0025_client_roles.sql"),
     include_str!("../../../migrations/0026_bearer_only.sql"),
+    include_str!("../../../migrations/0027_realm_admins.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
+
+/// The user an admin change is recorded against, in the realm that issued
+/// the user's token: the master realm, or the realm being managed.
+#[derive(Clone, Debug)]
+pub struct Actor {
+    /// Realm that issued the actor's token.
+    pub realm_id: String,
+    /// The acting user, a person or a client's service account.
+    pub user_id: String,
+}
+
+/// Records an admin event against its actor in the current transaction.
+async fn audit(
+    connection: &mut sqlx::PgConnection,
+    actor: &Actor,
+    event: &str,
+) -> Result<(), StorageError> {
+    sqlx::query(
+        "INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, $3)",
+    )
+    .bind(&actor.realm_id)
+    .bind(&actor.user_id)
+    .bind(event)
+    .execute(connection)
+    .await?;
+    Ok(())
+}
 
 /// Storage failures are intentionally independent of PostgreSQL error details.
 #[derive(Debug, Error)]

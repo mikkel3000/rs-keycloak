@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 use super::users::{
     json_object, json_response, realm_id, representation as user_representation, unparsable,
 };
-use super::{AdminError, authorize};
+use super::{Access, AdminError, authorize};
 use crate::oidc::{OidcState, random_token};
 
 pub(super) fn routes() -> Router<OidcState> {
@@ -369,7 +369,7 @@ async fn create_client(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
     let mut settings = Settings::defaults().apply(&fields, &[])?;
@@ -424,7 +424,7 @@ async fn update_client(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let stored = state
         .storage
@@ -481,7 +481,7 @@ async fn list_clients(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::QueryClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if let Some(name) = params.keys().find(|name| name.as_str() != "clientId") {
         return Err(AdminError::bad_request(format!(
@@ -516,7 +516,7 @@ async fn read_client(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let client = find_client(&state, &realm_id, &id).await?;
     let secret = open(&state, &realm_id, &client)?;
@@ -528,7 +528,7 @@ async fn read_secret(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let client = find_client(&state, &realm_id, &id).await?;
     let mut credential = json!({ "type": "secret" });
@@ -543,7 +543,7 @@ async fn regenerate_secret(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let client = find_client(&state, &realm_id, &id).await?;
     if client.public {
@@ -566,7 +566,7 @@ async fn service_account_user(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let client = find_client(&state, &realm_id, &id).await?;
     let Some(user_id) = state
@@ -595,7 +595,7 @@ async fn delete_client(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if state.storage.delete_client(&realm_id, &id, &actor).await? {
         Ok(StatusCode::NO_CONTENT)

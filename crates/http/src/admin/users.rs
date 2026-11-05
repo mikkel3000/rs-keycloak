@@ -19,7 +19,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::{AdminError, authorize};
+use super::{Access, AdminError, authorize};
 use crate::oidc::{OidcState, digest, random_token};
 
 /// Keycloak's default page size for user searches.
@@ -159,7 +159,7 @@ async fn create_user(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
     const SUPPORTED: [&str; 7] = [
@@ -243,7 +243,7 @@ async fn search_users(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::QueryUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if let Some(name) = params.keys().find(|name| {
         !matches!(
@@ -285,7 +285,7 @@ async fn count_users(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::QueryUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     Ok(json_response(json!(
         state.storage.count_users(&realm_id).await?
@@ -297,7 +297,7 @@ async fn read_user(
     Path((realm, user)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let user = state
         .storage
@@ -312,7 +312,7 @@ async fn delete_user(
     Path((realm, user)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if state.storage.delete_user(&realm_id, &user, &actor).await? {
         Ok(StatusCode::NO_CONTENT)
@@ -327,7 +327,7 @@ async fn reset_password(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
     if let Some(field) = fields
@@ -401,7 +401,7 @@ async fn list_consents(
     Path((realm, user)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let consents = state
         .storage
@@ -428,7 +428,7 @@ async fn revoke_consent(
     Path((realm, user, client)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     // The pinned UserResource reports an unknown client before the consent.
     if state
@@ -461,7 +461,7 @@ async fn list_credentials(
     Path((realm, user)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let credentials = state
         .storage
@@ -497,7 +497,7 @@ async fn delete_credential(
     Path((realm, user, credential)): Path<(String, String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if state
         .storage
@@ -536,7 +536,7 @@ async fn execute_actions_email(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm_name, Access::ManageUsers).await?;
     let realm = state
         .storage
         .realm_by_name(&realm_name)
@@ -632,7 +632,7 @@ async fn send_verify_email(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm_name, Access::ManageUsers).await?;
     let realm = state
         .storage
         .realm_by_name(&realm_name)

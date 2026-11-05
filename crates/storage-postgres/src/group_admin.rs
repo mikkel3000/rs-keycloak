@@ -1,11 +1,10 @@
 //! Group administration and user group membership.
 
+use sqlx::Row;
 use sqlx::postgres::PgRow;
-use sqlx::{PgConnection, Row};
 
-use crate::realm_admin::MASTER_REALM;
 use crate::user_admin::{USER_COLUMNS, UserRecord, user_row};
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// A group with the fields of the admin representation.
 pub struct GroupRecord {
@@ -51,22 +50,6 @@ fn group_row(row: &PgRow) -> Result<GroupRecord, StorageError> {
         path: row.try_get("path")?,
         sub_group_count: row.try_get("sub_group_count")?,
     })
-}
-
-async fn audit(
-    connection: &mut PgConnection,
-    actor: &str,
-    event: &str,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, $3)",
-    )
-    .bind(MASTER_REALM)
-    .bind(actor)
-    .bind(event)
-    .execute(connection)
-    .await?;
-    Ok(())
 }
 
 impl Storage {
@@ -119,7 +102,7 @@ impl Storage {
         id: &str,
         parent_id: Option<&str>,
         name: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<GroupCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -144,7 +127,7 @@ impl Storage {
         .bind(id)
         .fetch_one(&mut *conn)
         .await?;
-        audit(conn, actor_user_id, "group_created").await?;
+        audit(conn, actor, "group_created").await?;
         tx.commit().await?;
         Ok(GroupCreation::Created(group_row(&row)?))
     }
@@ -154,7 +137,7 @@ impl Storage {
         &self,
         realm_id: &str,
         id: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -168,7 +151,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
-        audit(conn, actor_user_id, "group_deleted").await?;
+        audit(conn, actor, "group_deleted").await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -180,7 +163,7 @@ impl Storage {
         user_id: &str,
         group_id: &str,
         join: bool,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<MembershipChange, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -204,7 +187,7 @@ impl Storage {
                 .await?;
             audit(
                 conn,
-                actor_user_id,
+                actor,
                 if join {
                     "group_member_added"
                 } else {

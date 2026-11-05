@@ -1,10 +1,9 @@
 //! User administration within a realm, audited in the master realm.
 
+use sqlx::Row;
 use sqlx::postgres::PgRow;
-use sqlx::{PgConnection, Row};
 
-use crate::realm_admin::MASTER_REALM;
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// Profile values for a new user; callers normalize and validate them first.
 pub struct NewUser<'a> {
@@ -85,22 +84,6 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
     })
 }
 
-async fn audit(
-    connection: &mut PgConnection,
-    actor_user_id: &str,
-    event_type: &str,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, $3)",
-    )
-    .bind(MASTER_REALM)
-    .bind(actor_user_id)
-    .bind(event_type)
-    .execute(connection)
-    .await?;
-    Ok(())
-}
-
 impl Storage {
     /// Creates a user unless its username or email is already taken.
     pub async fn create_user(
@@ -108,7 +91,7 @@ impl Storage {
         realm_id: &str,
         user_id: &str,
         user: &NewUser<'_>,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<UserCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -125,7 +108,7 @@ impl Storage {
                 UserCreation::EmailExists
             });
         }
-        audit(conn, actor_user_id, "user_created").await?;
+        audit(conn, actor, "user_created").await?;
         tx.commit().await?;
         Ok(UserCreation::Created)
     }
@@ -217,7 +200,7 @@ impl Storage {
         credential_id: &str,
         password_phc: &[u8],
         temporary: bool,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -238,7 +221,7 @@ impl Storage {
             .bind(realm_id).bind(credential_id).bind(user_id).bind(password_phc).execute(&mut *conn).await?;
         sqlx::query("UPDATE users SET required_actions = CASE WHEN $3 THEN array_append(array_remove(required_actions, 'UPDATE_PASSWORD'), 'UPDATE_PASSWORD') ELSE array_remove(required_actions, 'UPDATE_PASSWORD') END WHERE realm_id = $1 AND id = $2")
             .bind(realm_id).bind(user_id).bind(temporary).execute(&mut *conn).await?;
-        audit(conn, actor_user_id, "user_password_reset").await?;
+        audit(conn, actor, "user_password_reset").await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -248,7 +231,7 @@ impl Storage {
         &self,
         realm_id: &str,
         user_id: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -258,7 +241,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
-        audit(conn, actor_user_id, "user_deleted").await?;
+        audit(conn, actor, "user_deleted").await?;
         tx.commit().await?;
         Ok(true)
     }

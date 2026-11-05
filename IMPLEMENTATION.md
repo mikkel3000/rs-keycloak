@@ -265,8 +265,7 @@ accounts, and a granted role.
 Remaining differences: composite editing, role attributes and client roles
 are refused; deleting the default role answers 400, a response the reference
 was not recorded for; `resource_access` and roles inherited from groups are
-not yet in tokens; admin authorization still checks only the master `admin`
-role.
+not yet in tokens.
 
 ## Groups
 
@@ -538,9 +537,7 @@ client role's direct composites. This follows the 23 recorded cases in
 
 Remaining differences: the authorization endpoint checks PKCE and other
 request parameters before it checks for a bearer-only client, where the
-reference checks the client first; the `realm-management` roles grant
-nothing yet, because admin access still comes from the master `admin` role;
-the logout refusal is applied by analogy with the token and revocation
+reference checks the client first; the logout refusal is applied by analogy with the token and revocation
 endpoints and was not recorded.
 
 ## Client updates
@@ -562,3 +559,30 @@ checks 3 groups, the slowest in 263 ms.
 Remaining differences: unmodelled fields such as `description`, `name`,
 `rootUrl` and `baseUrl` are refused rather than stored; a client changed to
 confidential that has a hashed secret from the CLI keeps it.
+
+## Realm-scoped admin access
+
+Tokens issued by a realm now reach that realm's admin API through the
+user's effective `realm-management` roles, following the 228 recorded cases
+in `tests/reference/admin-permission-observations.json`. Each handler names
+the access it needs (query, view or manage of users, groups, clients or the
+realm); `manage-*` implies view and query, `view-users` covers groups, client
+roles need client access and realm roles realm access. Any role reads the
+realm, in the reference's brief form without `view-realm`, and
+`GET /admin/realms` (new) lists only the token's realm. Master `admin` tokens
+still reach every realm, and only they create or delete realms. A token from
+any other realm answers 403. All realms share the signing key, so the
+issuer is read from the verified token rather than tried realm by realm.
+
+Admin events now record the actor's own realm. Migration 27 drops the
+actor's foreign key, so deleting a user who acted keeps the history (this
+also lets acting master admins be deleted, which failed before), and makes
+events go with their realm. `tests/public/admin_permissions_contract.py`
+checks every role in its own test, the slowest in 437 ms.
+
+Remaining differences: the brief realm form uses default values, since only
+field names were recorded, and lacks `displayName`, which is not stored;
+master per-realm clients (`{realm}-realm`) and fine-grained admin
+permissions are not modelled; the full realm representation still has 5 of
+the reference's 104 fields; realm deletion by a realm's own `manage-realm`
+was not recorded and is refused.

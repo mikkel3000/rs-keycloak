@@ -22,7 +22,7 @@ use uuid::Uuid;
 use super::users::{
     json_object, json_response, realm_id, representation as user_representation, unparsable,
 };
-use super::{AdminError, authorize};
+use super::{Access, AdminError, authorize};
 use crate::oidc::OidcState;
 
 /// Characters escaped in a role name path segment; RFC 3986 unreserved
@@ -117,6 +117,15 @@ async fn container(
     Ok(Container { realm_id, client })
 }
 
+/// Client roles are managed with client access, realm roles with realm access.
+fn role_access(params: &HashMap<String, String>, client: Access, realm: Access) -> Access {
+    if params.contains_key("client") {
+        client
+    } else {
+        realm
+    }
+}
+
 fn role_not_found() -> AdminError {
     AdminError::Error(StatusCode::NOT_FOUND, "Could not find role".into())
 }
@@ -141,7 +150,13 @@ async fn list_roles(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ViewClients, Access::ViewRealm),
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let roles = state
         .storage
@@ -161,7 +176,13 @@ async fn create_role(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ManageClients, Access::ManageRealm),
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let fields = json_object(&body)?;
     if let Some(field) = fields.keys().find(|key| {
@@ -257,7 +278,13 @@ async fn read_role(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ViewClients, Access::ViewRealm),
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let role = find_role(&state, &container, param(&params, "role")?).await?;
     let mut fields = representation(&role, &container.realm_id);
@@ -270,7 +297,13 @@ async fn role_composites(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ViewClients, Access::ViewRealm),
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let roles = state
         .storage
@@ -294,7 +327,13 @@ async fn delete_role(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ManageClients, Access::ManageRealm),
+    )
+    .await?;
     let container = container(&state, &params).await?;
     match state
         .storage
@@ -319,7 +358,13 @@ async fn role_users(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        Access::ViewUsers,
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let role = find_role(&state, &container, param(&params, "role")?).await?;
     let users = state
@@ -336,7 +381,13 @@ async fn user_roles(
     Path(params): Params,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        Access::ViewUsers,
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let roles = state
         .storage
@@ -382,7 +433,13 @@ async fn change_user_roles(
     body: Bytes,
     grant: bool,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        Access::ManageUsers,
+    )
+    .await?;
     let container = container(&state, &params).await?;
     let roles = role_list(&body)?;
     match state

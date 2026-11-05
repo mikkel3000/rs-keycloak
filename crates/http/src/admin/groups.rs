@@ -16,7 +16,7 @@ use uuid::Uuid;
 use super::users::{
     json_object, json_response, realm_id, representation as user_representation, unparsable,
 };
-use super::{AdminError, authorize};
+use super::{Access, AdminError, authorize};
 use crate::oidc::OidcState;
 
 pub(super) fn routes() -> Router<OidcState> {
@@ -102,7 +102,7 @@ async fn create(
     parent_id: Option<&str>,
     body: &[u8],
 ) -> Result<Response, AdminError> {
-    let actor = authorize(state, headers).await?;
+    let actor = authorize(state, headers, realm, Access::ManageUsers).await?;
     let realm_id = realm_id(state, realm).await?;
     let name = group_name(body)?;
     let id = Uuid::new_v4().to_string();
@@ -169,7 +169,17 @@ async fn list(
     headers: &HeaderMap,
     parent: Option<&str>,
 ) -> Result<Response, AdminError> {
-    authorize(state, headers).await?;
+    authorize(
+        state,
+        headers,
+        realm,
+        if parent.is_some() {
+            Access::ViewUsers
+        } else {
+            Access::QueryGroups
+        },
+    )
+    .await?;
     let realm_id = realm_id(state, realm).await?;
     if let Some(parent) = parent {
         state
@@ -206,7 +216,7 @@ async fn count_groups(
     Path(realm): Path<String>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::QueryGroups).await?;
     let realm_id = realm_id(&state, &realm).await?;
     Ok(json_response(
         json!({ "count": state.storage.count_groups(&realm_id).await? }),
@@ -218,7 +228,7 @@ async fn read_group(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let group = state
         .storage
@@ -233,7 +243,7 @@ async fn delete_group(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     if state.storage.delete_group(&realm_id, &id, &actor).await? {
         Ok(StatusCode::NO_CONTENT)
@@ -247,7 +257,7 @@ async fn members(
     Path((realm, id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     state
         .storage
@@ -265,7 +275,7 @@ async fn user_groups(
     Path((realm, user)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
-    authorize(&state, &headers).await?;
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let groups = state
         .storage
@@ -293,7 +303,7 @@ async fn change(
     headers: HeaderMap,
     join: bool,
 ) -> Result<StatusCode, AdminError> {
-    let actor = authorize(&state, &headers).await?;
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     match state
         .storage

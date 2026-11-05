@@ -5,9 +5,8 @@ use std::collections::BTreeMap;
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
 
-use crate::realm_admin::MASTER_REALM;
 use crate::user_admin::{USER_COLUMNS, UserRecord, user_row};
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// A realm role with the fields of the admin representation.
 pub struct RoleRecord {
@@ -61,22 +60,6 @@ fn role_row(row: &PgRow) -> Result<RoleRecord, StorageError> {
         composite: row.try_get("composite")?,
         client: row.try_get("client_id")?,
     })
-}
-
-async fn audit(
-    connection: &mut PgConnection,
-    actor: &str,
-    event: &str,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, $3)",
-    )
-    .bind(MASTER_REALM)
-    .bind(actor)
-    .bind(event)
-    .execute(connection)
-    .await?;
-    Ok(())
 }
 
 /// Resolves `(id, name)` pairs to role identifiers in one container (the
@@ -188,7 +171,7 @@ impl Storage {
         id: &str,
         name: &str,
         description: Option<&str>,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<RoleCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -198,7 +181,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RoleCreation::Exists);
         }
-        audit(conn, actor_user_id, "role_created").await?;
+        audit(conn, actor, "role_created").await?;
         tx.commit().await?;
         Ok(RoleCreation::Created)
     }
@@ -209,7 +192,7 @@ impl Storage {
         realm_id: &str,
         client: Option<&str>,
         name: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<RoleDeletion, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -224,7 +207,7 @@ impl Storage {
                     .bind(&id)
                     .execute(&mut *conn)
                     .await?;
-                audit(conn, actor_user_id, "role_deleted").await?;
+                audit(conn, actor, "role_deleted").await?;
                 RoleDeletion::Deleted
             }
         };
@@ -282,7 +265,7 @@ impl Storage {
         user_id: &str,
         roles: &[(String, String)],
         grant: bool,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<RoleMappingChange, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -314,7 +297,7 @@ impl Storage {
             .await?;
         audit(
             conn,
-            actor_user_id,
+            actor,
             if grant {
                 "user_roles_granted"
             } else {

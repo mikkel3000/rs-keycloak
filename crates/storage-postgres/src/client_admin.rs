@@ -1,11 +1,10 @@
 //! Client administration within a realm, audited in the master realm.
 
+use sqlx::Row;
 use sqlx::postgres::PgRow;
-use sqlx::{PgConnection, Row};
 
-use crate::realm_admin::MASTER_REALM;
 use crate::service_account::service_account_username;
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// A client secret sealed with the operator key for one client row.
 pub struct SealedSecret {
@@ -123,22 +122,6 @@ fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
     })
 }
 
-async fn audit(
-    connection: &mut PgConnection,
-    actor: &str,
-    event: &str,
-) -> Result<(), StorageError> {
-    sqlx::query(
-        "INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, $3)",
-    )
-    .bind(MASTER_REALM)
-    .bind(actor)
-    .bind(event)
-    .execute(connection)
-    .await?;
-    Ok(())
-}
-
 impl Storage {
     /// Creates a client with its redirects, origins and, if enabled, its
     /// service-account user. Confidential clients must supply a sealed secret.
@@ -150,7 +133,7 @@ impl Storage {
         client: &NewClient<'_>,
         secret: Option<&SealedSecret>,
         service_account_user_id: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<ClientCreation, StorageError> {
         if client.public == secret.is_some() || (client.public && client.service_accounts) {
             return Err(StorageError::InvalidInput);
@@ -190,7 +173,7 @@ impl Storage {
                 return Err(StorageError::Conflict);
             }
         }
-        audit(conn, actor_user_id, "client_created").await?;
+        audit(conn, actor, "client_created").await?;
         tx.commit().await?;
         Ok(ClientCreation::Created)
     }
@@ -206,7 +189,7 @@ impl Storage {
         client: &NewClient<'_>,
         secret: SecretChange<'_>,
         service_account_user_id: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<ClientUpdate, StorageError> {
         let secret_fits = match secret {
             SecretChange::Keep => true,
@@ -292,7 +275,7 @@ impl Storage {
                 return Err(StorageError::Conflict);
             }
         }
-        audit(conn, actor_user_id, "client_updated").await?;
+        audit(conn, actor, "client_updated").await?;
         tx.commit().await?;
         Ok(ClientUpdate::Updated)
     }
@@ -338,7 +321,7 @@ impl Storage {
         realm_id: &str,
         id: &str,
         secret: &SealedSecret,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -349,7 +332,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
-        audit(conn, actor_user_id, "client_secret_regenerated").await?;
+        audit(conn, actor, "client_secret_regenerated").await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -373,7 +356,7 @@ impl Storage {
         &self,
         realm_id: &str,
         id: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -387,7 +370,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
-        audit(conn, actor_user_id, "client_deleted").await?;
+        audit(conn, actor, "client_deleted").await?;
         tx.commit().await?;
         Ok(true)
     }

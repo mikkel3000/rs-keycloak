@@ -1,8 +1,9 @@
 //! Realm administration and master-realm administrator checks.
 
 use sqlx::Row;
+use sqlx::postgres::PgRow;
 
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// The administrative realm; it cannot be deleted.
 pub const MASTER_REALM: &str = "master";
@@ -70,6 +71,31 @@ pub enum RealmDeletion {
     Master,
 }
 
+const REALM_COLUMNS: &str = "id, name, enabled, reset_password_allowed, verify_email, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl";
+
+fn realm_row(row: &PgRow) -> Result<RealmRecord, StorageError> {
+    let host: Option<String> = row.try_get("smtp_host")?;
+    let port: Option<i32> = row.try_get("smtp_port")?;
+    Ok(RealmRecord {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        enabled: row.try_get("enabled")?,
+        reset_password_allowed: row.try_get("reset_password_allowed")?,
+        verify_email: row.try_get("verify_email")?,
+        smtp: match host.zip(port) {
+            Some((host, port)) => Some(RealmSmtp {
+                host,
+                port,
+                from: row.try_get("smtp_from")?,
+                from_display_name: row.try_get("smtp_from_display_name")?,
+                starttls: row.try_get("smtp_starttls")?,
+                ssl: row.try_get("smtp_ssl")?,
+            }),
+            None => None,
+        },
+    })
+}
+
 impl Storage {
     /// Reports whether a master-realm user holds the master `admin` role.
     pub async fn is_master_admin(&self, user_id: &str) -> Result<bool, StorageError> {
@@ -99,34 +125,24 @@ impl Storage {
     /// Looks up a realm by name whether or not it is enabled.
     pub async fn realm_by_name(&self, name: &str) -> Result<Option<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let row = sqlx::query("SELECT id, name, enabled, reset_password_allowed, verify_email, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl FROM realms WHERE name = $1")
-            .bind(name)
-            .fetch_optional(tx.connection())
+        let row = sqlx::query(&format!(
+            "SELECT {REALM_COLUMNS} FROM realms WHERE name = $1"
+        ))
+        .bind(name)
+        .fetch_optional(tx.connection())
+        .await?;
+        tx.commit().await?;
+        row.as_ref().map(realm_row).transpose()
+    }
+
+    /// Lists every realm by name.
+    pub async fn realms(&self) -> Result<Vec<RealmRecord>, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let rows = sqlx::query(&format!("SELECT {REALM_COLUMNS} FROM realms ORDER BY name"))
+            .fetch_all(tx.connection())
             .await?;
         tx.commit().await?;
-        row.map(|row| {
-            let host: Option<String> = row.try_get("smtp_host")?;
-            let port: Option<i32> = row.try_get("smtp_port")?;
-            Ok(RealmRecord {
-                id: row.try_get("id")?,
-                name: row.try_get("name")?,
-                enabled: row.try_get("enabled")?,
-                reset_password_allowed: row.try_get("reset_password_allowed")?,
-                verify_email: row.try_get("verify_email")?,
-                smtp: match host.zip(port) {
-                    Some((host, port)) => Some(RealmSmtp {
-                        host,
-                        port,
-                        from: row.try_get("smtp_from")?,
-                        from_display_name: row.try_get("smtp_from_display_name")?,
-                        starttls: row.try_get("smtp_starttls")?,
-                        ssl: row.try_get("smtp_ssl")?,
-                    }),
-                    None => None,
-                },
-            })
-        })
-        .transpose()
+        rows.iter().map(realm_row).collect()
     }
 
     /// Creates a realm and records the action in the master audit log.
@@ -135,7 +151,7 @@ impl Storage {
         realm_id: &str,
         name: &str,
         settings: &RealmSettings,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<RealmCreation, StorageError> {
         let smtp = settings.smtp.as_ref();
         let mut tx = self.begin_request(false).await?;
@@ -149,8 +165,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RealmCreation::Exists);
         }
-        sqlx::query("INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, 'realm_created')")
-            .bind(MASTER_REALM).bind(actor_user_id).execute(tx.connection()).await?;
+        audit(tx.connection(), actor, "realm_created").await?;
         tx.commit().await?;
         Ok(RealmCreation::Created)
     }
@@ -164,7 +179,7 @@ impl Storage {
         reset_password_allowed: Option<bool>,
         verify_email: Option<bool>,
         smtp: Option<Option<&RealmSmtp>>,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
@@ -180,8 +195,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
-        sqlx::query("INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, 'realm_updated')")
-            .bind(MASTER_REALM).bind(actor_user_id).execute(&mut *conn).await?;
+        audit(&mut *conn, actor, "realm_updated").await?;
         tx.commit().await?;
         Ok(true)
     }
@@ -190,7 +204,7 @@ impl Storage {
     pub async fn delete_realm(
         &self,
         name: &str,
-        actor_user_id: &str,
+        actor: &Actor,
     ) -> Result<RealmDeletion, StorageError> {
         if name == MASTER_REALM {
             return Ok(RealmDeletion::Master);
@@ -206,8 +220,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RealmDeletion::NotFound);
         }
-        sqlx::query("INSERT INTO audit_events (realm_id, actor_user_id, event_type) VALUES ($1, $2, 'realm_deleted')")
-            .bind(MASTER_REALM).bind(actor_user_id).execute(tx.connection()).await?;
+        audit(tx.connection(), actor, "realm_deleted").await?;
         tx.commit().await?;
         Ok(RealmDeletion::Deleted)
     }
