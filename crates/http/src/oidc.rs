@@ -260,6 +260,15 @@ fn reauthentication_required(auth_time: i64, max_age: i64, now: i64) -> bool {
 /// Lifetime of the SSO session cookie, matching the stored session lifetime.
 const SSO_SESSION_SECONDS: u32 = 1800;
 
+/// The realm's access and ID token lifetime in seconds, or `None` if it
+/// cannot be read.
+pub(crate) async fn token_lifespan(s: &OidcState, realm_id: &str) -> Option<u64> {
+    let lifespan = s.storage.access_token_lifespan(realm_id).await.ok()?;
+    u64::try_from(lifespan)
+        .ok()
+        .filter(|lifespan| *lifespan > 0)
+}
+
 pub(crate) fn random_token() -> String {
     format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple())
 }
@@ -455,10 +464,21 @@ async fn login_page(
     csrf: &str,
     notice: LoginNotice,
 ) -> Response {
-    let reset_allowed = match s.storage.realm_by_name(realm).await {
-        Ok(record) => record.is_some_and(|record| record.reset_password_allowed),
+    let record = match s.storage.realm_by_name(realm).await {
+        Ok(record) => record,
         Err(_) => return unavailable(),
     };
+    let reset_allowed = record
+        .as_ref()
+        .is_some_and(|record| record.reset_password_allowed);
+    // The page names the realm by its display name, as the reference does.
+    let shown = consent::escape(
+        record
+            .as_ref()
+            .and_then(|record| record.display_name.as_deref())
+            .filter(|name| !name.is_empty())
+            .unwrap_or(realm),
+    );
     let prefix = consent::escape(&s.path_prefix);
     let message = match notice {
         LoginNotice::None => "",
@@ -475,7 +495,7 @@ async fn login_page(
         String::new()
     };
     let body = format!(
-        "<h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>{reset}"
+        "<p id=\"kc-header\">{shown}</p><h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>{reset}"
     );
     step_page(&s.path_prefix, realm, csrf, "Sign in", &body)
 }
@@ -1036,6 +1056,9 @@ async fn token(
     let Ok(roles) = s.storage.effective_roles(&realm_id, &grant.user_id).await else {
         return unavailable();
     };
+    let Some(lifespan) = token_lifespan(&s, &realm_id).await else {
+        return unavailable();
+    };
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
     let tokens = tokio::task::spawn_blocking(move || {
@@ -1046,7 +1069,7 @@ async fn token(
             sub: &grant.user_id,
             aud: &grant.client_identifier,
             iat: now,
-            exp: now + 300,
+            exp: now + lifespan,
             jti: &jti,
             azp: &grant.client_identifier,
             sid: Some(&grant.session_id),
@@ -1061,7 +1084,7 @@ async fn token(
             sub: &grant.user_id,
             aud: &grant.client_identifier,
             iat: now,
-            exp: now + 300,
+            exp: now + lifespan,
             auth_time: Some(grant.auth_time),
             nonce: grant.nonce.as_deref(),
             sid: Some(&grant.session_id),
@@ -1089,7 +1112,7 @@ async fn token(
     let Ok(Some((access_token, id_token, refresh_token))) = tokens else {
         return unavailable();
     };
-    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":300,"scope":"openid","refresh_token":refresh_token,"refresh_expires_in":refresh_expires_in}))).into_response()
+    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":lifespan,"scope":"openid","refresh_token":refresh_token,"refresh_expires_in":refresh_expires_in}))).into_response()
 }
 
 async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {

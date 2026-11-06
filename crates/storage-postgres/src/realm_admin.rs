@@ -22,6 +22,10 @@ pub struct RealmRecord {
     pub reset_password_allowed: bool,
     /// Whether users must verify their email at login.
     pub verify_email: bool,
+    /// Name shown to users, if set.
+    pub display_name: Option<String>,
+    /// Lifetime of issued access and ID tokens in seconds.
+    pub access_token_lifespan: i32,
 }
 
 /// Settings for a new realm.
@@ -34,6 +38,28 @@ pub struct RealmSettings {
     pub verify_email: bool,
     /// SMTP settings, if any.
     pub smtp: Option<RealmSmtp>,
+    /// Name shown to users, if set.
+    pub display_name: Option<String>,
+    /// Lifetime of issued access and ID tokens in seconds.
+    pub access_token_lifespan: i32,
+}
+
+/// Changes to a realm; `None` keeps a setting, and for SMTP and the display
+/// name `Some(None)` removes it.
+#[derive(Default)]
+pub struct RealmChanges<'a> {
+    /// Whether the realm serves authentication.
+    pub enabled: Option<bool>,
+    /// Whether the login page offers forgot-password.
+    pub reset_password_allowed: Option<bool>,
+    /// Whether users must verify their email at login.
+    pub verify_email: Option<bool>,
+    /// SMTP settings.
+    pub smtp: Option<Option<&'a RealmSmtp>>,
+    /// Name shown to users.
+    pub display_name: Option<Option<&'a str>>,
+    /// Lifetime of issued access and ID tokens in seconds.
+    pub access_token_lifespan: Option<i32>,
 }
 
 /// A realm's SMTP settings as stored.
@@ -71,7 +97,7 @@ pub enum RealmDeletion {
     Master,
 }
 
-const REALM_COLUMNS: &str = "id, name, enabled, reset_password_allowed, verify_email, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl";
+const REALM_COLUMNS: &str = "id, name, enabled, reset_password_allowed, verify_email, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl, display_name, access_token_lifespan";
 
 fn realm_row(row: &PgRow) -> Result<RealmRecord, StorageError> {
     let host: Option<String> = row.try_get("smtp_host")?;
@@ -82,6 +108,8 @@ fn realm_row(row: &PgRow) -> Result<RealmRecord, StorageError> {
         enabled: row.try_get("enabled")?,
         reset_password_allowed: row.try_get("reset_password_allowed")?,
         verify_email: row.try_get("verify_email")?,
+        display_name: row.try_get("display_name")?,
+        access_token_lifespan: row.try_get("access_token_lifespan")?,
         smtp: match host.zip(port) {
             Some((host, port)) => Some(RealmSmtp {
                 host,
@@ -135,6 +163,18 @@ impl Storage {
         row.as_ref().map(realm_row).transpose()
     }
 
+    /// Reads the lifetime in seconds of the access and ID tokens a realm
+    /// issues.
+    pub async fn access_token_lifespan(&self, realm_id: &str) -> Result<i32, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let lifespan = sqlx::query_scalar("SELECT access_token_lifespan FROM realms WHERE id = $1")
+            .bind(realm_id)
+            .fetch_one(tx.connection())
+            .await?;
+        tx.commit().await?;
+        Ok(lifespan)
+    }
+
     /// Lists every realm by name.
     pub async fn realms(&self) -> Result<Vec<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
@@ -155,11 +195,12 @@ impl Storage {
     ) -> Result<RealmCreation, StorageError> {
         let smtp = settings.smtp.as_ref();
         let mut tx = self.begin_request(false).await?;
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO realms (id, name, enabled, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl, reset_password_allowed, verify_email) VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, false), COALESCE($9, false), $10, $11) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO realms (id, name, enabled, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl, reset_password_allowed, verify_email, display_name, access_token_lifespan) VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8, false), COALESCE($9, false), $10, $11, $12, $13) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(name).bind(settings.enabled)
             .bind(smtp.map(|smtp| smtp.host.as_str())).bind(smtp.map(|smtp| smtp.port))
             .bind(smtp.and_then(|smtp| smtp.from.as_deref())).bind(smtp.and_then(|smtp| smtp.from_display_name.as_deref()))
             .bind(smtp.map(|smtp| smtp.starttls)).bind(smtp.map(|smtp| smtp.ssl)).bind(settings.reset_password_allowed).bind(settings.verify_email)
+            .bind(settings.display_name.as_deref()).bind(settings.access_token_lifespan)
             .fetch_optional(tx.connection()).await?;
         if created.is_none() {
             tx.commit().await?;
@@ -170,26 +211,23 @@ impl Storage {
         Ok(RealmCreation::Created)
     }
 
-    /// Updates a realm's enabled flag and, when given, its SMTP settings
-    /// (`Some(None)` removes them); returns false if the realm is missing.
+    /// Applies changes to a realm; returns false if the realm is missing.
     pub async fn update_realm(
         &self,
         name: &str,
-        enabled: Option<bool>,
-        reset_password_allowed: Option<bool>,
-        verify_email: Option<bool>,
-        smtp: Option<Option<&RealmSmtp>>,
+        changes: &RealmChanges<'_>,
         actor: &Actor,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let replace = smtp.is_some();
-        let smtp = smtp.flatten();
-        let changed = sqlx::query("UPDATE realms SET enabled = COALESCE($2, enabled), reset_password_allowed = COALESCE($10, reset_password_allowed), verify_email = COALESCE($11, verify_email), smtp_host = CASE WHEN $3 THEN $4 ELSE smtp_host END, smtp_port = CASE WHEN $3 THEN $5 ELSE smtp_port END, smtp_from = CASE WHEN $3 THEN $6 ELSE smtp_from END, smtp_from_display_name = CASE WHEN $3 THEN $7 ELSE smtp_from_display_name END, smtp_starttls = CASE WHEN $3 THEN COALESCE($8, false) ELSE smtp_starttls END, smtp_ssl = CASE WHEN $3 THEN COALESCE($9, false) ELSE smtp_ssl END WHERE name = $1")
-            .bind(name).bind(enabled).bind(replace)
+        let replace_smtp = changes.smtp.is_some();
+        let smtp = changes.smtp.flatten();
+        let changed = sqlx::query("UPDATE realms SET enabled = COALESCE($2, enabled), reset_password_allowed = COALESCE($10, reset_password_allowed), verify_email = COALESCE($11, verify_email), smtp_host = CASE WHEN $3 THEN $4 ELSE smtp_host END, smtp_port = CASE WHEN $3 THEN $5 ELSE smtp_port END, smtp_from = CASE WHEN $3 THEN $6 ELSE smtp_from END, smtp_from_display_name = CASE WHEN $3 THEN $7 ELSE smtp_from_display_name END, smtp_starttls = CASE WHEN $3 THEN COALESCE($8, false) ELSE smtp_starttls END, smtp_ssl = CASE WHEN $3 THEN COALESCE($9, false) ELSE smtp_ssl END, display_name = CASE WHEN $12 THEN $13 ELSE display_name END, access_token_lifespan = COALESCE($14, access_token_lifespan) WHERE name = $1")
+            .bind(name).bind(changes.enabled).bind(replace_smtp)
             .bind(smtp.map(|smtp| smtp.host.as_str())).bind(smtp.map(|smtp| smtp.port))
             .bind(smtp.and_then(|smtp| smtp.from.as_deref())).bind(smtp.and_then(|smtp| smtp.from_display_name.as_deref()))
-            .bind(smtp.map(|smtp| smtp.starttls)).bind(smtp.map(|smtp| smtp.ssl)).bind(reset_password_allowed).bind(verify_email)
+            .bind(smtp.map(|smtp| smtp.starttls)).bind(smtp.map(|smtp| smtp.ssl)).bind(changes.reset_password_allowed).bind(changes.verify_email)
+            .bind(changes.display_name.is_some()).bind(changes.display_name.flatten()).bind(changes.access_token_lifespan)
             .execute(&mut *conn).await?.rows_affected();
         if changed == 0 {
             tx.commit().await?;

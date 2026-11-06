@@ -15,10 +15,9 @@ use serde_json::json;
 
 use crate::client_auth::AuthenticatedClient;
 
-use super::{OidcState, has_openid_scope, random_token, resource_access, unavailable};
-
-/// Access and ID token lifetime, matching the authorization-code grant.
-const TOKEN_LIFETIME_SECONDS: u64 = 300;
+use super::{
+    OidcState, has_openid_scope, random_token, resource_access, token_lifespan, unavailable,
+};
 
 fn error(status: StatusCode, error: &str, description: &str) -> Response {
     (
@@ -100,6 +99,9 @@ pub(super) async fn grant(
         return unavailable();
     };
     let now = now.as_secs();
+    let Some(lifespan) = token_lifespan(state, realm_id).await else {
+        return unavailable();
+    };
     let Ok(permit) = Arc::clone(&state.signing_slots).try_acquire_owned() else {
         return unavailable();
     };
@@ -121,7 +123,7 @@ pub(super) async fn grant(
             sub: &account.user_id,
             aud: &client_id,
             iat: now,
-            exp: now + TOKEN_LIFETIME_SECONDS,
+            exp: now + lifespan,
             jti: &jti,
             azp: &client_id,
             sid: None,
@@ -137,7 +139,7 @@ pub(super) async fn grant(
                 sub: &account.user_id,
                 aud: &client_id,
                 iat: now,
-                exp: now + TOKEN_LIFETIME_SECONDS,
+                exp: now + lifespan,
                 auth_time: None,
                 nonce: None,
                 sid: None,
@@ -153,7 +155,7 @@ pub(super) async fn grant(
     };
     let mut body = json!({
         "access_token": access_token,
-        "expires_in": TOKEN_LIFETIME_SECONDS,
+        "expires_in": lifespan,
         "refresh_expires_in": 0,
         "token_type": "Bearer",
         "not-before-policy": 0,

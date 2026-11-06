@@ -14,10 +14,10 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, Actor, MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord,
-    RealmSettings, RealmSmtp, StorageError,
+    AccessTokenStatus, Actor, MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion,
+    RealmRecord, RealmSettings, RealmSmtp, StorageError,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
@@ -354,6 +354,38 @@ fn smtp_representation(smtp: &RealmSmtp) -> Value {
 }
 
 /// Parses a creation body, refusing fields this server does not store yet.
+/// Reads `displayName`: `None` when absent, `Some(None)` to remove it. An
+/// empty name is kept, as in the reference.
+fn display_name(fields: &Map<String, Value>) -> Result<Option<Option<String>>, AdminError> {
+    match fields.get("displayName") {
+        None => Ok(None),
+        Some(Value::Null) => Ok(Some(None)),
+        Some(Value::String(name)) if name.len() <= 255 && !name.contains(char::is_control) => {
+            Ok(Some(Some(name.clone())))
+        }
+        Some(_) => Err(AdminError::bad_request("Invalid displayName")),
+    }
+}
+
+/// Reads `accessTokenLifespan` in seconds. The reference also stores zero
+/// and negative values, which only yield expired tokens; they are refused.
+fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, AdminError> {
+    match fields.get("accessTokenLifespan") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(number)) => number
+            .as_i64()
+            .and_then(|seconds| i32::try_from(seconds).ok())
+            .filter(|seconds| *seconds > 0)
+            .map(Some)
+            .ok_or_else(|| AdminError::bad_request("Invalid accessTokenLifespan")),
+        Some(_) => Err(AdminError::OAuth(
+            StatusCode::BAD_REQUEST,
+            "unknown_error",
+            "Cannot parse the JSON",
+        )),
+    }
+}
+
 fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     let unreadable = || AdminError::bad_request("unable to read contents from stream");
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
@@ -362,7 +394,13 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     if let Some(field) = fields.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed" | "verifyEmail"
+            "realm"
+                | "enabled"
+                | "smtpServer"
+                | "resetPasswordAllowed"
+                | "verifyEmail"
+                | "displayName"
+                | "accessTokenLifespan"
         )
     }) {
         return Err(AdminError::bad_request(format!(
@@ -401,6 +439,8 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             reset_password_allowed: flag("resetPasswordAllowed")?,
             verify_email: flag("verifyEmail")?,
             smtp,
+            display_name: display_name(&fields)?.flatten(),
+            access_token_lifespan: access_token_lifespan(&fields)?.unwrap_or(300),
         },
     })
 }
@@ -464,13 +504,19 @@ async fn read_realm(
         if grants.allows(Access::ViewUsers) {
             brief["registrationEmailAsUsername"] = json!(false);
         }
+        if let Some(display_name) = &realm.display_name {
+            brief["displayName"] = json!(display_name);
+        }
         return Ok(json_text(&brief));
     }
     Ok(json_text(&realm_representation(&realm)))
 }
 
 fn realm_representation(realm: &RealmRecord) -> Value {
-    let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed, "verifyEmail": realm.verify_email });
+    let mut representation = json!({ "id": realm.id, "realm": realm.name, "enabled": realm.enabled, "resetPasswordAllowed": realm.reset_password_allowed, "verifyEmail": realm.verify_email, "accessTokenLifespan": realm.access_token_lifespan });
+    if let Some(display_name) = &realm.display_name {
+        representation["displayName"] = json!(display_name);
+    }
     if let Some(smtp) = &realm.smtp {
         representation["smtpServer"] = smtp_representation(smtp);
     }
@@ -536,7 +582,13 @@ async fn update_realm(
     if let Some(field) = fields.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "realm" | "enabled" | "smtpServer" | "resetPasswordAllowed" | "verifyEmail"
+            "realm"
+                | "enabled"
+                | "smtpServer"
+                | "resetPasswordAllowed"
+                | "verifyEmail"
+                | "displayName"
+                | "accessTokenLifespan"
         )
     }) {
         return Err(AdminError::bad_request(format!(
@@ -566,20 +618,16 @@ async fn update_realm(
             "unable to read contents from stream",
         )),
     };
-    let reset_password_allowed = optional_flag("resetPasswordAllowed")?;
-    let verify_email = optional_flag("verifyEmail")?;
-    if state
-        .storage
-        .update_realm(
-            &name,
-            enabled,
-            reset_password_allowed,
-            verify_email,
-            smtp.as_ref().map(Option::as_ref),
-            &actor,
-        )
-        .await?
-    {
+    let display_name = display_name(&fields)?;
+    let changes = RealmChanges {
+        enabled,
+        reset_password_allowed: optional_flag("resetPasswordAllowed")?,
+        verify_email: optional_flag("verifyEmail")?,
+        smtp: smtp.as_ref().map(Option::as_ref),
+        display_name: display_name.as_ref().map(Option::as_deref),
+        access_token_lifespan: access_token_lifespan(&fields)?,
+    };
+    if state.storage.update_realm(&name, &changes, &actor).await? {
         Ok(StatusCode::NO_CONTENT)
     } else {
         Err(AdminError::RealmNotFound)

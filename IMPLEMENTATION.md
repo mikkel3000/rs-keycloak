@@ -756,3 +756,19 @@ slowest in 403 ms.
 Remaining differences: sessions have no `ipAddress`, since client addresses
 are not stored; offline sessions are not modelled, so `offline` counts are
 "0"; `logout-all` does not push a not-before time to clients.
+
+## Realm display name and token lifespan
+
+Realms store `displayName` and `accessTokenLifespan` (migration 30),
+following `tests/reference/realm-setting-observations.json`. The lifespan,
+300 seconds by default, now sets `expires_in` and the access and ID token
+lifetimes of the code, refresh and client-credentials grants, read once per
+token request. The login page names the realm by its display name. Realm
+updates now take a `RealmChanges` value instead of one argument per field.
+`tests/public/realm_settings_contract.py` checks 4 groups, the slowest in
+270 ms.
+
+Remaining differences: zero and negative lifespans answer 400, where the
+reference stores them; `displayNameHtml`, `accessTokenLifespanForImplicitFlow`
+and the SSO session timeouts (fixed at 1800 seconds here, against the
+reference's 1800 idle and 36000 maximum) are not settable.

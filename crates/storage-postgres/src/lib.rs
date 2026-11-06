@@ -26,7 +26,7 @@ pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange}
 pub use login_steps::{CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate};
 pub use logout::RefreshLogout;
 pub use realm_admin::{
-    MASTER_REALM, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
+    MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
 };
 pub use role_admin::{
     CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
@@ -77,6 +77,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0027_realm_admins.sql"),
     include_str!("../../../migrations/0028_group_roles.sql"),
     include_str!("../../../migrations/0029_client_urls.sql"),
+    include_str!("../../../migrations/0030_realm_token_settings.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
