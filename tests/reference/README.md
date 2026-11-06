@@ -280,3 +280,11 @@ as `""` when cleared) and `accessTokenLifespan` (300 by default; it sets
 and code grants). The reference stores zero and negative lifespans and
 refuses text with 400 `unknown_error`. The baseline passed a second,
 comparing run.
+
+`realm_keys.py` records 4 cases in `realm-key-observations.json`:
+`GET /admin/realms/{realm}/keys` for a new realm lists `active` key ids by
+algorithm and one entry per key (RS256 and RSA-OAEP with `publicKey` and
+`certificate`, HS512 and AES without), all `ACTIVE` with priority 100; the
+RS256 and RSA-OAEP keys are the ones in the realm's JWKS. Unknown realms
+answer 404 "Realm not found." and missing tokens 401. No key material is
+kept. The baseline passed a second, comparing run.
