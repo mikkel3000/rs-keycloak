@@ -216,3 +216,14 @@ baseline passed a second, comparing run.
 and for unknown holders. Empty `realmMappings` and `clientMappings` are
 left out; client mappings are keyed by `clientId` with the client's `id`,
 `client` and `mappings`. The baseline passed a second, comparing run.
+
+`redirect_matching.py` records 19 authorization requests in
+`redirect-matching-observations.json`, all with PKCE: the built-in
+`account-console` (`/realms/{realm}/account/*` relative to
+`${authBaseUrl}`) and a client with `rootUrl`, a relative `/cb`, a
+`https://exact.example.invalid/*` wildcard and an exact URI with a query.
+Relative URIs resolve against `rootUrl`; a trailing `/*` matches the prefix
+with or without its slash and with any query, but not another port, user
+info or dot segments; exact URIs must match exactly, query and host case
+included; fragments never match. Only status and page kind are kept. The
+baseline passed a second, comparing run.
