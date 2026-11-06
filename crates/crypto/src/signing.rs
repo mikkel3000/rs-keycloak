@@ -2,13 +2,16 @@
 //! Key distribution and rotation are the deployment operator's responsibility.
 
 use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
+use pkcs1::der::Encode;
+use pkcs1::der::asn1::BitStringRef;
 use ring::rand::SystemRandom;
 use ring::signature::{
     KeyPair, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RsaKeyPair, UnparsedPublicKey,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use spki::SubjectPublicKeyInfoRef;
 
 /// Signing or key parsing failed without disclosing key material.
 #[derive(Debug)]
@@ -20,6 +23,7 @@ pub struct SigningKey {
     key_id: String,
     n: String,
     e: String,
+    public_key_info: String,
 }
 
 /// Public JSON Web Key for the active signing key.
@@ -149,7 +153,18 @@ impl SigningKey {
         let n = URL_SAFE_NO_PAD.encode(public.modulus.as_bytes());
         let e = URL_SAFE_NO_PAD.encode(public.public_exponent.as_bytes());
         let key_id = URL_SAFE_NO_PAD.encode(Sha256::digest(public_der));
-        Ok(Self { key, key_id, n, e })
+        let info = SubjectPublicKeyInfoRef {
+            algorithm: pkcs1::ALGORITHM_ID,
+            subject_public_key: BitStringRef::from_bytes(public_der).map_err(|_| SigningError)?,
+        };
+        let public_key_info = STANDARD.encode(info.to_der().map_err(|_| SigningError)?);
+        Ok(Self {
+            key,
+            key_id,
+            n,
+            e,
+            public_key_info,
+        })
     }
 
     /// Returns the public signing key; never includes private key material.
@@ -162,6 +177,17 @@ impl SigningKey {
             n: self.n.clone(),
             e: self.e.clone(),
         }
+    }
+
+    /// The key identifier published in the JWKS.
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// The public key as base64 DER SubjectPublicKeyInfo, the form the
+    /// reference's admin keys listing uses.
+    pub fn public_key_info(&self) -> &str {
+        &self.public_key_info
     }
 
     /// Verifies a compact access token against this key and its exact header.

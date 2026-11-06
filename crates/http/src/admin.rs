@@ -37,6 +37,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(sessions::routes())
         .merge(users::routes())
         .route("/admin/realms", post(create_realm).get(list_realms))
+        .route("/admin/realms/{realm}/keys", get(realm_keys))
         .route(
             "/admin/realms/{realm}",
             get(read_realm).put(update_realm).delete(delete_realm),
@@ -521,6 +522,35 @@ fn realm_representation(realm: &RealmRecord) -> Value {
         representation["smtpServer"] = smtp_representation(smtp);
     }
     representation
+}
+
+/// The realm's keys, following `tests/reference/realm-key-observations.json`.
+/// Every realm signs with the one operator-provided RS256 key, which has no
+/// certificate or key provider component here.
+async fn realm_keys(
+    State(state): State<OidcState>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers, &name, Access::ViewRealm).await?;
+    state
+        .storage
+        .realm_by_name(&name)
+        .await?
+        .ok_or(AdminError::RealmNotFound)?;
+    let kid = state.signer.key_id();
+    Ok(json_text(&json!({
+        "active": { "RS256": kid },
+        "keys": [{
+            "kid": kid,
+            "type": "RSA",
+            "algorithm": "RS256",
+            "use": "SIG",
+            "status": "ACTIVE",
+            "providerPriority": 100,
+            "publicKey": state.signer.public_key_info(),
+        }],
+    })))
 }
 
 /// Lists the realms a token reaches: every realm for a master `admin`, and

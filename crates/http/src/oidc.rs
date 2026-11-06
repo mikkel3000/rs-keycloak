@@ -46,7 +46,7 @@ pub struct OidcState {
     pub(crate) storage: Arc<Storage>,
     login: Arc<LoginService>,
     client_auth: Arc<ClientAuthenticator>,
-    signer: Arc<SigningKey>,
+    pub(crate) signer: Arc<SigningKey>,
     signing_slots: Arc<Semaphore>,
     /// Bounds concurrent password hashing for admin credential changes.
     pub(crate) hash_slots: Arc<Semaphore>,

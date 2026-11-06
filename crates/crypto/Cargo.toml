@@ -13,5 +13,6 @@ ring = "=0.17.14"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.154"
 sha2 = "=0.10.9"
-pkcs1 = { version = "=0.7.5", features = ["alloc"] }
+spki = "=0.7.3"
+pkcs1 = { version = "=0.7.5", features = ["alloc", "pkcs8"] }
 zeroize = "=1.9.1"

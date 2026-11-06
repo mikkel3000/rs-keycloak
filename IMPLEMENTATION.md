@@ -772,3 +772,17 @@ Remaining differences: zero and negative lifespans answer 400, where the
 reference stores them; `displayNameHtml`, `accessTokenLifespanForImplicitFlow`
 and the SSO session timeouts (fixed at 1800 seconds here, against the
 reference's 1800 idle and 36000 maximum) are not settable.
+
+## Realm keys
+
+`GET /admin/realms/{realm}/keys` lists the active key by algorithm and the
+key itself, following `tests/reference/realm-key-observations.json`. Every
+realm signs with the one operator-provided RS256 key, so the listing has
+that key alone, with its JWKS `kid` and its public key as base64 DER
+SubjectPublicKeyInfo, built with the `spki` crate already in the
+dependency tree. `tests/public/realm_keys_contract.py` checks the key
+against the realm's JWKS in 85 ms.
+
+Remaining differences: there is no certificate, key provider component,
+`validTo`, or HS512, AES and RSA-OAEP keys, and realms cannot have keys of
+their own.
