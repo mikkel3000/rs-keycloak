@@ -23,11 +23,11 @@ class UserinfoContract(ServerCase):
         assert cli("client", "add-public", "master", CLIENT, REGISTERED + "/cb").returncode == 0
         assert cli("client", "add-web-origin", "master", CLIENT, REGISTERED).returncode == 0
 
-    def sessionless_token(self, client=CLIENT):
+    def sessionless_token(self, client=CLIENT, issued_ahead=0):
         now = int(time.time())
         return self.sign({
             "typ": "Bearer", "iss": ISSUER, "sub": str(uuid.uuid4()), "aud": client,
-            "iat": now, "exp": now + 60, "jti": str(uuid.uuid4()), "azp": client,
+            "iat": now + issued_ahead, "exp": now + 60, "jti": str(uuid.uuid4()), "azp": client,
             "sid": str(uuid.uuid4()), "scope": "openid",
         })
 
@@ -43,6 +43,13 @@ class UserinfoContract(ServerCase):
         self.assertEqual(headers.get("access-control-allow-credentials"), "true")
         exposed = {value.strip() for value in headers.get("access-control-expose-headers", "").split(",")}
         self.assertIn("WWW-Authenticate", exposed)
+
+    def test_token_issued_ahead_of_the_clock_passes_verification(self):
+        # A clock step must not invalidate fresh tokens; only expiry counts,
+        # as in the reference. The token then fails on its missing session.
+        status, headers, _ = self.request("GET", USERINFO, {"Authorization": "Bearer " + self.sessionless_token(issued_ahead=30)})
+        self.assertEqual(status, 401)
+        self.assert_challenge(headers, "user_session_not_found")
 
     def test_missing_token_without_origin_has_realm_challenge_only(self):
         status, headers, body = self.request("GET", USERINFO)

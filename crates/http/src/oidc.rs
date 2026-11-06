@@ -1448,7 +1448,9 @@ pub(crate) async fn verified_access_any(
     else {
         return Ok(None);
     };
-    if claims.iat > now || claims.exp <= now || claims.aud != claims.azp {
+    // Like the reference, only expiry is checked against the clock: a token
+    // issued a moment "in the future" by a clock step is still valid.
+    if claims.exp <= now || claims.aud != claims.azp {
         return Ok(None);
     }
     Ok(Some((realm.to_owned(), claims)))
@@ -1480,7 +1482,6 @@ async fn verified_refresh(
         .as_secs();
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     if claims.iss != issuer
-        || claims.iat > now
         || claims.exp <= now
         || claims.aud != issuer
         || granted_login_scope(&claims.scope).is_none()
