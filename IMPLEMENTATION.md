@@ -930,9 +930,16 @@ functions as their admin routes, now shared, so imports accept and refuse
 exactly what the API does. `tests/public/partial_import_contract.py` checks
 4 groups.
 
-Remaining differences: groups and client roles cannot be imported yet
-(groups answer 400, where the reference fails with a 500 without a path);
-an overwrite does not also count the role as added; imported users get the
+Client roles, the group tree with realm and client role mappings, and
+users' role mappings and group memberships by path import too, following
+`tests/reference/partial-import-group-observations.json`, in the order
+realm roles, clients, client roles, groups, users, so later resources can
+name earlier ones; `tests/public/partial_import_groups_contract.py` checks
+them.
+
+Remaining differences: groups need no path here, where the reference fails
+with a 500 without one; an overwrite of a group adds missing subgroups and
+mappings but removes nothing; an overwrite does not also count the role as added; imported users get the
 default role, like every user created here; malformed JSON answers 400
 rather than 500; resources are written one by one, so a failure part-way
 through `SKIP` or `OVERWRITE` keeps what was already written; an export

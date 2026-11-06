@@ -4,7 +4,7 @@ Expected cases come from tests/reference/partial-import-observations.json.
 Known differences, listed in IMPLEMENTATION.md: an overwrite does not also
 count the realm role as added, imported users get the realm's default
 role like any other new user, malformed JSON answers 400 rather than 500,
-and groups are refused with 400 rather than failing with 500.
+and groups without a path import instead of failing with 500.
 """
 
 import json
@@ -65,7 +65,8 @@ class PartialImportContract(AdminCase):
     def test_empty_malformed_and_groups(self):
         self.assertEqual(self.summary(self.call("POST", self.base + "/partialImport", {})), REFERENCE["import/empty"])
         self.assertEqual(self.call("POST", self.base + "/partialImport", raw="{")[0], 400)
-        self.assertEqual(self.call("POST", self.base + "/partialImport", {"groups": [{"name": "imported-group"}]})[0], 400)
+        # Groups without a path import here; the reference fails with a 500.
+        self.assertEqual(self.call("POST", self.base + "/partialImport", {"groups": [{"name": "imported-group"}]})[0], 200)
 
     def test_failed_import_changes_nothing(self):
         self.assertEqual(self.call("POST", self.base + "/clients", {"clientId": "imported-app", "publicClient": True})[0], 201)

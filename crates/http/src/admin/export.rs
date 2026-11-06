@@ -192,9 +192,10 @@ fn text<'a>(
         .ok_or_else(|| AdminError::bad_request(missing.to_owned()))
 }
 
-/// Imports realm roles, clients and users. Under `FAIL` every resource is
-/// checked before anything is written, so a conflict changes nothing.
-/// Groups are refused: the reference fails on them without a path.
+/// Imports realm and client roles, clients, groups and users, in that
+/// order so that later resources can name earlier ones. Under `FAIL` every
+/// resource is checked before anything is written, so a conflict changes
+/// nothing. Groups need no path, which the reference requires.
 async fn partial_import(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -207,7 +208,7 @@ async fn partial_import(
     if let Some(field) = body.keys().find(|key| {
         !matches!(
             key.as_str(),
-            "ifResourceExists" | "roles" | "clients" | "users" | "policy"
+            "ifResourceExists" | "roles" | "clients" | "groups" | "users" | "policy"
         )
     }) {
         return Err(AdminError::bad_request(format!(
@@ -221,19 +222,33 @@ async fn partial_import(
         Some(Value::String(policy)) if policy == "OVERWRITE" => IfExists::Overwrite,
         Some(_) => return Err(AdminError::bad_request("Invalid ifResourceExists")),
     };
-    let roles = match body.get("roles") {
-        None | Some(Value::Null) => Vec::new(),
+    let (roles, client_roles) = match body.get("roles") {
+        None | Some(Value::Null) => (Vec::new(), Vec::new()),
         Some(Value::Object(roles)) => {
-            if let Some(field) = roles.keys().find(|key| key.as_str() != "realm") {
+            if let Some(field) = roles
+                .keys()
+                .find(|key| !matches!(key.as_str(), "realm" | "client"))
+            {
                 return Err(AdminError::bad_request(format!(
                     "Unsupported import section: roles.{field}"
                 )));
             }
-            items(roles, "realm")?
+            let mut by_client = Vec::new();
+            match roles.get("client") {
+                None | Some(Value::Null) => (),
+                Some(Value::Object(clients)) => {
+                    for (client, _) in clients {
+                        by_client.push((client.clone(), items(clients, client)?));
+                    }
+                }
+                Some(_) => return Err(super::users::unparsable()),
+            }
+            (items(roles, "realm")?, by_client)
         }
         Some(_) => return Err(super::users::unparsable()),
     };
     let clients = items(&body, "clients")?;
+    let groups = items(&body, "groups")?;
     let users = items(&body, "users")?;
     let needs = [
         (!clients.is_empty(), Access::ManageClients),
@@ -280,6 +295,39 @@ async fn partial_import(
             .into_iter()
             .next();
         existing_users.push(found);
+    }
+    let top_level = state.storage.groups(&realm_id, None).await?;
+    let mut existing_groups = Vec::new();
+    for group in &groups {
+        let name = text(group, "name", "Group name is missing")?;
+        existing_groups.push(
+            top_level
+                .iter()
+                .find(|stored| stored.name == name)
+                .map(|stored| stored.id.clone()),
+        );
+    }
+    let mut existing_client_roles = Vec::new();
+    for (client, roles) in &client_roles {
+        let stored = state
+            .storage
+            .clients(&realm_id, Some(client))
+            .await?
+            .into_iter()
+            .next();
+        for role in roles {
+            let (name, _) = super::roles::name_and_description(role)?;
+            let found = match &stored {
+                Some(stored) => {
+                    state
+                        .storage
+                        .role(&realm_id, Some(&stored.id), name)
+                        .await?
+                }
+                None => None,
+            };
+            existing_client_roles.push(found);
+        }
     }
     if policy == IfExists::Fail {
         let conflict = clients
@@ -378,16 +426,90 @@ async fn partial_import(
             }
         }
     }
+    let mut existing_client_roles = existing_client_roles.into_iter();
+    for (client, roles) in &client_roles {
+        let stored = state
+            .storage
+            .clients(&realm_id, Some(client))
+            .await?
+            .into_iter()
+            .next()
+            .ok_or_else(|| AdminError::bad_request(format!("Client {client} not found")))?;
+        for role in roles {
+            let (name, description) = super::roles::name_and_description(role)?;
+            let label = format!("{client}-->{name}");
+            match (existing_client_roles.next().flatten(), policy) {
+                (None, _) => {
+                    let id = uuid::Uuid::new_v4().to_string();
+                    let composites = RoleNames::default();
+                    let new_role = rs_keycloak_storage_postgres::NewRole {
+                        id: &id,
+                        name,
+                        description,
+                        composites: &composites,
+                    };
+                    state
+                        .storage
+                        .create_role(&realm_id, Some(&stored.id), &new_role, &actor)
+                        .await?;
+                    added += 1;
+                    results.push(result("ADDED", "CLIENT_ROLE", &label, &id));
+                }
+                (Some(found), IfExists::Overwrite) => {
+                    state
+                        .storage
+                        .update_role(&realm_id, Some(&stored.id), name, name, description, &actor)
+                        .await?;
+                    overwritten += 1;
+                    results.push(result("OVERWRITTEN", "CLIENT_ROLE", &label, &found.id));
+                }
+                (Some(found), _) => {
+                    skipped += 1;
+                    results.push(result("SKIPPED", "CLIENT_ROLE", &label, &found.id));
+                }
+            }
+        }
+    }
+    for (group, found) in groups.into_iter().zip(existing_groups) {
+        let name = group["name"].as_str().unwrap_or_default().to_owned();
+        match (found, policy) {
+            (Some(id), IfExists::Skip) => {
+                skipped += 1;
+                results.push(result("SKIPPED", "GROUP", &name, &id));
+            }
+            (found, _) => {
+                let overwriting = found.is_some();
+                let id = import_group(&state, &realm_id, None, group, &actor).await?;
+                if overwriting {
+                    overwritten += 1;
+                    results.push(result("OVERWRITTEN", "GROUP", &name, &id));
+                } else {
+                    added += 1;
+                    results.push(result("ADDED", "GROUP", &name, &id));
+                }
+            }
+        }
+    }
     for (user, found) in users.into_iter().zip(existing_users) {
         let name = user["username"].as_str().unwrap_or_default().to_lowercase();
         match (found, policy) {
             (None, _) => {
-                let id = super::users::create_from(&state, &realm_id, user, &actor).await?;
+                let mut created = user.clone();
+                for field in ["realmRoles", "clientRoles", "groups"] {
+                    created.remove(field);
+                }
+                let id = super::users::create_from(&state, &realm_id, &created, &actor).await?;
+                user_links(&state, &realm_id, &id, user, &actor).await?;
                 added += 1;
                 results.push(result("ADDED", "USER", &name, &id));
             }
             (Some(stored), IfExists::Overwrite) => {
-                super::users::update_from(&state, &realm_id, &stored, user, &actor).await?;
+                let mut changed = user.clone();
+                for field in ["realmRoles", "clientRoles", "groups"] {
+                    changed.remove(field);
+                }
+                super::users::update_from(&state, &realm_id, &stored, &changed, &actor).await?;
+                user_links(&state, &realm_id, &stored.id, user, &actor).await?;
                 overwritten += 1;
                 results.push(result("OVERWRITTEN", "USER", &name, &stored.id));
             }
@@ -403,4 +525,139 @@ async fn partial_import(
         "skipped": skipped,
         "results": results,
     })))
+}
+
+/// Maps an imported holder's `realmRoles` and `clientRoles` (role names by
+/// public client identifier) to it.
+async fn map_roles(
+    state: &OidcState,
+    realm_id: &str,
+    holder: RoleHolder<'_>,
+    item: &Map<String, Value>,
+    actor: &rs_keycloak_storage_postgres::Actor,
+) -> Result<(), AdminError> {
+    let names = |value: Option<&Value>| -> Result<Vec<String>, AdminError> {
+        match value {
+            None | Some(Value::Null) => Ok(Vec::new()),
+            Some(Value::Array(names)) => names
+                .iter()
+                .map(|name| {
+                    name.as_str()
+                        .map(str::to_owned)
+                        .ok_or_else(super::users::unparsable)
+                })
+                .collect(),
+            Some(_) => Err(super::users::unparsable()),
+        }
+    };
+    let mut containers = vec![(None, names(item.get("realmRoles"))?)];
+    match item.get("clientRoles") {
+        None | Some(Value::Null) => (),
+        Some(Value::Object(clients)) => {
+            for (client, roles) in clients {
+                let stored = state
+                    .storage
+                    .clients(realm_id, Some(client))
+                    .await?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| AdminError::bad_request(format!("Client {client} not found")))?;
+                containers.push((Some(stored.id), names(Some(roles))?));
+            }
+        }
+        Some(_) => return Err(super::users::unparsable()),
+    }
+    for (client, names) in containers {
+        let mut refs = Vec::new();
+        for name in names {
+            let role = state
+                .storage
+                .role(realm_id, client.as_deref(), &name)
+                .await?
+                .ok_or_else(|| AdminError::bad_request(format!("Role not found: {name}")))?;
+            refs.push((role.id, name));
+        }
+        if !refs.is_empty() {
+            state
+                .storage
+                .change_holder_roles(realm_id, client.as_deref(), holder, &refs, true, actor)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Creates a group under `parent` unless it exists there, then maps its
+/// roles and imports its subgroups; returns its id.
+async fn import_group(
+    state: &OidcState,
+    realm_id: &str,
+    parent: Option<&str>,
+    group: &Map<String, Value>,
+    actor: &rs_keycloak_storage_postgres::Actor,
+) -> Result<String, AdminError> {
+    let name = text(group, "name", "Group name is missing")?;
+    let siblings = state.storage.groups(realm_id, parent).await?;
+    let id = match siblings.into_iter().find(|sibling| sibling.name == name) {
+        Some(existing) => existing.id,
+        None => {
+            let id = uuid::Uuid::new_v4().to_string();
+            match state
+                .storage
+                .create_group(realm_id, &id, parent, name, actor)
+                .await?
+            {
+                rs_keycloak_storage_postgres::GroupCreation::Created(_) => id,
+                _ => {
+                    return Err(AdminError::bad_request(format!(
+                        "Could not import group {name}"
+                    )));
+                }
+            }
+        }
+    };
+    map_roles(state, realm_id, RoleHolder::Group(&id), group, actor).await?;
+    for child in items(group, "subGroups")? {
+        Box::pin(import_group(state, realm_id, Some(&id), child, actor)).await?;
+    }
+    Ok(id)
+}
+
+/// Maps an imported user's roles and joins the groups named by path.
+async fn user_links(
+    state: &OidcState,
+    realm_id: &str,
+    user_id: &str,
+    user: &Map<String, Value>,
+    actor: &rs_keycloak_storage_postgres::Actor,
+) -> Result<(), AdminError> {
+    map_roles(state, realm_id, RoleHolder::User(user_id), user, actor).await?;
+    let paths = match user.get("groups") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(paths)) => paths
+            .iter()
+            .map(|path| path.as_str().ok_or_else(super::users::unparsable))
+            .collect::<Result<_, _>>()?,
+        Some(_) => return Err(super::users::unparsable()),
+    };
+    for path in paths {
+        let mut parent: Option<String> = None;
+        for name in path.split('/').filter(|name| !name.is_empty()) {
+            let found = state
+                .storage
+                .groups(realm_id, parent.as_deref())
+                .await?
+                .into_iter()
+                .find(|group| group.name == name)
+                .ok_or_else(|| AdminError::bad_request(format!("Group not found: {path}")))?;
+            parent = Some(found.id);
+        }
+        let group =
+            parent.ok_or_else(|| AdminError::bad_request(format!("Group not found: {path}")))?;
+        state
+            .storage
+            .change_membership(realm_id, user_id, &group, true, actor)
+            .await?;
+    }
+    Ok(())
 }
