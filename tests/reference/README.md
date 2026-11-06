@@ -288,3 +288,11 @@ algorithm and one entry per key (RS256 and RSA-OAEP with `publicKey` and
 RS256 and RSA-OAEP keys are the ones in the realm's JWKS. Unknown realms
 answer 404 "Realm not found." and missing tokens 401. No key material is
 kept. The baseline passed a second, comparing run.
+
+`required_actions_admin.py` records 11 cases in
+`required-action-admin-observations.json`: the 14 required actions of a new
+realm with their names, enabled and default flags and priorities, reading
+one ("Failed to find required action" when unknown), and updating one. A
+disabled action no longer runs at login while users keep it assigned, and a
+default action is given to new users. Malformed bodies answer 400
+`unknown_error`. The baseline passed a second, comparing run.
