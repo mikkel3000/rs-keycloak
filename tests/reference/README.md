@@ -358,3 +358,9 @@ defaults to false and, when true, adds `UPDATE_PASSWORD`; of two passwords
 the last wins; a non-password credential refuses the creation with 400
 "Could not create user"; an empty list creates no credential; an empty
 value stores a password credential without data. Recorded with `batch.py`.
+
+`partial_import_groups.py` records 5 cases in
+`partial-import-group-observations.json`: importing client roles (results
+name them `client-->role`), a group tree with paths and realm and client
+role mappings, and a user with roles and membership by group path, then the
+same import with `SKIP`, which skips all five. Recorded with `batch.py`.
