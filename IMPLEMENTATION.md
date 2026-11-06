@@ -825,3 +825,21 @@ Remaining differences: client scopes cannot be listed, created or
 assigned, so every client has exactly these defaults; access tokens lack
 `acr`, `allowed-origins` and `auth_time`, and ID tokens `acr`, `at_hash` and
 `jti`; refresh does not narrow the scope to the request.
+
+## Faster checks
+
+`tests/public/fast.py [--workers N] BINARY [CONTRACT ...]` runs the contract
+files in parallel against one migrated database (two workers by default),
+prints the slowest tests, and fails if any test takes more than 500 ms.
+Without names it runs every contract except the Docker-backed `oidc` and
+`cors` contracts and `bootstrap`, which needs a fresh database and stays in
+`database.sh`. Against the release binary the whole set takes about 14
+seconds with three workers, the slowest test near 300 ms; the debug binary
+takes about twice as long per request, so parallel debug runs can push the
+heaviest tests past the limit. The runner takes `--workers` as an option
+because the server refuses unknown `RS_KEYCLOAK_` variables, which the
+contract servers would inherit.
+
+`tests/reference/batch.py` records and compares several reference baselines
+against one start of the pinned Keycloak, described in
+`tests/reference/README.md`.

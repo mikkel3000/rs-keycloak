@@ -10,6 +10,8 @@ The shared-session fixture signs in two clients through the same real upstream S
 
 Synthetic bootstrap/client/user secrets and tokens remain in memory, upstream process output is suppressed, and snapshots retain only selected error/active fields, field names and response headers; the only header normalization replaces the random fixture realm in `WWW-Authenticate` with `{realm}`.
 
+`batch.py --archive PATH [--record] MODULE=BASELINE ...` runs several recorders against one reference start: with `--record` it writes each baseline and then compares all of them in a second pass against the same server, so one start records and checks that every case repeats; a reference start takes about 20 seconds, so this replaces one or two starts per recorder. The bootstrap secret stays in memory.
+
 `--record` emits redacted observations without comparing the baseline for an explicit reviewed contract update; normal runs fail if the baseline is missing or any observed case changes, and `--port` selects another loopback reference port.
 
 `oauth.py` separately tests public/confidential login forms, code/PKCE, signed token validation and client-authentication errors; the HTTP form client does not replace browser-engine or independent protocol-client qualification.

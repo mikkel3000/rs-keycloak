@@ -2,6 +2,7 @@
 """Exercise pinned Keycloak public login forms and code+PKCE with disposable data."""
 import argparse
 import base64
+import contextlib
 import hashlib
 import html.parser
 import http.cookiejar
@@ -205,25 +206,23 @@ def run(base, client_secret, confidential=False):
         request(base + '/admin/realms/' + realm, token=admin, method='DELETE', expected=204)
 
 
-def main(runner=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--archive', required=True, type=pathlib.Path)
-    parser.add_argument('--port', type=int, default=18081)
-    if runner:
-        parser.add_argument('--record', action='store_true', help='Emit redacted reference observations without comparing the checked-in baseline')
-    args = parser.parse_args()
+@contextlib.contextmanager
+def reference_server(archive_path, port):
+    """Starts the pinned distribution on loopback with a fresh bootstrap
+    client; yields the base URL and the client's secret, which stays in
+    memory, and removes the server and its data afterwards."""
     lock = json.loads((pathlib.Path(__file__).resolve().parents[2] / 'compatibility/reference.lock').read_text())
-    digest = hashlib.sha256(args.archive.read_bytes()).hexdigest()
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
     assert digest == lock['keycloak']['distribution']['sha256'], 'distribution digest mismatch'
-    base = f'http://127.0.0.1:{args.port}'
+    base = f'http://127.0.0.1:{port}'
     with tempfile.TemporaryDirectory(prefix='rs-keycloak-oauth-') as directory:
-        with tarfile.open(args.archive) as archive:
+        with tarfile.open(archive_path) as archive:
             archive.extractall(directory, filter='data')
         client_secret = secrets.token_urlsafe(40)
         env = os.environ.copy()
         env['KC_BOOTSTRAP_ADMIN_CLIENT_ID'] = 'reference-bootstrap'
         env['KC_BOOTSTRAP_ADMIN_CLIENT_SECRET'] = client_secret
-        process = subprocess.Popen([str(pathlib.Path(directory) / 'keycloak-26.8.1/bin/kc.sh'), 'start-dev', '--http-host=127.0.0.1', f'--http-port={args.port}'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen([str(pathlib.Path(directory) / 'keycloak-26.8.1/bin/kc.sh'), 'start-dev', '--http-host=127.0.0.1', f'--http-port={port}'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         try:
             for _ in range(180):
                 if process.poll() is not None:
@@ -235,7 +234,7 @@ def main(runner=None):
                     time.sleep(1)
             else:
                 raise RuntimeError('reference readiness deadline')
-            print(json.dumps(runner(base, client_secret, record=args.record) if runner else {'cases': [run(base, client_secret), run(base, client_secret, confidential=True)], 'paired': False}))
+            yield base, client_secret
         finally:
             process.terminate()
             try:
@@ -244,6 +243,16 @@ def main(runner=None):
                 process.kill()
                 process.wait()
 
+
+def main(runner=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--archive', required=True, type=pathlib.Path)
+    parser.add_argument('--port', type=int, default=18081)
+    if runner:
+        parser.add_argument('--record', action='store_true', help='Emit redacted reference observations without comparing the checked-in baseline')
+    args = parser.parse_args()
+    with reference_server(args.archive, args.port) as (base, client_secret):
+        print(json.dumps(runner(base, client_secret, record=args.record) if runner else {'cases': [run(base, client_secret), run(base, client_secret, confidential=True)], 'paired': False}))
 
 if __name__ == '__main__':
     try:
