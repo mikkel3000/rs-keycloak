@@ -227,3 +227,11 @@ with or without its slash and with any query, but not another port, user
 info or dot segments; exact URIs must match exactly, query and host case
 included; fragments never match. Only status and page kind are kept. The
 baseline passed a second, comparing run.
+
+`logout_redirects.py` records 6 RP-initiated logouts in
+`logout-redirect-observations.json` for a client whose post-logout URIs are
+`+` (its redirect URIs, one ending in `/*`) and one with an explicit
+`/out/*`. Post-logout URIs match by the same rules as redirect URIs:
+wildcards cover paths and queries below them but not dot segments, and an
+explicit list does not include the redirect URIs. The baseline passed a
+second, comparing run.
