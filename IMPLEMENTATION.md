@@ -843,3 +843,19 @@ contract servers would inherit.
 `tests/reference/batch.py` records and compares several reference baselines
 against one start of the pinned Keycloak, described in
 `tests/reference/README.md`.
+
+## Client scope listings
+
+`/client-scopes`, `/client-scopes/{id}`, the realm's default and optional
+scope lists and each client's default and optional scopes are served
+read-only, following `tests/reference/client-scope-observations.json`, and
+client representations list `defaultClientScopes`. Only the scopes this
+server performs are listed, `basic`, `email`, `profile` and `roles`, as
+every client's defaults; their ids are version 8 UUIDs derived from the
+realm and the name, so they are stable without storage.
+`tests/public/client_scopes_contract.py` checks 2 groups.
+
+Remaining differences: scopes cannot be created, edited or assigned and
+have no protocol mappers; `acr`, `web-origins` and the optional scopes
+(`offline_access`, `address`, `phone` and others) are missing, as are the
+SAML scopes.

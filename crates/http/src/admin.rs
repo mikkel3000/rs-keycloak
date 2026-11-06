@@ -23,6 +23,7 @@ use uuid::Uuid;
 use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 
 mod authentication;
+mod client_scopes;
 mod clients;
 mod groups;
 mod roles;
@@ -33,6 +34,7 @@ mod users;
 pub(crate) fn routes() -> Router<OidcState> {
     Router::new()
         .merge(authentication::routes())
+        .merge(client_scopes::routes())
         .merge(clients::routes())
         .merge(groups::routes())
         .merge(roles::routes())

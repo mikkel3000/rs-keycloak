@@ -191,6 +191,8 @@ fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
     if let Some(secret) = secret {
         fields["secret"] = json!(secret);
     }
+    fields["defaultClientScopes"] = json!(super::client_scopes::default_scope_names());
+    fields["optionalClientScopes"] = json!([]);
     if let Some(root_url) = &client.root_url {
         fields["rootUrl"] = json!(root_url);
     }

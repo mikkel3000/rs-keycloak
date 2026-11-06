@@ -309,3 +309,10 @@ scope is redirected back as `invalid_scope`; without `openid` there is no
 ID token and userinfo answers 403. The fixture user comes from a realm
 import, which gives no default roles, so these tokens carry no role claims.
 The baseline passed a second, comparing run.
+
+`client_scopes.py` records 9 cases in `client-scope-observations.json`: the
+15 built-in client scopes of a new realm with their protocol and token and
+consent attributes, one scope read ("Could not find client scope" when
+unknown), the realm's default and optional scope lists, and a new client's
+default (`acr`, `basic`, `email`, `profile`, `roles`, `web-origins`) and
+optional scopes. Recorded with `batch.py`, whose second pass compared it.
