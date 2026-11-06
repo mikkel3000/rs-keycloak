@@ -937,3 +937,19 @@ default role, like every user created here; malformed JSON answers 400
 rather than 500; resources are written one by one, so a failure part-way
 through `SKIP` or `OVERWRITE` keeps what was already written; an export
 cannot be imported as is, since it carries fields the admin API refuses.
+
+## User creation with credentials
+
+User creation, through the admin API and partial import, accepts
+`credentials` with a password, following
+`tests/reference/user-credential-create-observations.json`: `temporary`
+defaults to false and adds `UPDATE_PASSWORD` when true, the last of several
+passwords wins, and any other credential type refuses the creation with
+400 "Could not create user". The password is hashed before the user is
+written, and user and credential are stored in one transaction. Password
+parsing and hashing are shared with password reset.
+`tests/public/user_credentials_create_contract.py` checks 5 groups.
+
+Remaining differences: an empty password is refused with 400, where the
+reference stores a password credential without data; hashed or OTP
+credentials cannot be imported.

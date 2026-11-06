@@ -90,8 +90,9 @@ class AdminUsersContract(ServerCase):
         self.assert_case(self.call("POST", self.users, raw="{"), "create/malformed-json")
         self.assert_case(self.call("POST", self.users, {"username": "nobody"}, token=False), "create/no-token")
         self.assert_case(self.call("POST", "/admin/realms/unknown-" + RUN + "/users", {"username": "nobody"}), "create/unknown-realm")
-        status, _, body = self.call("POST", self.users, {"username": "x", "credentials": []})
-        self.assertEqual((status, json.loads(body)), (400, {"errorMessage": "Unsupported user field: credentials"}))
+        # Fields this server does not model are refused, not ignored.
+        status, _, body = self.call("POST", self.users, {"username": "x", "attributes": {"a": ["b"]}})
+        self.assertEqual((status, json.loads(body)), (400, {"errorMessage": "Unsupported user field: attributes"}))
 
     def test_search_and_count(self):
         self.create_reference_users()

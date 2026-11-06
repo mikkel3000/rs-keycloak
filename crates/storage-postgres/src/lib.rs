@@ -37,7 +37,7 @@ pub use role_admin::{
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use session_admin::{ClientSessionCount, SessionRecord};
 pub use sso::SsoSession;
-pub use user_admin::{NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
+pub use user_admin::{NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
 
 use std::time::Duration;
 

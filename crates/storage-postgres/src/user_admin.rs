@@ -47,6 +47,16 @@ pub struct UserRecord {
     pub totp: bool,
 }
 
+/// A password to store with a new user.
+pub struct NewPassword<'a> {
+    /// Credential identifier.
+    pub credential_id: &'a str,
+    /// Password hash in PHC format.
+    pub phc: &'a [u8],
+    /// Whether the user must replace it at the next login.
+    pub temporary: bool,
+}
+
 /// Outcome of updating a user.
 pub enum UserUpdate {
     /// The user was updated.
@@ -110,12 +120,14 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
 }
 
 impl Storage {
-    /// Creates a user unless its username or email is already taken.
+    /// Creates a user, with an initial password when given, unless its
+    /// username or email is already taken.
     pub async fn create_user(
         &self,
         realm_id: &str,
         user_id: &str,
         user: &NewUser<'_>,
+        password: Option<&NewPassword<'_>>,
         actor: &Actor,
     ) -> Result<UserCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
@@ -133,6 +145,14 @@ impl Storage {
             } else {
                 UserCreation::EmailExists
             });
+        }
+        if let Some(password) = password {
+            sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data) VALUES ($1, $2, $3, 'password', $4)")
+                .bind(realm_id).bind(password.credential_id).bind(user_id).bind(password.phc).execute(&mut *conn).await?;
+            if password.temporary {
+                sqlx::query("UPDATE users SET required_actions = array_append(array_remove(required_actions, 'UPDATE_PASSWORD'), 'UPDATE_PASSWORD') WHERE realm_id = $1 AND id = $2")
+                    .bind(realm_id).bind(user_id).execute(&mut *conn).await?;
+            }
         }
         audit(conn, actor, "user_created").await?;
         tx.commit().await?;

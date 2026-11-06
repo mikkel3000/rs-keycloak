@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use rs_keycloak_integrations::mail::{Mail, send};
 use rs_keycloak_storage_postgres::{
-    Actor, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
+    Actor, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -296,14 +296,30 @@ pub(super) async fn create_from(
     fields: &Map<String, Value>,
     actor: &Actor,
 ) -> Result<String, AdminError> {
-    let settings = UserSettings::defaults().apply(fields, &[])?;
+    let settings = UserSettings::defaults().apply(fields, &["credentials"])?;
     let username = text(fields, "username")?
         .ok_or_else(|| AdminError::bad_request("User name is missing"))?
         .to_lowercase();
+    let password = match initial_password(fields)? {
+        Some(credential) => Some(hashed_password(state, credential).await?),
+        None => None,
+    };
     let user_id = Uuid::new_v4().to_string();
+    let credential_id = Uuid::new_v4().to_string();
+    let password = password.as_ref().map(|(hash, temporary)| NewPassword {
+        credential_id: &credential_id,
+        phc: hash.as_bytes(),
+        temporary: *temporary,
+    });
     match state
         .storage
-        .create_user(realm_id, &user_id, &settings.user(&username), actor)
+        .create_user(
+            realm_id,
+            &user_id,
+            &settings.user(&username),
+            password.as_ref(),
+            actor,
+        )
         .await?
     {
         UserCreation::Created => Ok(user_id),
@@ -581,6 +597,85 @@ async fn delete_user(
     }
 }
 
+/// The password among a new user's `credentials`, the last one when there
+/// are several, as in the reference. Any other credential type refuses the
+/// whole creation.
+fn initial_password(
+    fields: &Map<String, Value>,
+) -> Result<Option<&Map<String, Value>>, AdminError> {
+    let credentials = match fields.get("credentials") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::Array(credentials)) => credentials,
+        Some(_) => return Err(unparsable()),
+    };
+    let mut password = None;
+    for credential in credentials {
+        let Value::Object(credential) = credential else {
+            return Err(unparsable());
+        };
+        if let Some(field) = credential
+            .keys()
+            .find(|key| !matches!(key.as_str(), "type" | "value" | "temporary"))
+        {
+            return Err(AdminError::bad_request(format!(
+                "Unsupported credential field: {field}"
+            )));
+        }
+        match credential.get("type") {
+            None | Some(Value::Null) => (),
+            Some(Value::String(kind)) if kind == "password" => (),
+            Some(_) => return Err(AdminError::bad_request("Could not create user")),
+        }
+        password = Some(credential);
+    }
+    Ok(password)
+}
+
+/// Reads and hashes a password credential: `type` must be absent or
+/// `password`, `value` non-empty, and `temporary` defaults to false.
+async fn hashed_password(
+    state: &OidcState,
+    fields: &Map<String, Value>,
+) -> Result<(Zeroizing<String>, bool), AdminError> {
+    match fields.get("type") {
+        None | Some(Value::Null) => (),
+        Some(Value::String(kind)) if kind == "password" => (),
+        Some(_) => {
+            return Err(AdminError::bad_request(
+                "Only password credentials are supported",
+            ));
+        }
+    }
+    let temporary = flag(fields, "temporary", false)?;
+    let password = match fields.get("value") {
+        Some(Value::String(value)) if !value.is_empty() => Zeroizing::new(value.clone()),
+        None | Some(Value::Null | Value::String(_)) => {
+            return Err(AdminError::Error(
+                StatusCode::BAD_REQUEST,
+                "Empty password not allowed".into(),
+            ));
+        }
+        Some(_) => return Err(unparsable()),
+    };
+    if password.len() > MAX_PASSWORD_BYTES {
+        return Err(AdminError::bad_request(
+            "Password must be at most 1024 bytes",
+        ));
+    }
+    let permit = Arc::clone(&state.hash_slots)
+        .try_acquire_owned()
+        .map_err(|_| AdminError::Unavailable)?;
+    let hash = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        rs_keycloak_crypto::hash_password(password.as_bytes())
+    })
+    .await
+    .map_err(|_| AdminError::Unavailable)?
+    .map(Zeroizing::new)
+    .map_err(|_| AdminError::Unavailable)?;
+    Ok((hash, temporary))
+}
+
 async fn reset_password(
     State(state): State<OidcState>,
     Path((realm, user)): Path<(String, String)>,
@@ -598,46 +693,11 @@ async fn reset_password(
             "Unsupported credential field: {field}"
         )));
     }
-    match fields.get("type") {
-        None | Some(Value::Null) => (),
-        Some(Value::String(kind)) if kind == "password" => (),
-        Some(_) => {
-            return Err(AdminError::bad_request(
-                "Only password credentials are supported",
-            ));
-        }
-    }
-    let temporary = flag(&fields, "temporary", false)?;
-    let password = match fields.get("value") {
-        Some(Value::String(value)) if !value.is_empty() => Zeroizing::new(value.clone()),
-        None | Some(Value::Null | Value::String(_)) => {
-            return Err(AdminError::Error(
-                StatusCode::BAD_REQUEST,
-                "Empty password not allowed".into(),
-            ));
-        }
-        Some(_) => return Err(unparsable()),
-    };
-    if password.len() > MAX_PASSWORD_BYTES {
-        return Err(AdminError::bad_request(
-            "Password must be at most 1024 bytes",
-        ));
-    }
     // Check the user before spending hashing work on an unknown identifier.
     if state.storage.user(&realm_id, &user).await?.is_none() {
         return Err(user_not_found());
     }
-    let permit = Arc::clone(&state.hash_slots)
-        .try_acquire_owned()
-        .map_err(|_| AdminError::Unavailable)?;
-    let hash = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        rs_keycloak_crypto::hash_password(password.as_bytes())
-    })
-    .await
-    .map_err(|_| AdminError::Unavailable)?
-    .map(Zeroizing::new)
-    .map_err(|_| AdminError::Unavailable)?;
+    let (hash, temporary) = hashed_password(&state, &fields).await?;
     let changed = state
         .storage
         .reset_password(
