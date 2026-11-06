@@ -364,3 +364,13 @@ value stores a password credential without data. Recorded with `batch.py`.
 name them `client-->role`), a group tree with paths and realm and client
 role mappings, and a user with roles and membership by group path, then the
 same import with `SKIP`, which skips all five. Recorded with `batch.py`.
+
+`account_console_page.py` records 5 cases in
+`account-console-page-observations.json`: `GET /realms/{realm}/account/`
+renders the console page with an `environment` block (base and auth URLs,
+realm, `account-console` client, resource URL, locale and feature flags),
+an import map for the vendor React modules under
+`/resources/{version}/common/keycloak/vendor/`, one module entry script and
+one stylesheet under `/resources/{version}/account/keycloak.v3/`, and the
+UI loads its messages from `/resources/{realm}/account/{locale}` as a
+key/value list. Recorded with `batch.py`.
