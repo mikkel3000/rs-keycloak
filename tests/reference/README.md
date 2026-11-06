@@ -334,3 +334,10 @@ current one marked, `DELETE /account/sessions` ends every session but the
 current one, and `DELETE /account/applications/{clientId}/consent` removes
 the client's grant, offline access included ("No client with clientId: …
 found." when unknown). Recorded with `batch.py`.
+
+`partial_export.py` records 5 cases in `partial-export-observations.json`:
+`POST /admin/realms/{realm}/partial-export` returns the realm with its
+client scopes, required actions and default role; `exportGroupsAndRoles`
+adds realm and client roles and groups with their role mappings, and
+`exportClients` adds every client, secrets masked as `**********`, and the
+service-account users. Unknown realms answer 404. Recorded with `batch.py`.
