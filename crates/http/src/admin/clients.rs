@@ -15,7 +15,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use rs_keycloak_protocols::client_urls::{
-    validate_redirect_pattern, validate_redirect_uri, validate_root_url, validate_web_origin,
+    validate_redirect_pattern, validate_root_url, validate_web_origin,
 };
 use rs_keycloak_storage_postgres::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
@@ -112,7 +112,7 @@ fn client_attributes(attributes: &Value) -> Result<(Vec<String>, bool), AdminErr
                     if uri == "+" {
                         uses_redirects = true;
                     } else {
-                        validate_redirect_uri(uri, false).map_err(AdminError::bad_request)?;
+                        validate_redirect_pattern(uri, false).map_err(AdminError::bad_request)?;
                         uris.push(uri.to_owned());
                     }
                 }

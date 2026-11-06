@@ -674,8 +674,16 @@ root, base and redirect URLs, so `account-console` signs in.
 `tests/public/redirect_matching_contract.py` checks 4 groups, the slowest
 in 215 ms, including an `account-console` sign-in.
 
-Remaining differences: post-logout redirects still match registered URIs
-exactly, so a wildcard registration does not cover them; origins are not
+Remaining differences (post-logout matching came later, see below): origins are not
 derived from relative redirect URIs; `security-admin-console` has no
 `webOrigins` (`+` is not supported) and no console is served at its URL;
 relative URIs require a `rootUrl`, which the reference may not require.
+
+## Post-logout redirect matching
+
+RP-initiated logout now matches `post_logout_redirect_uri` with the same
+function as login redirects, against the client's post-logout URIs plus,
+with `+`, its redirect URIs, following the 6 recorded cases in
+`tests/reference/logout-redirect-observations.json`. Registered post-logout
+URIs may now end in `/*`. `tests/public/logout_redirects_contract.py`
+checks one case per test, the slowest in 245 ms.

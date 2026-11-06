@@ -13,6 +13,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use rs_keycloak_crypto::signing::VerifiedIdToken;
+use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
 use rs_keycloak_storage_postgres::RefreshLogout;
 use serde_json::json;
 use url::Url;
@@ -218,12 +219,15 @@ async fn browser(state: OidcState, realm: String, params: BTreeMap<String, Strin
         None => None,
         Some(uri) => {
             let allowed = match &client {
-                Some(client) => match state
-                    .storage
-                    .post_logout_redirect_allowed(&realm_id, client, uri)
-                    .await
-                {
-                    Ok(allowed) => allowed,
+                Some(client) => match state.storage.post_logout_rules(&realm_id, client).await {
+                    Ok(Some(rules)) => {
+                        let server = state.issuer_base.trim_end_matches('/');
+                        rules.redirect_uris.iter().any(|registered| {
+                            resolve_redirect(registered, rules.root_url.as_deref(), server)
+                                .is_some_and(|resolved| redirect_matches(&resolved, uri))
+                        })
+                    }
+                    Ok(None) => false,
                     Err(_) => return unavailable(),
                 },
                 None => false,

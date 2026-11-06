@@ -1,8 +1,8 @@
 //! Ending user sessions at OIDC logout.
 
-use sqlx::PgConnection;
+use sqlx::{PgConnection, Row};
 
-use crate::{Storage, StorageError, authenticated_client};
+use crate::{RedirectRules, Storage, StorageError, authenticated_client};
 
 /// Outcome of a refresh-token logout.
 pub enum RefreshLogout {
@@ -75,19 +75,25 @@ impl Storage {
         Ok(())
     }
 
-    /// Reports whether a client registered this exact post-logout redirect URI,
-    /// directly or through its redirect URIs when it uses Keycloak's "+".
-    pub async fn post_logout_redirect_allowed(
+    /// Reads the post-logout redirect URIs of an enabled client: its own
+    /// list, plus its redirect URIs when it uses Keycloak's "+".
+    pub async fn post_logout_rules(
         &self,
         realm_id: &str,
         client_identifier: &str,
-        uri: &str,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<RedirectRules>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let allowed = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND (EXISTS (SELECT 1 FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id AND p.redirect_uri = $3) OR (c.post_logout_uses_redirect_uris AND EXISTS (SELECT 1 FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id AND d.redirect_uri = $3))))")
-            .bind(realm_id).bind(client_identifier).bind(uri).fetch_one(tx.connection()).await?;
+        let row = sqlx::query("SELECT c.root_url, c.bearer_only, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id UNION SELECT d.redirect_uri FROM client_redirect_uris d WHERE c.post_logout_uses_redirect_uris AND d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY 1) AS redirect_uris FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled")
+            .bind(realm_id).bind(client_identifier).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(allowed)
+        row.map(|row| {
+            Ok(RedirectRules {
+                root_url: row.try_get("root_url")?,
+                redirect_uris: row.try_get("redirect_uris")?,
+                bearer_only: row.try_get("bearer_only")?,
+            })
+        })
+        .transpose()
     }
 }
 
