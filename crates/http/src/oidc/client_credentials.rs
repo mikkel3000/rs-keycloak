@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use rs_keycloak_crypto::signing::{IdTokenClaims, RealmAccess, TokenClaims};
+use rs_keycloak_crypto::signing::{IdTokenClaims, RealmAccess, TokenClaims, UserClaims};
 use rs_keycloak_storage_postgres::ServiceAccountGrant;
 use serde_json::json;
 
@@ -132,6 +132,7 @@ pub(super) async fn grant(
                 roles: &roles.realm,
             }),
             resource_access: resource_access(&roles),
+            user: UserClaims::default(),
         })?;
         let id = if has_openid_scope(granted) {
             Some(signer.sign_id_token(&IdTokenClaims {
@@ -143,6 +144,7 @@ pub(super) async fn grant(
                 auth_time: None,
                 nonce: None,
                 sid: None,
+                user: UserClaims::default(),
             })?)
         } else {
             None

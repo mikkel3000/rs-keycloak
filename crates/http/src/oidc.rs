@@ -27,13 +27,15 @@ use axum::{Json, Router};
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
-    IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
+    IdTokenClaims, RealmAccess, SigningKey, TokenClaims, UserClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
 use rs_keycloak_protocols::pkce::{self, Challenge};
-use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, RoleNames, Storage};
+use rs_keycloak_storage_postgres::{
+    AccessTokenStatus, RefreshRotation, RoleNames, Storage, UserRecord,
+};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
 use url::Url;
@@ -316,7 +318,7 @@ async fn authorize(
     if !valid_realm(&realm)
         || q.response_type != "code"
         || q.code_challenge_method != "S256"
-        || q.scope != "openid"
+        || q.scope.len() > 2048
         || q.client_id.len() > 255
         || q.redirect_uri.len() > 2048
     {
@@ -357,6 +359,17 @@ async fn authorize(
     }) else {
         return failure();
     };
+    let Some(scope) = granted_login_scope(&q.scope) else {
+        // The redirect URI is verified, so the error can go back to the client.
+        let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+        let redirect = rs_keycloak_storage_postgres::AuthorizationRedirect {
+            response_mode: response_mode.to_owned(),
+            redirect_uri: q.redirect_uri.clone(),
+            state: q.state.clone(),
+        };
+        return authorization_response::error(redirect, "invalid_scope", &issuer)
+            .unwrap_or_else(|()| unavailable());
+    };
     let csrf = random_token();
     let request_id = random_token();
     match s
@@ -370,7 +383,7 @@ async fn authorize(
             registered,
             challenge.digest(),
             q.state.as_deref(),
-            &q.scope,
+            scope,
             q.nonce.as_deref(),
             300,
             response_mode,
@@ -1003,9 +1016,13 @@ async fn token(
             if previous.len() > 8192 || client_id.len() > 255 {
                 return invalid_grant();
             }
-            // Only openid is currently grantable; reject expansion before
-            // consuming the supplied token so errors do not revoke a session.
-            if scope.as_deref().is_some_and(|value| value != "openid") {
+            // Refuse unknown scopes before consuming the supplied token, so
+            // errors do not revoke a session. The refreshed tokens keep the
+            // family's granted scope, so a request cannot widen it.
+            if scope
+                .as_deref()
+                .is_some_and(|value| granted_login_scope(value).is_none())
+            {
                 return token_error("invalid_scope");
             }
             let Some(previous_jti) = previous_jti else {
@@ -1059,6 +1076,13 @@ async fn token(
     let Some(lifespan) = token_lifespan(&s, &realm_id).await else {
         return unavailable();
     };
+    let user = match s.storage.user(&realm_id, &grant.user_id).await {
+        Ok(Some(user)) => user,
+        Ok(None) => return invalid_grant(),
+        Err(_) => return unavailable(),
+    };
+    let openid = has_openid_scope(&grant.scope);
+    let scope = grant.scope.clone();
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
     let tokens = tokio::task::spawn_blocking(move || {
@@ -1078,6 +1102,7 @@ async fn token(
                 roles: &roles.realm,
             }),
             resource_access: resource_access(&roles),
+            user: user_claims(&user, &grant.scope),
         };
         let id_claims = IdTokenClaims {
             iss: &issuer,
@@ -1088,6 +1113,7 @@ async fn token(
             auth_time: Some(grant.auth_time),
             nonce: grant.nonce.as_deref(),
             sid: Some(&grant.session_id),
+            user: user_claims(&user, &grant.scope),
         };
         let refresh_claims = TokenClaims {
             iss: &issuer,
@@ -1101,10 +1127,17 @@ async fn token(
             scope: &grant.scope,
             realm_access: None,
             resource_access: None,
+            user: UserClaims::default(),
+        };
+        // Only an `openid` grant gets an ID token, as in the reference.
+        let id_token = if openid {
+            Some(signer.sign_id_token(&id_claims).ok()?)
+        } else {
+            None
         };
         Some((
             signer.sign(&claims).ok()?,
-            signer.sign_id_token(&id_claims).ok()?,
+            id_token,
             signer.sign_refresh_token(&refresh_claims).ok()?,
         ))
     })
@@ -1112,7 +1145,18 @@ async fn token(
     let Ok(Some((access_token, id_token, refresh_token))) = tokens else {
         return unavailable();
     };
-    ([(header::CACHE_CONTROL, "no-store"), (header::PRAGMA, "no-cache")], Json(json!({"access_token":access_token,"id_token":id_token,"token_type":"Bearer","expires_in":lifespan,"scope":"openid","refresh_token":refresh_token,"refresh_expires_in":refresh_expires_in}))).into_response()
+    let mut body = json!({"access_token":access_token,"token_type":"Bearer","expires_in":lifespan,"scope":scope,"refresh_token":refresh_token,"refresh_expires_in":refresh_expires_in});
+    if let Some(id_token) = id_token {
+        body["id_token"] = json!(id_token);
+    }
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::PRAGMA, "no-cache"),
+        ],
+        Json(body),
+    )
+        .into_response()
 }
 
 async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
@@ -1187,6 +1231,47 @@ fn resource_access(roles: &RoleNames) -> Option<BTreeMap<&str, RealmAccess<'_>>>
     })
 }
 
+/// The scopes a login grants: `openid` when requested, plus the reference's
+/// default `email` and `profile` scopes, which every client has. `None` when
+/// the request names a scope no client has here.
+fn granted_login_scope(requested: &str) -> Option<&'static str> {
+    let mut openid = false;
+    for value in requested.split(' ').filter(|value| !value.is_empty()) {
+        match value {
+            "openid" => openid = true,
+            "email" | "profile" => (),
+            _ => return None,
+        }
+    }
+    Some(if openid {
+        "openid email profile"
+    } else {
+        "email profile"
+    })
+}
+
+/// The `profile` and `email` claims a user's token carries for its scopes.
+pub(crate) fn user_claims<'a>(user: &'a UserRecord, scope: &str) -> UserClaims<'a> {
+    let granted = |name: &str| scope.split(' ').any(|value| value == name);
+    let mut claims = UserClaims::default();
+    if granted("profile") {
+        claims.preferred_username = Some(&user.username);
+        claims.given_name = user.first_name.as_deref();
+        claims.family_name = user.last_name.as_deref();
+        let name = [user.first_name.as_deref(), user.last_name.as_deref()]
+            .into_iter()
+            .flatten()
+            .collect::<Vec<_>>()
+            .join(" ");
+        claims.name = Some(name).filter(|name| !name.is_empty());
+    }
+    if granted("email") {
+        claims.email = user.email.as_deref();
+        claims.email_verified = Some(user.email_verified);
+    }
+    claims
+}
+
 /// Reports whether a space-separated scope string grants `openid`.
 fn has_openid_scope(scope: &str) -> bool {
     scope.split(' ').any(|value| value == "openid")
@@ -1255,14 +1340,37 @@ async fn userinfo(
         )
         .await
     {
-        Ok(AccessTokenStatus::Active(_) | AccessTokenStatus::ServiceAccount(_)) => (
-            [
-                (header::CACHE_CONTROL, "no-store"),
-                (header::PRAGMA, "no-cache"),
-            ],
-            Json(json!({"sub":claims.sub})),
-        )
-            .into_response(),
+        Ok(AccessTokenStatus::Active(_) | AccessTokenStatus::ServiceAccount(_)) => {
+            let mut body = json!({"sub":claims.sub});
+            // The profile and email scopes add their claims, as in the tokens.
+            if claims
+                .scope
+                .split(' ')
+                .any(|scope| matches!(scope, "profile" | "email"))
+            {
+                let user = match s.storage.user(&realm_id, &claims.sub).await {
+                    Ok(Some(user)) => user,
+                    Ok(None) => return verification_failed(),
+                    Err(_) => return unavailable(),
+                };
+                let Ok(Value::Object(extra)) =
+                    serde_json::to_value(user_claims(&user, &claims.scope))
+                else {
+                    return unavailable();
+                };
+                if let Some(fields) = body.as_object_mut() {
+                    fields.extend(extra);
+                }
+            }
+            (
+                [
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::PRAGMA, "no-cache"),
+                ],
+                Json(body),
+            )
+                .into_response()
+        }
         Ok(AccessTokenStatus::ClientNotFound) => {
             userinfo_challenge(&realm, Some("Client not found"))
         }
@@ -1354,7 +1462,7 @@ async fn verified_refresh(
         || claims.iat > now
         || claims.exp <= now
         || claims.aud != issuer
-        || claims.scope != "openid"
+        || granted_login_scope(&claims.scope).is_none()
     {
         return Ok(None);
     }

@@ -803,3 +803,25 @@ slowest in 310 ms.
 Remaining differences: the other ten reference actions (terms and
 conditions, WebAuthn, recovery codes and more) are not listed; priorities
 cannot be changed, so the login order stays fixed.
+
+## Default client scopes and user claims
+
+Code-flow logins accept `openid`, `profile` and `email`, grant the
+reference's default `email` and `profile` scopes whatever is requested,
+and redirect any other scope back as `invalid_scope`, following
+`tests/reference/default-scope-observations.json`. Access tokens, ID tokens
+and userinfo carry `preferred_username`, `name`, `given_name` and
+`family_name` for `profile`, and `email` and `email_verified` for `email`,
+through one `UserClaims` value flattened into both token types and built
+from the user once per token request. A grant without `openid` gets no ID
+token, and its userinfo answers 403 as before. Refresh requests may name
+these scopes, but refreshed tokens keep the family's scope, so a request
+cannot widen it. Service-account tokens are unchanged.
+`tests/public/default_scopes_contract.py` checks 5 groups, including a
+refresh, the slowest in 257 ms; the crypto test now also checks the
+flattened claims and the admin keys' SubjectPublicKeyInfo.
+
+Remaining differences: client scopes cannot be listed, created or
+assigned, so every client has exactly these defaults; access tokens lack
+`acr`, `allowed-origins` and `auth_time`, and ID tokens `acr`, `at_hash` and
+`jti`; refresh does not narrow the scope to the request.

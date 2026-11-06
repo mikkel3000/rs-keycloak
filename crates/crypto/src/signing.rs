@@ -66,6 +66,33 @@ pub struct TokenClaims<'a> {
     /// Effective client roles by client, as Keycloak's `resource_access`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resource_access: Option<std::collections::BTreeMap<&'a str, RealmAccess<'a>>>,
+    /// Profile and email claims of the granted scopes.
+    #[serde(flatten)]
+    pub user: UserClaims<'a>,
+}
+
+/// The user claims of the `profile` and `email` scopes; each is left out
+/// when its scope was not granted or the user has no value.
+#[derive(Default, Serialize)]
+pub struct UserClaims<'a> {
+    /// Username, from the `profile` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub preferred_username: Option<&'a str>,
+    /// Given and family name joined, from the `profile` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Given name, from the `profile` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub given_name: Option<&'a str>,
+    /// Family name, from the `profile` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family_name: Option<&'a str>,
+    /// Email address, from the `email` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<&'a str>,
+    /// Whether the email is verified, from the `email` scope.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email_verified: Option<bool>,
 }
 
 /// The `realm_access` claim listing effective realm role names.
@@ -97,6 +124,9 @@ pub struct IdTokenClaims<'a> {
     /// Session identifier, used as `id_token_hint` at logout.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sid: Option<&'a str>,
+    /// Profile and email claims of the granted scopes.
+    #[serde(flatten)]
+    pub user: UserClaims<'a>,
 }
 
 /// Verified ID token claims used to resolve a logout request.
