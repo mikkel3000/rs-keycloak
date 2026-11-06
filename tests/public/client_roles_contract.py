@@ -59,7 +59,7 @@ class ClientRolesContract(AdminCase):
         composites = self.case(self.call("GET", default + "/composites"), "default-role/composites")
         self.assertEqual(sorted({field for item in composites for field in item}), REFERENCE["default-role/composites"]["item_fields"])
 
-    def test_client_role_lifecycle_and_mappings(self):
+    def test_client_role_lifecycle(self):
         roles = f"{self.base}/clients/{self.app}/roles"
         location = f"{ISSUER_BASE}/admin/realms/{self.realm}/clients/{self.app}/roles/editor"
         self.case(self.call("POST", roles, {"name": "editor", "description": "Edits"}), "create/success", location)
@@ -71,6 +71,13 @@ class ClientRolesContract(AdminCase):
         self.assertEqual((editor["clientRole"], editor["containerId"] == self.app), (REFERENCE["get"]["client_role"], REFERENCE["get"]["container_is_client"]))
         self.assertEqual(sorted(editor), REFERENCE["get"]["body_fields"])
         self.case(self.call("GET", roles + "/missing"), "get/unknown")
+        self.case(self.call("DELETE", roles + "/editor"), "delete")
+        self.case(self.call("DELETE", roles + "/editor"), "delete/repeat")
+
+    def test_client_role_mappings_reach_tokens(self):
+        roles = f"{self.base}/clients/{self.app}/roles"
+        self.assertEqual(self.call("POST", roles, {"name": "editor", "description": "Edits"})[0], 201)
+        editor = json.loads(self.call("GET", roles + "/editor")[2])
         mappings = f"{self.base}/users/{self.user}/role-mappings/clients/{self.app}"
         self.case(self.call("GET", mappings), "mappings/initial")
         self.case(self.call("POST", mappings, [{"id": editor["id"], "name": "editor"}]), "mappings/add")
@@ -80,8 +87,6 @@ class ClientRolesContract(AdminCase):
         self.assertEqual({client: sorted(entry["roles"]) for client, entry in sorted(claims["resource_access"].items())}, REFERENCE["token/resource_access"])
         self.case(self.call("DELETE", mappings, [{"id": editor["id"], "name": "editor"}]), "mappings/remove")
         self.case(self.call("GET", mappings), "mappings/after-remove")
-        self.case(self.call("DELETE", roles + "/editor"), "delete")
-        self.case(self.call("DELETE", roles + "/editor"), "delete/repeat")
 
 
 if __name__ == "__main__":
