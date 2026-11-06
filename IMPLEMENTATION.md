@@ -721,3 +721,20 @@ checks 5 groups, the slowest in 372 ms.
 
 Remaining differences: renaming the default role is allowed, a case the
 reference was not recorded for; role attributes stay unsupported.
+
+## Group renames and moves
+
+`PUT /groups/{id}` renames a group and posting an existing group's `id` to
+a parent's `/children` or to `/groups` moves it, following
+`tests/reference/group-update-observations.json`. Name conflicts among the
+destination's siblings, top level included, answer 409 "Sibling group named
+'…' already exists."; subgroup paths follow because they are computed from
+names. Updates accept the read-only fields admin consoles send back.
+`tests/public/group_updates_contract.py` checks 3 groups, the slowest in
+268 ms.
+
+Remaining differences: names with `/` stay refused, since they make paths
+ambiguous, where the reference accepts them on rename; moving a group under
+its own subgroup answers 400 "Cannot move a group into its own subgroup"
+where the reference fails with a 500; moving a group into itself is a 204
+no-op, as recorded; group attributes stay unsupported.

@@ -30,6 +30,20 @@ pub enum GroupCreation {
     ParentNotFound,
 }
 
+/// Outcome of renaming or moving a group.
+pub enum GroupChange {
+    /// The group now has the requested name or parent.
+    Changed,
+    /// The group does not exist.
+    NotFound,
+    /// The new parent does not exist.
+    ParentNotFound,
+    /// A sibling at the destination already has the group's name.
+    Exists,
+    /// The new parent is one of the group's own subgroups.
+    Cycle,
+}
+
 /// Outcome of changing a user's group membership.
 pub enum MembershipChange {
     /// The membership now has the requested state.
@@ -50,6 +64,19 @@ fn group_row(row: &PgRow) -> Result<GroupRecord, StorageError> {
         path: row.try_get("path")?,
         sub_group_count: row.try_get("sub_group_count")?,
     })
+}
+
+/// Whether a group other than `id` under `parent_id` (the top level for
+/// `None`) has the name.
+async fn sibling_named(
+    connection: &mut sqlx::PgConnection,
+    realm_id: &str,
+    parent_id: Option<&str>,
+    name: &str,
+    id: &str,
+) -> Result<bool, StorageError> {
+    Ok(sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM groups WHERE realm_id = $1 AND parent_id IS NOT DISTINCT FROM $2 AND name = $3 AND id <> $4)")
+        .bind(realm_id).bind(parent_id).bind(name).bind(id).fetch_one(connection).await?)
 }
 
 impl Storage {
@@ -93,6 +120,98 @@ impl Storage {
             .await?;
         tx.commit().await?;
         Ok(count)
+    }
+
+    /// Renames a group unless a sibling, or another top-level group, has
+    /// the name.
+    pub async fn rename_group(
+        &self,
+        realm_id: &str,
+        id: &str,
+        name: &str,
+        actor: &Actor,
+    ) -> Result<GroupChange, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let parent: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT parent_id FROM groups WHERE realm_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(realm_id)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(parent) = parent else {
+            tx.commit().await?;
+            return Ok(GroupChange::NotFound);
+        };
+        if sibling_named(conn, realm_id, parent.as_deref(), name, id).await? {
+            tx.commit().await?;
+            return Ok(GroupChange::Exists);
+        }
+        sqlx::query("UPDATE groups SET name = $3 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(id)
+            .bind(name)
+            .execute(&mut *conn)
+            .await?;
+        audit(conn, actor, "group_updated").await?;
+        tx.commit().await?;
+        Ok(GroupChange::Changed)
+    }
+
+    /// Moves a group under a new parent, or to the top level for `None`.
+    /// Moving a group under itself changes nothing, as in the reference;
+    /// moving it under one of its subgroups is refused.
+    pub async fn move_group(
+        &self,
+        realm_id: &str,
+        id: &str,
+        parent_id: Option<&str>,
+        actor: &Actor,
+    ) -> Result<GroupChange, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let name: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM groups WHERE realm_id = $1 AND id = $2 FOR UPDATE",
+        )
+        .bind(realm_id)
+        .bind(id)
+        .fetch_optional(&mut *conn)
+        .await?;
+        let Some(name) = name else {
+            tx.commit().await?;
+            return Ok(GroupChange::NotFound);
+        };
+        if parent_id == Some(id) {
+            tx.commit().await?;
+            return Ok(GroupChange::Changed);
+        }
+        if let Some(parent_id) = parent_id {
+            // The new parent's ancestors, itself included; the group must not be one.
+            let ancestors: Vec<String> = sqlx::query_scalar("WITH RECURSIVE up(id, parent_id, depth) AS (SELECT id, parent_id, 0 FROM groups WHERE realm_id = $1 AND id = $2 UNION ALL SELECT g.id, g.parent_id, u.depth + 1 FROM groups g JOIN up u ON g.realm_id = $1 AND g.id = u.parent_id WHERE u.depth < 64) SELECT id FROM up")
+                .bind(realm_id).bind(parent_id).fetch_all(&mut *conn).await?;
+            if ancestors.is_empty() {
+                tx.commit().await?;
+                return Ok(GroupChange::ParentNotFound);
+            }
+            if ancestors.iter().any(|ancestor| ancestor == id) {
+                tx.commit().await?;
+                return Ok(GroupChange::Cycle);
+            }
+        }
+        if sibling_named(conn, realm_id, parent_id, &name, id).await? {
+            tx.commit().await?;
+            return Ok(GroupChange::Exists);
+        }
+        sqlx::query("UPDATE groups SET parent_id = $3 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(id)
+            .bind(parent_id)
+            .execute(&mut *conn)
+            .await?;
+        audit(conn, actor, "group_moved").await?;
+        tx.commit().await?;
+        Ok(GroupChange::Changed)
     }
 
     /// Creates a top-level group, or a child of `parent_id`.

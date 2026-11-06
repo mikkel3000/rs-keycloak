@@ -10,9 +10,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, put};
 use rs_keycloak_storage_postgres::{
-    GroupCreation, GroupRecord, MembershipChange, RoleHolder, RoleNames,
+    GroupChange, GroupCreation, GroupRecord, MembershipChange, RoleHolder, RoleNames,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::users::{
@@ -30,7 +30,7 @@ pub(super) fn routes() -> Router<OidcState> {
         .route("/admin/realms/{realm}/groups/count", get(count_groups))
         .route(
             "/admin/realms/{realm}/groups/{group}",
-            get(read_group).delete(delete_group),
+            get(read_group).put(update_group).delete(delete_group),
         )
         .route(
             "/admin/realms/{realm}/groups/{group}/children",
@@ -45,6 +45,71 @@ pub(super) fn routes() -> Router<OidcState> {
             "/admin/realms/{realm}/users/{user}/groups/{group}",
             put(join_group).delete(leave_group),
         )
+}
+
+/// The response to a rename or move.
+fn change_response(
+    change: GroupChange,
+    fields: &Map<String, Value>,
+) -> Result<Response, AdminError> {
+    match change {
+        GroupChange::Changed => Ok(StatusCode::NO_CONTENT.into_response()),
+        GroupChange::NotFound | GroupChange::ParentNotFound => Err(group_not_found()),
+        GroupChange::Exists => Err(AdminError::Message(
+            StatusCode::CONFLICT,
+            format!(
+                "Sibling group named '{}' already exists.",
+                fields
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ),
+        )),
+        GroupChange::Cycle => Err(AdminError::bad_request(
+            "Cannot move a group into its own subgroup",
+        )),
+    }
+}
+
+/// Renames a group. Read-only fields of the representation that admin
+/// clients send back are accepted and ignored.
+async fn update_group(
+    State(state): State<OidcState>,
+    Path((realm, id)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, AdminError> {
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let fields = json_object(&body)?;
+    if !matches!(fields.get("attributes"), None | Some(Value::Null))
+        && fields.get("attributes") != Some(&json!({}))
+    {
+        return Err(AdminError::bad_request(
+            "Unsupported group field: attributes",
+        ));
+    }
+    let name = group_name(
+        &fields,
+        &[
+            "id",
+            "path",
+            "parentId",
+            "subGroupCount",
+            "subGroups",
+            "attributes",
+            "realmRoles",
+            "clientRoles",
+            "access",
+        ],
+    )?;
+    change_response(
+        state
+            .storage
+            .rename_group(&realm_id, &id, &name, &actor)
+            .await?,
+        &fields,
+    )
 }
 
 fn group_not_found() -> AdminError {
@@ -75,10 +140,13 @@ fn full(group: &GroupRecord, roles: &RoleNames) -> Value {
     fields
 }
 
-/// Reads the group name from a creation body.
-fn group_name(body: &[u8]) -> Result<String, AdminError> {
-    let fields = json_object(body)?;
-    if let Some(field) = fields.keys().find(|key| key.as_str() != "name") {
+/// Reads a group body's name; `allowed` names further fields that are
+/// accepted and handled, or ignored, by the caller.
+fn group_name(fields: &Map<String, Value>, allowed: &[&str]) -> Result<String, AdminError> {
+    if let Some(field) = fields
+        .keys()
+        .find(|key| key.as_str() != "name" && !allowed.contains(&key.as_str()))
+    {
         return Err(AdminError::bad_request(format!(
             "Unsupported group field: {field}"
         )));
@@ -106,7 +174,22 @@ async fn create(
 ) -> Result<Response, AdminError> {
     let actor = authorize(state, headers, realm, Access::ManageUsers).await?;
     let realm_id = realm_id(state, realm).await?;
-    let name = group_name(body)?;
+    let fields = json_object(body)?;
+    // A body naming an existing group moves it, as in the reference.
+    if let Some(id) = fields.get("id") {
+        let Value::String(id) = id else {
+            return Err(unparsable());
+        };
+        group_name(&fields, &["id"])?;
+        return change_response(
+            state
+                .storage
+                .move_group(&realm_id, id, parent_id, &actor)
+                .await?,
+            &fields,
+        );
+    }
+    let name = group_name(&fields, &[])?;
     let id = Uuid::new_v4().to_string();
     match state
         .storage

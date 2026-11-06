@@ -21,7 +21,7 @@ pub use client_admin::{
 };
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
-pub use group_admin::{GroupCreation, GroupRecord, MembershipChange};
+pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
 pub use login_steps::{CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate};
 pub use logout::RefreshLogout;
 pub use realm_admin::{
