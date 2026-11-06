@@ -350,3 +350,11 @@ body, and a malformed one (500 `invalid_request`). Each result names its
 action, resource type, name and id. The reference fails with a 500 on
 groups given without a path and, on overwrite, also counts the realm role
 as added; imported users get no default roles. Recorded with `batch.py`.
+
+`user_credentials_create.py` records 10 cases in
+`user-credential-create-observations.json`: creating users with
+`credentials`. A password is stored and works at login; `temporary`
+defaults to false and, when true, adds `UPDATE_PASSWORD`; of two passwords
+the last wins; a non-password credential refuses the creation with 400
+"Could not create user"; an empty list creates no credential; an empty
+value stores a password credential without data. Recorded with `batch.py`.
