@@ -209,3 +209,10 @@ read-only (400 `error-user-attribute-read-only`) unless unchanged, an empty
 name removes it, and `requiredActions` replaces the list. A disabled user's
 browser login does not complete, and completes again once enabled. The
 baseline passed a second, comparing run.
+
+`role_mappings.py` records 6 combined role mapping cases in
+`role-mapping-observations.json`: `GET /users/{id}/role-mappings` and
+`/groups/{id}/role-mappings` before and after a realm and a client mapping,
+and for unknown holders. Empty `realmMappings` and `clientMappings` are
+left out; client mappings are keyed by `clientId` with the client's `id`,
+`client` and `mappings`. The baseline passed a second, comparing run.
