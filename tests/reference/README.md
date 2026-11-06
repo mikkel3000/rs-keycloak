@@ -316,3 +316,12 @@ consent attributes, one scope read ("Could not find client scope" when
 unknown), the realm's default and optional scope lists, and a new client's
 default (`acr`, `basic`, `email`, `profile`, `roles`, `web-origins`) and
 optional scopes. Recorded with `batch.py`, whose second pass compared it.
+
+`offline_access.py` records 15 cases in `offline-access-observations.json`:
+an `openid offline_access` login gets an `Offline` refresh token with a
+30-day `refresh_expires_in`, which keeps refreshing after browser logout
+and after an admin signs the user out, but stops ("Offline user session not
+found") after revocation or after the client's consent is removed; the
+admin lists it under `/users/{id}/offline-sessions/{client}` and counts it
+under `/clients/{id}/offline-session-count`. A plain `openid` login still
+gets a `Refresh` token. Recorded with `batch.py`.
