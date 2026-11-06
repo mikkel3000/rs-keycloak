@@ -786,3 +786,20 @@ against the realm's JWKS in 85 ms.
 Remaining differences: there is no certificate, key provider component,
 `validTo`, or HS512, AES and RSA-OAEP keys, and realms cannot have keys of
 their own.
+
+## Required action administration
+
+`/authentication/required-actions` lists, reads and updates the four
+required actions this server performs, following
+`tests/reference/required-action-admin-observations.json`. Realms keep only
+changed actions (migration 31). `rs_active_required_actions` filters a
+user's assigned actions by the realm's settings, and every place that
+decides whether a session waits for steps, or which step comes next, uses
+it, so a disabled action is skipped at login while users keep it assigned.
+Default actions are added to users created through the admin API.
+`tests/public/required_actions_admin_contract.py` checks 4 groups, the
+slowest in 310 ms.
+
+Remaining differences: the other ten reference actions (terms and
+conditions, WebAuthn, recovery codes and more) are not listed; priorities
+cannot be changed, so the login order stays fixed.

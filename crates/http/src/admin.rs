@@ -22,6 +22,7 @@ use uuid::Uuid;
 
 use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 
+mod authentication;
 mod clients;
 mod groups;
 mod roles;
@@ -31,6 +32,7 @@ mod users;
 /// Admin routes, mounted with the public routes below the issuer path.
 pub(crate) fn routes() -> Router<OidcState> {
     Router::new()
+        .merge(authentication::routes())
         .merge(clients::routes())
         .merge(groups::routes())
         .merge(roles::routes())

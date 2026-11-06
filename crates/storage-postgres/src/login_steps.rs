@@ -4,7 +4,7 @@
 
 use sqlx::{PgConnection, Row};
 
-use crate::{Storage, StorageError};
+use crate::{Actor, Storage, StorageError, audit};
 
 /// What a freshly authenticated session still needs before a code is issued.
 pub enum LoginStep {
@@ -78,7 +78,7 @@ async fn settle_session(
     realm_id: &str,
     session_id: &str,
 ) -> Result<(), StorageError> {
-    sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2")
+    sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(rs_active_required_actions(u.realm_id, u.required_actions)) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2")
         .bind(realm_id)
         .bind(session_id)
         .execute(connection)
@@ -134,7 +134,62 @@ async fn pending_user(
         .bind(realm_id).bind(session_id).fetch_optional(connection).await?)
 }
 
+/// Whether the user `u` has a required action assigned that the realm has
+/// not disabled, as a column named `column`.
+fn assigned(alias: &str, column: &str) -> String {
+    format!(
+        "'{alias}' = ANY(rs_active_required_actions(u.realm_id, u.required_actions)) AS {column}"
+    )
+}
+
+/// A realm's stored settings for one required action.
+pub struct RequiredActionSetting {
+    /// Action alias, such as `UPDATE_PASSWORD`.
+    pub alias: String,
+    /// Whether the action runs at login.
+    pub enabled: bool,
+    /// Whether new users are given the action.
+    pub default_action: bool,
+}
+
 impl Storage {
+    /// Lists the required actions a realm has changed from the defaults.
+    pub async fn required_action_settings(
+        &self,
+        realm_id: &str,
+    ) -> Result<Vec<RequiredActionSetting>, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let rows = sqlx::query("SELECT alias, enabled, default_action FROM required_action_settings WHERE realm_id = $1")
+            .bind(realm_id).fetch_all(tx.connection()).await?;
+        tx.commit().await?;
+        rows.iter()
+            .map(|row| {
+                Ok(RequiredActionSetting {
+                    alias: row.try_get("alias")?,
+                    enabled: row.try_get("enabled")?,
+                    default_action: row.try_get("default_action")?,
+                })
+            })
+            .collect()
+    }
+
+    /// Saves a realm's settings for one required action.
+    pub async fn save_required_action(
+        &self,
+        realm_id: &str,
+        setting: &RequiredActionSetting,
+        actor: &Actor,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        sqlx::query("INSERT INTO required_action_settings (realm_id, alias, enabled, default_action) VALUES ($1, $2, $3, $4) ON CONFLICT (realm_id, alias) DO UPDATE SET enabled = EXCLUDED.enabled, default_action = EXCLUDED.default_action")
+            .bind(realm_id).bind(&setting.alias).bind(setting.enabled).bind(setting.default_action)
+            .execute(&mut *conn).await?;
+        audit(conn, actor, "required_action_updated").await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
     /// Returns the next step a session needs: an OTP code first, then the
     /// user's required actions.
     pub async fn login_step(
@@ -143,7 +198,12 @@ impl Storage {
         session_id: &str,
     ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT us.steps_pending, us.otp_verified, 'CONFIGURE_TOTP' = ANY(u.required_actions) AS configure, 'UPDATE_PASSWORD' = ANY(u.required_actions) AS update_password, 'VERIFY_EMAIL' = ANY(u.required_actions) AS verify_email, 'UPDATE_PROFILE' = ANY(u.required_actions) AS update_profile, u.id AS user_id, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()")
+        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, u.id AS user_id, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
+            configure = assigned("CONFIGURE_TOTP", "configure"),
+            update_password = assigned("UPDATE_PASSWORD", "update_password"),
+            verify_email = assigned("VERIFY_EMAIL", "verify_email"),
+            update_profile = assigned("UPDATE_PROFILE", "update_profile"),
+        ))
             .bind(realm_id).bind(session_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         let Some(row) = row else {

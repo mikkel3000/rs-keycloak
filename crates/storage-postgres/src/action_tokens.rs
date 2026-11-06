@@ -184,7 +184,7 @@ impl Storage {
         sqlx::query("UPDATE users SET email_verified = true, required_actions = array_remove(required_actions, 'VERIFY_EMAIL') WHERE realm_id = $1 AND id = $2")
             .bind(realm_id).bind(&user).execute(&mut *conn).await?;
         if let Some(session) = pending_session_id {
-            sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(u.required_actions) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2 AND us.user_id = $3")
+            sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(rs_active_required_actions(u.realm_id, u.required_actions)) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2 AND us.user_id = $3")
                 .bind(realm_id).bind(session).bind(&user).execute(&mut *conn).await?;
         }
         tx.commit().await?;

@@ -120,7 +120,8 @@ impl Storage {
     ) -> Result<UserCreation, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_verified, first_name, last_name, enabled, required_actions) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $7, $8, $9) ON CONFLICT DO NOTHING RETURNING id")
+        // New users also get the realm's default required actions.
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_verified, first_name, last_name, enabled, required_actions) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $7, $8, ARRAY(SELECT DISTINCT action FROM unnest($9::text[] || ARRAY(SELECT alias FROM required_action_settings WHERE realm_id = $1 AND default_action AND enabled)) AS action ORDER BY action)) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(user_id).bind(user.username).bind(user.email).bind(user.email_verified)
             .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions).fetch_optional(&mut *conn).await?;
         if created.is_none() {
