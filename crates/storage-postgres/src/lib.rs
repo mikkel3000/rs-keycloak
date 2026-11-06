@@ -29,7 +29,7 @@ pub use realm_admin::{
 };
 pub use role_admin::{
     CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
-    RoleRecord,
+    RoleRecord, RoleUpdate,
 };
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;

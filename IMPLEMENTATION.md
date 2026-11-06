@@ -704,3 +704,20 @@ slowest in 285 ms.
 
 Remaining differences: the brief form has no `access` map; first and last
 name filters use `lower()` without an index, which large realms will need.
+
+## Role updates and roles by id
+
+`PUT /roles/{name}` and the client role form replace a role's name and
+description, and `/roles-by-id/{id}` reads, updates, edits composites and
+deletes any role of the realm, following the 22 recorded cases in
+`tests/reference/role-update-observations.json`. The by-id routes resolve
+the role and then run the name-based handlers with the role's own
+container, so client roles keep needing client access; they require a valid
+admin token for the realm before saying whether an id exists. Updates accept
+the read-only fields admin clients send back (`id`, `composite`,
+`clientRole`, `containerId`, empty `attributes`). Role creation and update
+share one name and description parser. `tests/public/role_updates_contract.py`
+checks 5 groups, the slowest in 372 ms.
+
+Remaining differences: renaming the default role is allowed, a case the
+reference was not recorded for; role attributes stay unsupported.

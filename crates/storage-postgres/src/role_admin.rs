@@ -44,6 +44,16 @@ pub enum RoleCreation {
     CompositeNotFound,
 }
 
+/// Outcome of updating a role.
+pub enum RoleUpdate {
+    /// The role was updated.
+    Updated,
+    /// No role with this name exists in the container.
+    NotFound,
+    /// Another role of the container has the new name.
+    Exists,
+}
+
 /// Outcome of changing a role's composites.
 pub enum CompositeChange {
     /// Every named role was added or removed.
@@ -286,6 +296,60 @@ impl Storage {
         audit(conn, actor, event).await?;
         tx.commit().await?;
         Ok(CompositeChange::Changed)
+    }
+
+    /// Reads any role of the realm by identifier.
+    pub async fn role_by_id(
+        &self,
+        realm_id: &str,
+        id: &str,
+    ) -> Result<Option<RoleRecord>, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let row = sqlx::query(&format!(
+            "SELECT {ROLE_COLUMNS} FROM roles r WHERE r.realm_id = $1 AND r.id = $2"
+        ))
+        .bind(realm_id)
+        .bind(id)
+        .fetch_optional(tx.connection())
+        .await?;
+        tx.commit().await?;
+        row.as_ref().map(role_row).transpose()
+    }
+
+    /// Replaces a container role's name and description.
+    pub async fn update_role(
+        &self,
+        realm_id: &str,
+        client: Option<&str>,
+        name: &str,
+        new_name: &str,
+        description: Option<&str>,
+        actor: &Actor,
+    ) -> Result<RoleUpdate, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let id: Option<String> = sqlx::query_scalar("SELECT id FROM roles WHERE realm_id = $1 AND name = $2 AND client_id IS NOT DISTINCT FROM $3 FOR UPDATE")
+            .bind(realm_id).bind(name).bind(client).fetch_optional(&mut *conn).await?;
+        let Some(id) = id else {
+            tx.commit().await?;
+            return Ok(RoleUpdate::NotFound);
+        };
+        let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM roles WHERE realm_id = $1 AND name = $2 AND client_id IS NOT DISTINCT FROM $3 AND id <> $4)")
+            .bind(realm_id).bind(new_name).bind(client).bind(&id).fetch_one(&mut *conn).await?;
+        if taken {
+            tx.commit().await?;
+            return Ok(RoleUpdate::Exists);
+        }
+        sqlx::query("UPDATE roles SET name = $3, description = $4 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(&id)
+            .bind(new_name)
+            .bind(description)
+            .execute(&mut *conn)
+            .await?;
+        audit(conn, actor, "role_updated").await?;
+        tx.commit().await?;
+        Ok(RoleUpdate::Updated)
     }
 
     /// Creates a role in a container unless the name is taken there.

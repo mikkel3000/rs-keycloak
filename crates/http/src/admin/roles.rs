@@ -21,7 +21,7 @@ use axum::routing::get;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use rs_keycloak_storage_postgres::{
     CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
-    RoleRecord,
+    RoleRecord, RoleUpdate,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -48,9 +48,21 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route(
             "/admin/realms/{realm}/roles/{role}",
-            get(read_role).delete(delete_role),
+            get(read_role).put(update_role).delete(delete_role),
         )
         .route("/admin/realms/{realm}/roles/{role}/users", get(role_users))
+        .route(
+            "/admin/realms/{realm}/roles-by-id/{id}",
+            get(read_role_by_id)
+                .put(update_role_by_id)
+                .delete(delete_role_by_id),
+        )
+        .route(
+            "/admin/realms/{realm}/roles-by-id/{id}/composites",
+            get(composites_by_id)
+                .post(add_composites_by_id)
+                .delete(remove_composites_by_id),
+        )
         .route(
             "/admin/realms/{realm}/roles/{role}/composites",
             get(role_composites)
@@ -71,7 +83,7 @@ pub(super) fn routes() -> Router<OidcState> {
         )
         .route(
             "/admin/realms/{realm}/clients/{client}/roles/{role}",
-            get(read_role).delete(delete_role),
+            get(read_role).put(update_role).delete(delete_role),
         )
         .route(
             "/admin/realms/{realm}/clients/{client}/roles/{role}/users",
@@ -179,6 +191,170 @@ fn role_access(params: &HashMap<String, String>, client: Access, realm: Access) 
     } else {
         realm
     }
+}
+
+/// Reads a role body's required name and optional description.
+fn name_and_description(fields: &Map<String, Value>) -> Result<(&str, Option<&str>), AdminError> {
+    let name = match fields.get("name") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(name)) => Some(name.trim()).filter(|name| !name.is_empty()),
+        Some(_) => return Err(unparsable()),
+    }
+    .ok_or_else(|| AdminError::Error(StatusCode::BAD_REQUEST, "role has no name".into()))?;
+    if name.len() > 255 || name.contains(['/', '\\']) || name.contains(char::is_control) {
+        return Err(AdminError::bad_request("Invalid role name"));
+    }
+    let description = match fields.get("description") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(text)) if text.len() <= 255 => Some(text.as_str()),
+        Some(Value::String(_)) => return Err(AdminError::bad_request("Invalid role description")),
+        Some(_) => return Err(unparsable()),
+    };
+    Ok((name, description))
+}
+
+/// Replaces a role's name and description. Read-only fields of the
+/// representation that admin clients send back are accepted and ignored.
+async fn update_role(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let actor = authorize(
+        &state,
+        &headers,
+        param(&params, "realm")?,
+        role_access(&params, Access::ManageClients, Access::ManageRealm),
+    )
+    .await?;
+    let container = container(&state, &params).await?;
+    let fields = json_object(&body)?;
+    if let Some(field) = fields.keys().find(|key| {
+        !matches!(
+            key.as_str(),
+            "id" | "name"
+                | "description"
+                | "composite"
+                | "clientRole"
+                | "containerId"
+                | "attributes"
+        )
+    }) {
+        return Err(AdminError::bad_request(format!(
+            "Unsupported role field: {field}"
+        )));
+    }
+    if !matches!(fields.get("attributes"), None | Some(Value::Null))
+        && fields.get("attributes") != Some(&json!({}))
+    {
+        return Err(AdminError::bad_request(
+            "Unsupported role field: attributes",
+        ));
+    }
+    let (name, description) = name_and_description(&fields)?;
+    match state
+        .storage
+        .update_role(
+            &container.realm_id,
+            container.client.as_deref(),
+            param(&params, "role")?,
+            name,
+            description,
+            &actor,
+        )
+        .await?
+    {
+        RoleUpdate::Updated => Ok(StatusCode::NO_CONTENT),
+        RoleUpdate::NotFound => Err(role_not_found()),
+        RoleUpdate::Exists => Err(AdminError::OAuth(
+            StatusCode::CONFLICT,
+            "conflict",
+            "Duplicate resource error",
+        )),
+    }
+}
+
+/// Resolves `/roles-by-id/{id}` to the name-based parameters of the role's
+/// own container, so by-id routes share the name-based handlers, which then
+/// check the access that container needs. Only an admin of the realm may
+/// learn whether an identifier exists.
+async fn by_id(
+    state: &OidcState,
+    headers: &HeaderMap,
+    mut params: HashMap<String, String>,
+) -> Result<HashMap<String, String>, AdminError> {
+    authorize(state, headers, param(&params, "realm")?, Access::AnyRole).await?;
+    let realm_id = realm_id(state, param(&params, "realm")?).await?;
+    let role = state
+        .storage
+        .role_by_id(&realm_id, param(&params, "id")?)
+        .await?
+        .ok_or_else(|| {
+            AdminError::Error(StatusCode::NOT_FOUND, "Could not find role with id".into())
+        })?;
+    params.insert("role".into(), role.name);
+    if let Some(client) = role.client {
+        params.insert("client".into(), client);
+    }
+    Ok(params)
+}
+
+async fn read_role_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    read_role(State(state), Path(params), headers).await
+}
+
+async fn update_role_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    update_role(State(state), Path(params), headers, body).await
+}
+
+async fn delete_role_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<StatusCode, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    delete_role(State(state), Path(params), headers).await
+}
+
+async fn composites_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    list_composites(state, params, headers, Children::All).await
+}
+
+async fn add_composites_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    change_composites(state, params, headers, body, true).await
+}
+
+async fn remove_composites_by_id(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let params = by_id(&state, &headers, params).await?;
+    change_composites(state, params, headers, body, false).await
 }
 
 fn composite_not_found() -> AdminError {
@@ -310,21 +486,7 @@ async fn create_role(
             ));
         }
     }
-    let name = match fields.get("name") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(name)) => Some(name.trim()).filter(|name| !name.is_empty()),
-        Some(_) => return Err(unparsable()),
-    }
-    .ok_or_else(|| AdminError::Error(StatusCode::BAD_REQUEST, "role has no name".into()))?;
-    if name.len() > 255 || name.contains(['/', '\\']) || name.contains(char::is_control) {
-        return Err(AdminError::bad_request("Invalid role name"));
-    }
-    let description = match fields.get("description") {
-        None | Some(Value::Null) => None,
-        Some(Value::String(text)) if text.len() <= 255 => Some(text.as_str()),
-        Some(Value::String(_)) => return Err(AdminError::bad_request("Invalid role description")),
-        Some(_) => return Err(unparsable()),
-    };
+    let (name, description) = name_and_description(&fields)?;
     match state
         .storage
         .create_role(
