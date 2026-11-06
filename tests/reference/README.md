@@ -341,3 +341,12 @@ client scopes, required actions and default role; `exportGroupsAndRoles`
 adds realm and client roles and groups with their role mappings, and
 `exportClients` adds every client, secrets masked as `**********`, and the
 service-account users. Unknown realms answer 404. Recorded with `batch.py`.
+
+`partial_import.py` records 11 cases in `partial-import-observations.json`:
+`POST /admin/realms/{realm}/partialImport` with a realm role, a client and
+a user under `FAIL` (all added; a second run answers 409 "Client id '…'
+already exists"), `SKIP` and `OVERWRITE`, the imported state, an empty
+body, and a malformed one (500 `invalid_request`). Each result names its
+action, resource type, name and id. The reference fails with a 500 on
+groups given without a path and, on overwrite, also counts the realm role
+as added; imported users get no default roles. Recorded with `batch.py`.
