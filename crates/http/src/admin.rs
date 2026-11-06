@@ -25,6 +25,7 @@ use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 mod authentication;
 mod client_scopes;
 mod clients;
+mod export;
 mod groups;
 mod roles;
 mod sessions;
@@ -36,6 +37,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(authentication::routes())
         .merge(client_scopes::routes())
         .merge(clients::routes())
+        .merge(export::routes())
         .merge(groups::routes())
         .merge(roles::routes())
         .merge(sessions::routes())

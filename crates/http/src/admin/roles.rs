@@ -410,7 +410,7 @@ fn role_not_found() -> AdminError {
 }
 
 /// A role's representation; its container is its client, or else the realm.
-fn representation(role: &RoleRecord, realm_id: &str) -> Value {
+pub(super) fn representation(role: &RoleRecord, realm_id: &str) -> Value {
     let mut fields = json!({
         "id": role.id,
         "name": role.name,

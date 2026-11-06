@@ -171,7 +171,7 @@ fn open(
         .map_err(|_| AdminError::Unavailable)
 }
 
-fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
+pub(super) fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
     let mut fields = json!({
         "id": client.id,
         "clientId": client.client_identifier,

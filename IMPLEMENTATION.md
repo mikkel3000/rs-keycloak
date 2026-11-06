@@ -901,3 +901,20 @@ Remaining differences: user agents and addresses are not recorded, so all
 sessions belong to one unknown device without `ipAddress` or browser, and
 `clientName` repeats the client id; the console's web interface itself is
 not served yet.
+
+## Realm partial export
+
+`POST /admin/realms/{realm}/partial-export` follows
+`tests/reference/partial-export-observations.json`: the realm with its
+client scopes, required actions and default role; `exportGroupsAndRoles`
+adds realm roles and the group tree with role mappings, plus client roles
+when clients are exported too; `exportClients` adds every client, secrets
+masked as `**********` without being opened, and the service-account users.
+Regular users are never exported. The export reuses the admin
+representations, so it shows exactly what the admin API does. Access needs
+`view-realm`, plus `view-users` for groups and roles and `view-clients`
+for clients. `tests/public/partial_export_contract.py` checks 5 groups.
+
+Remaining differences: the realm representation still has a small subset
+of the reference's fields and no `components`; there is no partial import
+yet, so exports cannot be loaded back.

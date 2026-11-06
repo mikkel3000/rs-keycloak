@@ -132,7 +132,7 @@ fn brief(group: &GroupRecord) -> Value {
 }
 
 /// The full form returned for a single group, with its mapped role names.
-fn full(group: &GroupRecord, roles: &RoleNames) -> Value {
+pub(super) fn full(group: &GroupRecord, roles: &RoleNames) -> Value {
     let mut fields = brief(group);
     fields["attributes"] = json!({});
     fields["realmRoles"] = json!(roles.realm);

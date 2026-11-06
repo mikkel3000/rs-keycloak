@@ -100,6 +100,14 @@ fn brief(realm_id: &str, name: &str) -> Value {
     json!({ "id": scope_id(realm_id, name).to_string(), "name": name })
 }
 
+/// Every scope's representation, as listed and exported.
+pub(super) fn all_scopes(realm_id: &str) -> Vec<Value> {
+    SCOPES
+        .into_iter()
+        .map(|scope| representation(realm_id, scope))
+        .collect()
+}
+
 async fn list_scopes(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -107,12 +115,7 @@ async fn list_scopes(
 ) -> Result<Response, AdminError> {
     authorize(&state, &headers, &realm, Access::ViewClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
-    Ok(json_response(Value::Array(
-        SCOPES
-            .into_iter()
-            .map(|scope| representation(&realm_id, scope))
-            .collect(),
-    )))
+    Ok(json_response(Value::Array(all_scopes(&realm_id))))
 }
 
 async fn read_scope(

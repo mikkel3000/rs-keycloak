@@ -72,6 +72,14 @@ fn representation(
     })
 }
 
+/// Every action's representation for a realm's settings.
+pub(super) fn all_actions(settings: &[RequiredActionSetting]) -> Vec<Value> {
+    ACTIONS
+        .into_iter()
+        .map(|action| representation(action, settings))
+        .collect()
+}
+
 fn action(alias: &str) -> Result<(&'static str, &'static str, i64), AdminError> {
     ACTIONS
         .into_iter()
@@ -87,12 +95,7 @@ async fn list_actions(
     authorize(&state, &headers, &realm, Access::ViewRealm).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let settings = state.storage.required_action_settings(&realm_id).await?;
-    Ok(json_response(Value::Array(
-        ACTIONS
-            .into_iter()
-            .map(|action| representation(action, &settings))
-            .collect(),
-    )))
+    Ok(json_response(Value::Array(all_actions(&settings))))
 }
 
 async fn read_action(
