@@ -916,5 +916,24 @@ representations, so it shows exactly what the admin API does. Access needs
 for clients. `tests/public/partial_export_contract.py` checks 5 groups.
 
 Remaining differences: the realm representation still has a small subset
-of the reference's fields and no `components`; there is no partial import
-yet, so exports cannot be loaded back.
+of the reference's fields and no `components`.
+
+## Realm partial import
+
+`POST /admin/realms/{realm}/partialImport` imports realm roles, clients and
+users with `ifResourceExists` `FAIL`, `SKIP` or `OVERWRITE`, following
+`tests/reference/partial-import-observations.json`, and answers the added,
+skipped and overwritten counts with one result per resource. Every
+resource is looked up before anything is written, so a `FAIL` conflict
+changes nothing. Clients and users go through the same create and update
+functions as their admin routes, now shared, so imports accept and refuse
+exactly what the API does. `tests/public/partial_import_contract.py` checks
+4 groups.
+
+Remaining differences: groups and client roles cannot be imported yet
+(groups answer 400, where the reference fails with a 500 without a path);
+an overwrite does not also count the role as added; imported users get the
+default role, like every user created here; malformed JSON answers 400
+rather than 500; resources are written one by one, so a failure part-way
+through `SKIP` or `OVERWRITE` keeps what was already written; an export
+cannot be imported as is, since it carries fields the admin API refuses.

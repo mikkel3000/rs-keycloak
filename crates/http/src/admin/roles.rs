@@ -194,7 +194,9 @@ fn role_access(params: &HashMap<String, String>, client: Access, realm: Access) 
 }
 
 /// Reads a role body's required name and optional description.
-fn name_and_description(fields: &Map<String, Value>) -> Result<(&str, Option<&str>), AdminError> {
+pub(super) fn name_and_description(
+    fields: &Map<String, Value>,
+) -> Result<(&str, Option<&str>), AdminError> {
     let name = match fields.get("name") {
         None | Some(Value::Null) => None,
         Some(Value::String(name)) => Some(name.trim()).filter(|name| !name.is_empty()),

@@ -14,7 +14,9 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use rs_keycloak_integrations::mail::{Mail, send};
-use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
+use rs_keycloak_storage_postgres::{
+    Actor, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
+};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -278,24 +280,33 @@ async fn create_user(
     let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    let settings = UserSettings::defaults().apply(&fields, &[])?;
-    let username = text(&fields, "username")?
+    let user_id = create_from(&state, &realm_id, &fields, &actor).await?;
+    let location = format!(
+        "{}/admin/realms/{realm}/users/{user_id}",
+        state.issuer_base.trim_end_matches('/')
+    );
+    let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
+    Ok((StatusCode::CREATED, [(header::LOCATION, location)]).into_response())
+}
+
+/// Creates a user from a representation; returns the user's id.
+pub(super) async fn create_from(
+    state: &OidcState,
+    realm_id: &str,
+    fields: &Map<String, Value>,
+    actor: &Actor,
+) -> Result<String, AdminError> {
+    let settings = UserSettings::defaults().apply(fields, &[])?;
+    let username = text(fields, "username")?
         .ok_or_else(|| AdminError::bad_request("User name is missing"))?
         .to_lowercase();
     let user_id = Uuid::new_v4().to_string();
     match state
         .storage
-        .create_user(&realm_id, &user_id, &settings.user(&username), &actor)
+        .create_user(realm_id, &user_id, &settings.user(&username), actor)
         .await?
     {
-        UserCreation::Created => {
-            let location = format!(
-                "{}/admin/realms/{realm}/users/{user_id}",
-                state.issuer_base.trim_end_matches('/')
-            );
-            let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
-            Ok((StatusCode::CREATED, [(header::LOCATION, location)]).into_response())
-        }
+        UserCreation::Created => Ok(user_id),
         UserCreation::UsernameExists => Err(AdminError::Message(
             StatusCode::CONFLICT,
             "User exists with same username".into(),
@@ -320,8 +331,20 @@ async fn update_user(
         .await?
         .ok_or_else(user_not_found)?;
     let fields = json_object(&body)?;
-    let settings = UserSettings::stored(&stored).apply(&fields, &["id"])?;
-    if text(&fields, "username")?.is_some_and(|name| name.to_lowercase() != stored.username) {
+    update_from(&state, &realm_id, &stored, &fields, &actor).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Applies a partial representation to a stored user; the username stays.
+pub(super) async fn update_from(
+    state: &OidcState,
+    realm_id: &str,
+    stored: &UserRecord,
+    fields: &Map<String, Value>,
+    actor: &Actor,
+) -> Result<(), AdminError> {
+    let settings = UserSettings::stored(stored).apply(fields, &["id"])?;
+    if text(fields, "username")?.is_some_and(|name| name.to_lowercase() != stored.username) {
         return Err(AdminError::Field(
             "error-user-attribute-read-only",
             "username",
@@ -329,17 +352,22 @@ async fn update_user(
     }
     match state
         .storage
-        .update_user(&realm_id, &user, &settings.user(&stored.username), &actor)
+        .update_user(
+            realm_id,
+            &stored.id,
+            &settings.user(&stored.username),
+            actor,
+        )
         .await?
     {
-        UserUpdate::Updated => Ok(StatusCode::NO_CONTENT),
+        UserUpdate::Updated => Ok(()),
         UserUpdate::NotFound => Err(user_not_found()),
         UserUpdate::EmailExists => Err(email_exists()),
     }
 }
 
 /// Escapes a value for a SQL `LIKE` pattern with `\` as the escape.
-fn like_literal(value: &str) -> String {
+pub(super) fn like_literal(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for character in value.to_lowercase().chars() {
         if matches!(character, '%' | '_' | '\\') {

@@ -18,7 +18,7 @@ use rs_keycloak_protocols::client_urls::{
     validate_redirect_pattern, validate_root_url, validate_web_origin,
 };
 use rs_keycloak_storage_postgres::{
-    ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
+    Actor, ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
     client_secret_context,
 };
 use serde_json::{Map, Value, json};
@@ -415,43 +415,52 @@ async fn create_client(
     let actor = authorize(&state, &headers, &realm, Access::ManageClients).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    let mut settings = Settings::defaults().apply(&fields, &[])?;
+    let id = create_from(&state, &realm_id, &fields, &actor).await?;
+    let location = format!(
+        "{}/admin/realms/{realm}/clients/{id}",
+        state.issuer_base.trim_end_matches('/')
+    );
+    let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
+    Ok((StatusCode::CREATED, [(header::LOCATION, location)]).into_response())
+}
+
+/// Creates a client from a representation; returns its internal id.
+pub(super) async fn create_from(
+    state: &OidcState,
+    realm_id: &str,
+    fields: &Map<String, Value>,
+    actor: &Actor,
+) -> Result<String, AdminError> {
+    let mut settings = Settings::defaults().apply(fields, &[])?;
     if !fields.contains_key("webOrigins") {
         settings.web_origins = redirect_origins(&settings.redirect_uris);
     }
     let id = Uuid::new_v4().to_string();
     // The reference generates a client identifier when none is given.
-    let client_identifier = client_identifier(&fields)?.unwrap_or_else(|| id.clone());
-    let secret = match (settings.public, requested_secret(&fields)?) {
+    let client_identifier = client_identifier(fields)?.unwrap_or_else(|| id.clone());
+    let secret = match (settings.public, requested_secret(fields)?) {
         (true, None) => None,
         (true, Some(_)) => {
             return Err(AdminError::bad_request(
                 "Public clients cannot have a secret",
             ));
         }
-        (false, None) => Some(seal(&state, &realm_id, &id, random_token().as_bytes())?),
-        (false, Some(secret)) => Some(seal(&state, &realm_id, &id, secret.as_bytes())?),
+        (false, None) => Some(seal(state, realm_id, &id, random_token().as_bytes())?),
+        (false, Some(secret)) => Some(seal(state, realm_id, &id, secret.as_bytes())?),
     };
     let created = state
         .storage
         .create_client(
-            &realm_id,
+            realm_id,
             &id,
             &settings.client(&client_identifier),
             secret.as_ref(),
             &Uuid::new_v4().to_string(),
-            &actor,
+            actor,
         )
         .await?;
     match created {
-        ClientCreation::Created => {
-            let location = format!(
-                "{}/admin/realms/{realm}/clients/{id}",
-                state.issuer_base.trim_end_matches('/')
-            );
-            let location = HeaderValue::from_str(&location).map_err(|_| AdminError::Unavailable)?;
-            Ok((StatusCode::CREATED, [(header::LOCATION, location)]).into_response())
-        }
+        ClientCreation::Created => Ok(id),
         ClientCreation::Exists => Err(AdminError::Message(
             StatusCode::CONFLICT,
             format!("Client {client_identifier} already exists"),
@@ -475,19 +484,33 @@ async fn update_client(
         .await?
         .ok_or_else(client_not_found)?;
     let fields = json_object(&body)?;
-    let settings = Settings::stored(&stored).apply(&fields, &["id"])?;
-    let client_identifier = client_identifier(&fields)?.unwrap_or(stored.client_identifier);
-    let sealed = match (settings.public, requested_secret(&fields)?) {
+    update_from(&state, &realm_id, stored, &fields, &actor).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Applies a partial representation to a stored client; a body `id` is
+/// ignored.
+pub(super) async fn update_from(
+    state: &OidcState,
+    realm_id: &str,
+    stored: ClientRecord,
+    fields: &Map<String, Value>,
+    actor: &Actor,
+) -> Result<(), AdminError> {
+    let id = stored.id.clone();
+    let settings = Settings::stored(&stored).apply(fields, &["id"])?;
+    let client_identifier = client_identifier(fields)?.unwrap_or(stored.client_identifier);
+    let sealed = match (settings.public, requested_secret(fields)?) {
         (true, Some(_)) => {
             return Err(AdminError::bad_request(
                 "Public clients cannot have a secret",
             ));
         }
         (true, None) => None,
-        (false, Some(secret)) => Some(seal(&state, &realm_id, &id, secret.as_bytes())?),
+        (false, Some(secret)) => Some(seal(state, realm_id, &id, secret.as_bytes())?),
         // A client that becomes confidential gets a new secret.
         (false, None) if stored.public => {
-            Some(seal(&state, &realm_id, &id, random_token().as_bytes())?)
+            Some(seal(state, realm_id, &id, random_token().as_bytes())?)
         }
         (false, None) => None,
     };
@@ -499,16 +522,16 @@ async fn update_client(
     let updated = state
         .storage
         .update_client(
-            &realm_id,
+            realm_id,
             &id,
             &settings.client(&client_identifier),
             secret,
             &Uuid::new_v4().to_string(),
-            &actor,
+            actor,
         )
         .await?;
     match updated {
-        ClientUpdate::Updated => Ok(StatusCode::NO_CONTENT),
+        ClientUpdate::Updated => Ok(()),
         ClientUpdate::NotFound => Err(client_not_found()),
         ClientUpdate::Exists => Err(AdminError::OAuth(
             StatusCode::CONFLICT,
