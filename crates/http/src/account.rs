@@ -1,7 +1,8 @@
 //! Keycloak's account REST API: a user's own profile, credentials and
 //! sessions, authorized by their realm access token.
 //!
-//! Follows `tests/reference/account-api-observations.json`. Access follows the
+//! Follows `tests/reference/account-api-observations.json` and
+//! `tests/reference/account-console-api-observations.json`. Access follows the
 //! user's effective roles of the built-in `account` client, which users
 //! receive through the realm's default role: reading needs `view-profile` or
 //! `manage-account`, changes need `manage-account`.
@@ -15,6 +16,8 @@ use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{AccessTokenStatus, Profile, StorageError};
 use serde_json::{Value, json};
 
+use rs_keycloak_protocols::client_urls::resolve_redirect;
+
 use crate::oidc::{OidcState, digest, verified_access};
 
 /// Account routes, mounted with the public routes below the issuer path.
@@ -25,7 +28,16 @@ pub(crate) fn routes() -> Router<OidcState> {
             get(read_profile).post(update_profile),
         )
         .route("/realms/{realm}/account/credentials", get(credentials))
-        .route("/realms/{realm}/account/sessions", get(sessions))
+        .route(
+            "/realms/{realm}/account/sessions",
+            get(sessions).delete(end_other_sessions),
+        )
+        .route("/realms/{realm}/account/sessions/devices", get(devices))
+        .route("/realms/{realm}/account/applications", get(applications))
+        .route(
+            "/realms/{realm}/account/applications/{client}/consent",
+            delete(revoke_application),
+        )
         .route(
             "/realms/{realm}/account/sessions/{session}",
             delete(end_session),
@@ -326,17 +338,13 @@ async fn credentials(
     ])))
 }
 
-async fn sessions(
-    State(state): State<OidcState>,
-    Path(realm): Path<String>,
-    headers: HeaderMap,
-) -> Result<Response, AccountError> {
-    let account = authorize(&state, &realm, &headers, Need::View).await?;
+/// The user's sessions as the account API lists them.
+async fn session_list(state: &OidcState, account: &Account) -> Result<Vec<Value>, AccountError> {
     let sessions = state
         .storage
         .account_sessions(&account.realm_id, &account.user_id)
         .await?;
-    let listed = sessions
+    Ok(sessions
         .into_iter()
         .map(|session| {
             json!({
@@ -351,8 +359,121 @@ async fn sessions(
                 "clients": session.clients.iter().map(|client| json!({ "clientId": client })).collect::<Vec<_>>(),
             })
         })
+        .collect())
+}
+
+async fn sessions(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
+    Ok(json_response(Value::Array(
+        session_list(&state, &account).await?,
+    )))
+}
+
+/// The sessions grouped by device. User agents are not recorded, so every
+/// session belongs to one unknown device.
+async fn devices(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
+    let sessions = session_list(&state, &account).await?;
+    if sessions.is_empty() {
+        return Ok(json_response(json!([])));
+    }
+    let last_access = sessions
+        .iter()
+        .filter_map(|session| session["lastAccess"].as_i64())
+        .max();
+    Ok(json_response(json!([{
+        "os": "Other",
+        "osVersion": "Unknown",
+        "device": "Other",
+        "lastAccess": last_access,
+        "current": true,
+        "mobile": false,
+        "sessions": sessions,
+    }])))
+}
+
+/// Ends every session of the user except the current one.
+async fn end_other_sessions(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::Manage).await?;
+    state
+        .storage
+        .end_other_sessions(&account.realm_id, &account.session_id, true)
+        .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn applications(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::View).await?;
+    let server = state.issuer_base.trim_end_matches('/');
+    let listed = state
+        .storage
+        .account_applications(&account.realm_id, &account.user_id, &account.session_id)
+        .await?
+        .into_iter()
+        .map(|app| {
+            let mut fields = json!({
+                "clientId": app.client_identifier,
+                "clientName": app.client_identifier,
+                "userConsentRequired": app.consent_required,
+                "inUse": app.in_use,
+                "offlineAccess": app.offline,
+            });
+            if let Some(root_url) = &app.root_url {
+                fields["rootUrl"] = json!(root_url);
+            }
+            if let Some(base_url) = &app.base_url {
+                fields["baseUrl"] = json!(base_url);
+                if let Some(effective) = resolve_redirect(base_url, app.root_url.as_deref(), server)
+                {
+                    fields["effectiveUrl"] = json!(effective);
+                }
+            }
+            fields
+        })
         .collect();
     Ok(json_response(Value::Array(listed)))
+}
+
+/// Removes the user's grant to a client: its consent and offline tokens.
+async fn revoke_application(
+    State(state): State<OidcState>,
+    Path((realm, client)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::Manage).await?;
+    if state
+        .storage
+        .clients(&account.realm_id, Some(&client))
+        .await?
+        .is_empty()
+    {
+        return Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({ "errorMessage": format!("No client with clientId: {client} found.") })),
+        )
+            .into_response());
+    }
+    state
+        .storage
+        .revoke_consent(&account.realm_id, &account.user_id, &client)
+        .await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 async fn end_session(

@@ -15,7 +15,7 @@ mod session_admin;
 mod sso;
 mod user_admin;
 
-pub use account::AccountSession;
+pub use account::{AccountApplication, AccountSession};
 pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
 pub use client_admin::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,

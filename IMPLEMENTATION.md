@@ -882,3 +882,22 @@ under `/users/{id}/sessions`, where the reference lists none; introspection
 reports offline refresh tokens as `Refresh` and only while their login
 session lives; offline sessions have no idle timeout; a refused
 `not_allowed` exchange still leaves an unused offline family.
+
+## Account console API routes
+
+`/account/applications`, `/account/sessions/devices`, `DELETE
+/account/sessions` and `DELETE /account/applications/{clientId}/consent`
+follow `tests/reference/account-console-api-observations.json`.
+Applications are the clients of the caller's current session (`inUse`), and
+those the user has consented to or holds offline tokens for, with
+`effectiveUrl` resolved from the client's root and base URLs. Ending the
+other sessions also ends their offline tokens, as recorded; the
+password-update "sign out other devices" box keeps them, since that case was
+not recorded. Removing an application's grant reuses consent revocation,
+offline tokens included. `tests/public/account_console_api_contract.py`
+checks 3 groups.
+
+Remaining differences: user agents and addresses are not recorded, so all
+sessions belong to one unknown device without `ipAddress` or browser, and
+`clientName` repeats the client id; the console's web interface itself is
+not served yet.

@@ -102,11 +102,14 @@ impl Storage {
 
 impl Storage {
     /// Ends every other active session of the session's user, as the
-    /// reference does when a required action's "logout-sessions" box is set.
+    /// reference does when a required action's "logout-sessions" box is set,
+    /// and with `offline` their offline families too, as the account API's
+    /// sign-out of other sessions does.
     pub async fn end_other_sessions(
         &self,
         realm_id: &str,
         session_id: &str,
+        offline: bool,
     ) -> Result<u64, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
@@ -114,6 +117,11 @@ impl Storage {
             .bind(realm_id).bind(session_id).fetch_all(&mut *conn).await?;
         for other in &others {
             end_session(conn, realm_id, other).await?;
+        }
+        if offline {
+            // The offline families of every other session end as well.
+            sqlx::query("UPDATE refresh_families f SET revoked_at = clock_timestamp() FROM user_sessions s, user_sessions o WHERE s.realm_id = $1 AND s.id = $2 AND o.realm_id = s.realm_id AND o.user_id = s.user_id AND o.id <> s.id AND f.realm_id = o.realm_id AND f.user_session_id = o.id AND f.offline AND f.revoked_at IS NULL")
+                .bind(realm_id).bind(session_id).execute(&mut *conn).await?;
         }
         tx.commit().await?;
         Ok(others.len() as u64)

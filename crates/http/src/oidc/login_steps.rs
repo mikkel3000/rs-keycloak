@@ -273,7 +273,7 @@ pub(super) struct SetupForm {
 async fn logout_others(s: &OidcState, held: &Held, checkbox: Option<&str>) -> Result<(), ()> {
     if checkbox == Some("on") {
         s.storage
-            .end_other_sessions(&held.realm_id, &held.session_id)
+            .end_other_sessions(&held.realm_id, &held.session_id, false)
             .await
             .map_err(|_| ())?;
     }
