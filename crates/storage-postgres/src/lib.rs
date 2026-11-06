@@ -33,7 +33,7 @@ pub use role_admin::{
 };
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use sso::SsoSession;
-pub use user_admin::{NewUser, UserCreation, UserRecord, UserUpdate, UsernameFilter};
+pub use user_admin::{NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
 
 use std::time::Duration;
 

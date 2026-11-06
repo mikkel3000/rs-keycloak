@@ -14,7 +14,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use rs_keycloak_integrations::mail::{Mail, send};
-use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UserUpdate, UsernameFilter};
+use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -338,6 +338,125 @@ async fn update_user(
     }
 }
 
+/// Escapes a value for a SQL `LIKE` pattern with `\` as the escape.
+fn like_literal(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.to_lowercase().chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
+}
+
+/// The reference's `search`: a quoted value matches exactly, `*` is a
+/// wildcard, and anything else matches as a prefix.
+fn search_pattern(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    if let Some(exact) = value
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    {
+        return Some(like_literal(exact));
+    }
+    let pattern = value
+        .split('*')
+        .map(like_literal)
+        .collect::<Vec<_>>()
+        .join("%");
+    Some(if value.contains('*') {
+        pattern
+    } else {
+        pattern + "%"
+    })
+}
+
+/// Search filters as stored patterns: text fields match infix, or
+/// exactly under `exact=true`.
+struct SearchPatterns {
+    search: Option<String>,
+    username: Option<String>,
+    email: Option<String>,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    enabled: Option<bool>,
+    email_verified: Option<bool>,
+}
+
+impl SearchPatterns {
+    fn parse(params: &HashMap<String, String>, allowed: &[&str]) -> Result<Self, AdminError> {
+        const FILTERS: [&str; 8] = [
+            "search",
+            "username",
+            "email",
+            "firstName",
+            "lastName",
+            "enabled",
+            "emailVerified",
+            "exact",
+        ];
+        if let Some(name) = params
+            .keys()
+            .find(|name| !FILTERS.contains(&name.as_str()) && !allowed.contains(&name.as_str()))
+        {
+            return Err(AdminError::bad_request(format!(
+                "Unsupported user search parameter: {name}"
+            )));
+        }
+        let exact = params.get("exact").is_some_and(|value| value == "true");
+        let text = |name: &str| {
+            params
+                .get(name)
+                .filter(|value| !value.is_empty())
+                .map(|value| {
+                    let literal = like_literal(value);
+                    if exact {
+                        literal
+                    } else {
+                        format!("%{literal}%")
+                    }
+                })
+        };
+        let boolean = |name: &str| match params.get(name).map(String::as_str) {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(_) => Err(AdminError::bad_request(format!("Invalid {name}"))),
+        };
+        let search = params.get("search").and_then(|value| search_pattern(value));
+        Ok(Self {
+            // The reference applies `search` instead of `username`.
+            username: if params.contains_key("search") {
+                None
+            } else {
+                text("username")
+            },
+            search,
+            email: text("email"),
+            first_name: text("firstName"),
+            last_name: text("lastName"),
+            enabled: boolean("enabled")?,
+            email_verified: boolean("emailVerified")?,
+        })
+    }
+
+    fn query(&self) -> UserQuery<'_> {
+        UserQuery {
+            search: self.search.as_deref(),
+            username: self.username.as_deref(),
+            email: self.email.as_deref(),
+            first_name: self.first_name.as_deref(),
+            last_name: self.last_name.as_deref(),
+            enabled: self.enabled,
+            email_verified: self.email_verified,
+        }
+    }
+}
+
 async fn search_users(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -346,16 +465,7 @@ async fn search_users(
 ) -> Result<Response, AdminError> {
     authorize(&state, &headers, &realm, Access::QueryUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
-    if let Some(name) = params.keys().find(|name| {
-        !matches!(
-            name.as_str(),
-            "username" | "exact" | "first" | "max" | "briefRepresentation"
-        )
-    }) {
-        return Err(AdminError::bad_request(format!(
-            "Unsupported user search parameter: {name}"
-        )));
-    }
+    let patterns = SearchPatterns::parse(&params, &["first", "max", "briefRepresentation"])?;
     let number = |name: &str, default: i64| match params.get(name) {
         None => Ok(default),
         Some(value) => value
@@ -366,30 +476,51 @@ async fn search_users(
     };
     let first = number("first", 0)?;
     let max = number("max", DEFAULT_MAX_RESULTS)?.min(DEFAULT_MAX_RESULTS * 10);
-    let username = params.get("username").map(|value| value.to_lowercase());
-    let filter = match (&username, params.get("exact").map(String::as_str)) {
-        (None, _) => UsernameFilter::Any,
-        (Some(value), Some("true")) => UsernameFilter::Exact(value),
-        (Some(value), _) => UsernameFilter::Contains(value),
-    };
+    let brief = params
+        .get("briefRepresentation")
+        .is_some_and(|value| value == "true");
     let users = state
         .storage
-        .search_users(&realm_id, filter, first, max)
+        .search_users(&realm_id, &patterns.query(), first, max)
         .await?;
     Ok(json_response(Value::Array(
-        users.into_iter().map(representation).collect(),
+        users
+            .into_iter()
+            .map(|user| {
+                let mut fields = representation(user);
+                if brief {
+                    // The brief form leaves out credential and action fields.
+                    if let Some(fields) = fields.as_object_mut() {
+                        for field in [
+                            "totp",
+                            "disableableCredentialTypes",
+                            "requiredActions",
+                            "notBefore",
+                        ] {
+                            fields.remove(field);
+                        }
+                    }
+                }
+                fields
+            })
+            .collect(),
     )))
 }
 
 async fn count_users(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response, AdminError> {
     authorize(&state, &headers, &realm, Access::QueryUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
+    let patterns = SearchPatterns::parse(&params, &[])?;
     Ok(json_response(json!(
-        state.storage.count_users(&realm_id).await?
+        state
+            .storage
+            .count_users(&realm_id, &patterns.query())
+            .await?
     )))
 }
 

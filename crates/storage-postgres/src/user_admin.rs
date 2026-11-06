@@ -67,15 +67,30 @@ pub enum UserCreation {
     EmailExists,
 }
 
-/// Username filter for a user search.
-pub enum UsernameFilter<'a> {
-    /// Matches every user.
-    Any,
-    /// Matches the lowercased username exactly.
-    Exact(&'a str),
-    /// Matches usernames containing the lowercased value.
-    Contains(&'a str),
+/// Filters for listing and counting users. Text filters are lowercase SQL
+/// `LIKE` patterns with `\` as the escape character; every filter present
+/// must hold.
+#[derive(Default)]
+pub struct UserQuery<'a> {
+    /// Matches the username, email, first name or last name.
+    pub search: Option<&'a str>,
+    /// Matches the username.
+    pub username: Option<&'a str>,
+    /// Matches the email.
+    pub email: Option<&'a str>,
+    /// Matches the first name.
+    pub first_name: Option<&'a str>,
+    /// Matches the last name.
+    pub last_name: Option<&'a str>,
+    /// Matches the enabled state.
+    pub enabled: Option<bool>,
+    /// Matches whether the email is verified.
+    pub email_verified: Option<bool>,
 }
+
+/// Conditions on `$2`..`$8` for a [`UserQuery`], after the realm in `$1`;
+/// service accounts are never listed.
+const USER_QUERY_CONDITIONS: &str = "realm_id = $1 AND service_account_client_id IS NULL AND ($2::text IS NULL OR username_normalized LIKE $2 ESCAPE '\\' OR email_normalized LIKE $2 ESCAPE '\\' OR lower(first_name) LIKE $2 ESCAPE '\\' OR lower(last_name) LIKE $2 ESCAPE '\\') AND ($3::text IS NULL OR username_normalized LIKE $3 ESCAPE '\\') AND ($4::text IS NULL OR email_normalized LIKE $4 ESCAPE '\\') AND ($5::text IS NULL OR lower(first_name) LIKE $5 ESCAPE '\\') AND ($6::text IS NULL OR lower(last_name) LIKE $6 ESCAPE '\\') AND ($7::boolean IS NULL OR enabled = $7) AND ($8::boolean IS NULL OR email_verified = $8)";
 
 pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp";
 
@@ -178,58 +193,41 @@ impl Storage {
         row.as_ref().map(user_row).transpose()
     }
 
-    /// Lists users ordered by username; service-account users are excluded.
+    /// Lists users matching a query, ordered by username.
     pub async fn search_users(
         &self,
         realm_id: &str,
-        filter: UsernameFilter<'_>,
+        query: &UserQuery<'_>,
         first: i64,
         max: i64,
     ) -> Result<Vec<UserRecord>, StorageError> {
-        let base = format!(
-            "SELECT {USER_COLUMNS} FROM users WHERE realm_id = $1 AND service_account_client_id IS NULL"
-        );
         let mut tx = self.begin_request(false).await?;
-        let conn = tx.connection();
-        let rows = match filter {
-            UsernameFilter::Any => {
-                sqlx::query(&format!("{base} ORDER BY username_normalized OFFSET $2 LIMIT $3"))
-                    .bind(realm_id)
-                    .bind(first)
-                    .bind(max)
-                    .fetch_all(conn)
-                    .await?
-            }
-            UsernameFilter::Exact(value) => sqlx::query(&format!(
-                "{base} AND username_normalized = $2 ORDER BY username_normalized OFFSET $3 LIMIT $4"
-            ))
-            .bind(realm_id)
-            .bind(value)
-            .bind(first)
-            .bind(max)
-            .fetch_all(conn)
-            .await?,
-            UsernameFilter::Contains(value) => sqlx::query(&format!(
-                "{base} AND strpos(username_normalized, $2) > 0 ORDER BY username_normalized OFFSET $3 LIMIT $4"
-            ))
-            .bind(realm_id)
-            .bind(value)
-            .bind(first)
-            .bind(max)
-            .fetch_all(conn)
-            .await?,
-        };
+        let rows = sqlx::query(&format!("SELECT {USER_COLUMNS} FROM users WHERE {USER_QUERY_CONDITIONS} ORDER BY username_normalized OFFSET $9 LIMIT $10"))
+            .bind(realm_id).bind(query.search).bind(query.username).bind(query.email).bind(query.first_name).bind(query.last_name).bind(query.enabled).bind(query.email_verified)
+            .bind(first).bind(max)
+            .fetch_all(tx.connection()).await?;
         tx.commit().await?;
         rows.iter().map(user_row).collect()
     }
 
-    /// Counts the realm's users, excluding service-account users.
-    pub async fn count_users(&self, realm_id: &str) -> Result<i64, StorageError> {
+    /// Counts users matching a query.
+    pub async fn count_users(
+        &self,
+        realm_id: &str,
+        query: &UserQuery<'_>,
+    ) -> Result<i64, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let count = sqlx::query_scalar(
-            "SELECT count(*) FROM users WHERE realm_id = $1 AND service_account_client_id IS NULL",
-        )
+        let count = sqlx::query_scalar(&format!(
+            "SELECT count(*) FROM users WHERE {USER_QUERY_CONDITIONS}"
+        ))
         .bind(realm_id)
+        .bind(query.search)
+        .bind(query.username)
+        .bind(query.email)
+        .bind(query.first_name)
+        .bind(query.last_name)
+        .bind(query.enabled)
+        .bind(query.email_verified)
         .fetch_one(tx.connection())
         .await?;
         tx.commit().await?;

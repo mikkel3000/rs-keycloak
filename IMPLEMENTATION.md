@@ -687,3 +687,20 @@ with `+`, its redirect URIs, following the 6 recorded cases in
 `tests/reference/logout-redirect-observations.json`. Registered post-logout
 URIs may now end in `/*`. `tests/public/logout_redirects_contract.py`
 checks one case per test, the slowest in 245 ms.
+
+## User search
+
+`GET /users` and `/users/count` accept `search`, `username`, `email`,
+`firstName`, `lastName`, `enabled`, `emailVerified` and `exact`, following
+the 26 recorded cases in `tests/reference/user-search-observations.json`.
+`search` is a case-insensitive prefix over username, email and names (`*`
+a wildcard, quotes for exact) and replaces `username`; the field filters
+match infix or, with `exact=true`, exactly; all combine with AND. The
+handler turns each parameter into an escaped lowercase `LIKE` pattern, so
+`%` and `_` in values are literal, and one storage condition serves both
+listing and counting. `briefRepresentation=true` drops the credential and
+action fields. `tests/public/user_search_contract.py` checks 4 groups, the
+slowest in 285 ms.
+
+Remaining differences: the brief form has no `access` map; first and last
+name filters use `lower()` without an index, which large realms will need.

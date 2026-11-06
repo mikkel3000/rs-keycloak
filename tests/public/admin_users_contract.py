@@ -99,7 +99,8 @@ class AdminUsersContract(ServerCase):
         self.assert_case(self.call("GET", self.users + "?username=reference"), "search/prefix")
         self.assert_case(self.call("GET", self.users), "search/all")
         self.assert_case(self.call("GET", self.users + "/count"), "count")
-        self.assertEqual(self.call("GET", self.users + "?email=x")[0], 400)
+        # Parameters this server does not model are refused, not ignored.
+        self.assertEqual(self.call("GET", self.users + "?idpAlias=x")[0], 400)
 
     def test_unknown_user(self):
         missing = "00000000-0000-0000-0000-000000000000"
