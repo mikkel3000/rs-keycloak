@@ -296,3 +296,14 @@ one ("Failed to find required action" when unknown), and updating one. A
 disabled action no longer runs at login while users keep it assigned, and a
 default action is given to new users. Malformed bodies answer 400
 `unknown_error`. The baseline passed a second, comparing run.
+
+`default_scopes.py` records 5 code-flow logins in
+`default-scope-observations.json` with `openid`, `openid profile email`,
+`openid email`, an unknown scope and `profile` alone. `profile` and `email`
+are default scopes, granted whatever is requested, and add
+`preferred_username`, `email`, `email_verified`, `name`, `given_name` and
+`family_name` to the access token, the ID token and userinfo. An unknown
+scope is redirected back as `invalid_scope`; without `openid` there is no
+ID token and userinfo answers 403. The fixture user comes from a realm
+import, which gives no default roles, so these tokens carry no role claims.
+The baseline passed a second, comparing run.
