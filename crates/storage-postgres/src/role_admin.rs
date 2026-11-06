@@ -373,6 +373,38 @@ impl Storage {
         rows.iter().map(user_row).collect()
     }
 
+    /// Lists every role mapped to a holder, each with its client's public
+    /// identifier for client roles, or `None` if the holder does not exist.
+    pub async fn holder_mappings(
+        &self,
+        realm_id: &str,
+        holder: RoleHolder<'_>,
+    ) -> Result<Option<Vec<(Option<String>, RoleRecord)>>, StorageError> {
+        let (table, grants, column) = holder.tables();
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let exists: bool = sqlx::query_scalar(&format!(
+            "SELECT EXISTS (SELECT 1 FROM {table} WHERE realm_id = $1 AND id = $2)"
+        ))
+        .bind(realm_id)
+        .bind(holder.id())
+        .fetch_one(&mut *conn)
+        .await?;
+        let mappings = if exists {
+            let rows = sqlx::query(&format!("SELECT {ROLE_COLUMNS}, c.client_id AS client_identifier FROM roles r JOIN {grants} g ON g.realm_id = r.realm_id AND g.role_id = r.id LEFT JOIN clients c ON c.realm_id = r.realm_id AND c.id = r.client_id WHERE r.realm_id = $1 AND g.{column} = $2 ORDER BY c.client_id NULLS FIRST, r.name"))
+                .bind(realm_id).bind(holder.id()).fetch_all(&mut *conn).await?;
+            Some(
+                rows.iter()
+                    .map(|row| Ok((row.try_get("client_identifier")?, role_row(row)?)))
+                    .collect::<Result<_, StorageError>>()?,
+            )
+        } else {
+            None
+        };
+        tx.commit().await?;
+        Ok(mappings)
+    }
+
     /// Lists a holder's directly mapped roles in one container (the realm
     /// when `client` is `None`), or `None` if the holder does not exist.
     pub async fn holder_roles(

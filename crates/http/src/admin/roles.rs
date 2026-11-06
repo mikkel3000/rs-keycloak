@@ -23,7 +23,7 @@ use rs_keycloak_storage_postgres::{
     CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
     RoleRecord,
 };
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::users::{
@@ -110,6 +110,14 @@ pub(super) fn routes() -> Router<OidcState> {
         .route(
             "/admin/realms/{realm}/users/{user}/role-mappings/clients/{client}/composite",
             get(effective_user_roles),
+        )
+        .route(
+            "/admin/realms/{realm}/users/{user}/role-mappings",
+            get(all_mappings),
+        )
+        .route(
+            "/admin/realms/{realm}/groups/{group}/role-mappings",
+            get(all_mappings),
         )
         .route(
             "/admin/realms/{realm}/groups/{group}/role-mappings/realm",
@@ -620,6 +628,48 @@ async fn holder_roles(
         .await?
         .ok_or(not_found)?;
     Ok(role_array(&roles, &container.realm_id))
+}
+
+/// A holder's realm and client mappings together; empty parts are left
+/// out, and client mappings are keyed by public client identifier.
+async fn all_mappings(
+    State(state): State<OidcState>,
+    Path(params): Params,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    let realm = param(&params, "realm")?;
+    authorize(&state, &headers, realm, Access::ViewUsers).await?;
+    let realm_id = realm_id(&state, realm).await?;
+    let (holder, not_found) = holder(&params)?;
+    let mappings = state
+        .storage
+        .holder_mappings(&realm_id, holder)
+        .await?
+        .ok_or(not_found)?;
+    let mut realm_mappings = Vec::new();
+    let mut client_mappings = Map::new();
+    for (client, role) in &mappings {
+        let fields = representation(role, &realm_id);
+        match (client, &role.client) {
+            (Some(client), Some(id)) => {
+                let entry = client_mappings
+                    .entry(client.clone())
+                    .or_insert_with(|| json!({ "id": id, "client": client, "mappings": [] }));
+                if let Some(Value::Array(roles)) = entry.get_mut("mappings") {
+                    roles.push(fields);
+                }
+            }
+            _ => realm_mappings.push(fields),
+        }
+    }
+    let mut body = Map::new();
+    if !realm_mappings.is_empty() {
+        body.insert("realmMappings".into(), Value::Array(realm_mappings));
+    }
+    if !client_mappings.is_empty() {
+        body.insert("clientMappings".into(), Value::Object(client_mappings));
+    }
+    Ok(json_response(Value::Object(body)))
 }
 
 /// A user's effective roles in one container, including those of groups.

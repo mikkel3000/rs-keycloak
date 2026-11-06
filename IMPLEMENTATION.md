@@ -603,8 +603,7 @@ through a role holder. `tests/public/group_roles_contract.py` checks 2
 groups, the slowest in 423 ms.
 
 Remaining differences: subgroup lists show empty `realmRoles` and
-`clientRoles`, because mapped roles are read only for a single group; the
-combined `/role-mappings` endpoint is missing.
+`clientRoles`, because mapped roles are read only for a single group.
 
 ## Composite role editing
 
@@ -647,3 +646,12 @@ One unexplained failure was seen once while running every contract: a
 `view-users` permission case answered 401 mid-test and did not reproduce in
 24 runs. Token checks reject an `iat` later than the server clock, so a
 clock step backwards would explain it; this is not confirmed.
+
+## Combined role mappings
+
+`GET /users/{id}/role-mappings` and `/groups/{id}/role-mappings` return a
+holder's `realmMappings` and `clientMappings` together, each left out when
+empty, with client mappings keyed by public client identifier, following
+the 6 recorded cases in `tests/reference/role-mapping-observations.json`.
+One query reads every mapping with its client's identifier.
+`tests/public/role_mappings_contract.py` checks them in 353 ms.
