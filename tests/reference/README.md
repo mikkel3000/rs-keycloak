@@ -246,3 +246,11 @@ filter; filters combine with AND, results are ordered by username, and
 `/users/count` takes the same filters. `briefRepresentation` leaves out
 `totp`, `requiredActions` and the credential fields. The baseline passed a
 second, comparing run.
+
+`role_updates.py` records 22 cases in `role-update-observations.json`:
+`PUT /roles/{name}` and the client role form, renames, a taken name (409
+"Duplicate resource error"), a missing name (400 "role has no name"),
+unknown roles and malformed bodies, and `/roles-by-id/{id}` read, update,
+composites and delete ("Could not find role with id" when unknown). An
+update replaces the name and description, so leaving the description out
+removes it. The baseline passed a second, comparing run.
