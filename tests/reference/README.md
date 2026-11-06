@@ -254,3 +254,12 @@ unknown roles and malformed bodies, and `/roles-by-id/{id}` read, update,
 composites and delete ("Could not find role with id" when unknown). An
 update replaces the name and description, so leaving the description out
 removes it. The baseline passed a second, comparing run.
+
+`group_updates.py` records 16 cases in `group-update-observations.json`:
+`PUT /groups/{id}` renames (paths of subgroups follow; a taken top-level or
+sibling name answers 409 "Sibling group named '…' already exists."; a
+missing name 400 "Group name is missing"), and moves by posting an existing
+group's `id` to a parent's `/children` or to `/groups`. Renaming to a name
+with `/` succeeds, moving a group into itself answers 204, and moving it
+under its own subgroup fails with a 500. The baseline passed a second,
+comparing run.
