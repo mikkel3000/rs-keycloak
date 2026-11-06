@@ -859,3 +859,26 @@ Remaining differences: scopes cannot be created, edited or assigned and
 have no protocol mappers; `acr`, `web-origins` and the optional scopes
 (`offline_access`, `address`, `phone` and others) are missing, as are the
 SAML scopes.
+
+## Offline access
+
+Logins may request `offline_access`, following
+`tests/reference/offline-access-observations.json`. The refresh family is
+then offline (migration 32): its 30-day lifetime does not follow the login
+session, logout and admin sign-out leave it, and its refresh tokens are
+typed `Offline`. Revocation ends only the offline family, and removing the
+user's consent for the client ends its offline families too, both then
+answering "Offline user session not found". Access tokens refreshed from a
+live offline family stay valid after the login session ends. Admins list
+offline sessions per user and client and per client, count them, and see
+them in `client-session-stats`. A user without the `offline_access` role
+gets `not_allowed` at the code exchange, as Keycloak answers (not recorded).
+Clients without post-logout URIs now accept their redirect URIs at logout,
+as the reference does. `tests/public/offline_access_contract.py` checks 5
+groups.
+
+Remaining differences: the online session of an offline login stays listed
+under `/users/{id}/sessions`, where the reference lists none; introspection
+reports offline refresh tokens as `Refresh` and only while their login
+session lives; offline sessions have no idle timeout; a refused
+`not_allowed` exchange still leaves an unused offline family.

@@ -114,7 +114,7 @@ pub(super) async fn handle(
     };
     let refresh = match token_type.as_str() {
         "Bearer" => false,
-        "Refresh" => true,
+        "Refresh" | "Offline" => true,
         _ => {
             return error(
                 StatusCode::BAD_REQUEST,

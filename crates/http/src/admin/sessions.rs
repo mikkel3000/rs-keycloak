@@ -45,6 +45,18 @@ pub(super) fn routes() -> Router<OidcState> {
             get(session_stats),
         )
         .route("/admin/realms/{realm}/logout-all", post(logout_all))
+        .route(
+            "/admin/realms/{realm}/users/{user}/offline-sessions/{client}",
+            get(user_offline_sessions),
+        )
+        .route(
+            "/admin/realms/{realm}/clients/{client}/offline-sessions",
+            get(client_offline_sessions),
+        )
+        .route(
+            "/admin/realms/{realm}/clients/{client}/offline-session-count",
+            get(offline_session_count),
+        )
 }
 
 fn representation(session: &SessionRecord) -> Value {
@@ -182,7 +194,7 @@ async fn session_count(
 }
 
 /// Active and offline counts per client with sessions; the reference sends
-/// them as strings. Offline sessions are not modelled, so they are 0.
+/// them as strings.
 async fn session_stats(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -199,11 +211,64 @@ async fn session_stats(
                     "id": entry.id,
                     "clientId": entry.client_identifier,
                     "active": entry.active.to_string(),
-                    "offline": "0",
+                    "offline": entry.offline.to_string(),
                 })
             })
             .collect(),
     )))
+}
+
+async fn user_offline_sessions(
+    State(state): State<OidcState>,
+    Path((realm, user, client)): Path<(String, String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers, &realm, Access::ViewUsers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    state
+        .storage
+        .user(&realm_id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let client = client_id(&state, &realm_id, &client).await?;
+    let sessions = state
+        .storage
+        .offline_session_list(&realm_id, &client, Some(&user))
+        .await?;
+    Ok(sessions_response(&sessions))
+}
+
+async fn client_offline_sessions(
+    State(state): State<OidcState>,
+    Path((realm, client)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers, &realm, Access::ViewClients).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let client = client_id(&state, &realm_id, &client).await?;
+    let sessions = state
+        .storage
+        .offline_session_list(&realm_id, &client, None)
+        .await?;
+    Ok(sessions_response(&sessions))
+}
+
+async fn offline_session_count(
+    State(state): State<OidcState>,
+    Path((realm, client)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<Response, AdminError> {
+    authorize(&state, &headers, &realm, Access::ViewClients).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let client = client_id(&state, &realm_id, &client).await?;
+    let count = state
+        .storage
+        .client_session_counts(&realm_id)
+        .await?
+        .into_iter()
+        .find(|entry| entry.id == client)
+        .map_or(0, |entry| entry.offline);
+    Ok(json_response(json!({ "count": count })))
 }
 
 async fn logout_all(

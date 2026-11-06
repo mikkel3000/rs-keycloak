@@ -232,7 +232,7 @@ impl SigningKey {
     /// Verifies a signed refresh token and rejects other token types.
     pub fn verify_refresh_token(&self, token: &str) -> Result<VerifiedToken, SigningError> {
         let claims: VerifiedToken = self.verify_token(token)?;
-        if claims.token_type != "Refresh" {
+        if !matches!(claims.token_type.as_str(), "Refresh" | "Offline") {
             return Err(SigningError);
         }
         Ok(claims)
@@ -299,6 +299,11 @@ impl SigningKey {
     /// Signs refresh claims bound to a persisted refresh family.
     pub fn sign_refresh_token(&self, claims: &TokenClaims<'_>) -> Result<String, SigningError> {
         self.sign_typed_claims(claims, "Refresh")
+    }
+
+    /// Signs an offline refresh token, typed `Offline` as in the reference.
+    pub fn sign_offline_token(&self, claims: &TokenClaims<'_>) -> Result<String, SigningError> {
+        self.sign_typed_claims(claims, "Offline")
     }
 
     fn sign_typed_claims(

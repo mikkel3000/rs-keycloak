@@ -165,7 +165,11 @@ impl Storage {
         let mut tx = self.begin_request(false).await?;
         let revoked = sqlx::query("DELETE FROM user_consents uc USING clients c WHERE c.realm_id = uc.realm_id AND c.id = uc.client_id AND uc.realm_id = $1 AND uc.user_id = $2 AND c.client_id = $3")
             .bind(realm_id).bind(user_id).bind(client_identifier).execute(tx.connection()).await?.rows_affected();
+        // Offline tokens count as the user's grant to the client, as in the
+        // reference, so removing it ends them.
+        let offline = sqlx::query("UPDATE refresh_families f SET revoked_at = clock_timestamp() FROM clients c, user_sessions us WHERE c.realm_id = f.realm_id AND c.id = f.client_id AND us.realm_id = f.realm_id AND us.id = f.user_session_id AND f.realm_id = $1 AND us.user_id = $2 AND c.client_id = $3 AND f.offline AND f.revoked_at IS NULL")
+            .bind(realm_id).bind(user_id).bind(client_identifier).execute(tx.connection()).await?.rows_affected();
         tx.commit().await?;
-        Ok(revoked > 0)
+        Ok(revoked + offline > 0)
     }
 }

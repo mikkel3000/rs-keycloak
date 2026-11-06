@@ -81,6 +81,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0029_client_urls.sql"),
     include_str!("../../../migrations/0030_realm_token_settings.sql"),
     include_str!("../../../migrations/0031_required_action_settings.sql"),
+    include_str!("../../../migrations/0032_offline_sessions.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -416,6 +417,8 @@ pub enum RefreshRotation {
     Rotated(RefreshGrant),
     /// The token belongs to the client, but its session has ended.
     SessionNotActive,
+    /// The token is an offline token whose offline session has ended.
+    OfflineSessionNotFound,
     /// The token is unknown, replayed or expired, or the client changed.
     Invalid,
 }
@@ -464,6 +467,14 @@ pub struct ClientAuthEntry {
     pub material: ClientAuthMaterial,
     /// Bearer-only clients may only authenticate to introspection.
     pub bearer_only: bool,
+}
+
+/// Lifetime of an offline refresh family, the reference's 30-day default.
+const OFFLINE_SESSION_SECONDS: i32 = 30 * 24 * 3600;
+
+/// Whether a granted scope asks for an offline refresh token.
+pub fn is_offline_scope(scope: &str) -> bool {
+    scope.split(' ').any(|value| value == "offline_access")
 }
 
 /// How a client accepts redirect URIs at the authorization endpoint.
@@ -543,7 +554,7 @@ async fn lookup_access_token(
         )
         .await;
     };
-    let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled")
+    let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE us.realm_id = $1 AND c.client_id = $2 AND us.id = $3 AND u.id = $4 AND ((us.revoked_at IS NULL AND us.expires_at > clock_timestamp()) OR EXISTS (SELECT 1 FROM refresh_families f WHERE f.realm_id = us.realm_id AND f.user_session_id = us.id AND f.client_id = c.id AND f.offline AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp())) AND r.enabled AND u.enabled AND c.enabled")
         .bind(realm).bind(client_identifier).bind(session_id).bind(user_id).fetch_optional(connection).await?;
     Ok(match row {
         Some(row) => AccessTokenStatus::Active(active_session_row(&row)?),
@@ -1066,8 +1077,11 @@ impl Storage {
         };
         let client: String = row.try_get("id")?;
         sqlx::query("DELETE FROM refresh_families WHERE id IN (SELECT id FROM refresh_families WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at) VALUES ($1, $2, $3, $4, $5, LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4))) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
-            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).fetch_one(&mut *conn).await?;
+        // An offline family lives on its own lifetime; an online one ends
+        // with its session.
+        let offline = is_offline_scope(scope);
+        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN clock_timestamp() + make_interval(secs => $8) ELSE LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4)) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
+            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).bind(offline).bind(f64::from(OFFLINE_SESSION_SECONDS)).fetch_one(&mut *conn).await?;
         sqlx::query(
             "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, 0)",
         )
@@ -1093,18 +1107,18 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, floor(EXTRACT(EPOCH FROM f.expires_at))::bigint AS expires_at, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
+        let row = sqlx::query("SELECT us.realm_id, us.user_id, u.username, us.id AS session_id, c.id AS client_id, c.client_id AS client_identifier, floor(EXTRACT(EPOCH FROM us.created_at))::bigint AS auth_time, f.id AS family_id, floor(EXTRACT(EPOCH FROM f.expires_at))::bigint AS expires_at, f.scope AS scope, f.generation AS family_generation, t.generation AS token_generation, t.consumed_at IS NOT NULL AS consumed FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = c.id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3 AND ((c.public_client AND $4::bigint IS NULL) OR (NOT c.public_client AND c.revision = $4)) AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() AND (f.offline OR (us.revoked_at IS NULL AND us.expires_at > clock_timestamp())) AND r.enabled AND u.enabled AND c.enabled FOR UPDATE OF t, f, us FOR SHARE OF u, r, c, cs")
             .bind(token_hash).bind(realm).bind(client_identifier).bind(client_revision).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             // A token of this client whose session has ended is reported
             // separately, as the reference does.
-            let issued: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3)")
-                .bind(token_hash).bind(realm).bind(client_identifier).fetch_one(&mut *conn).await?;
+            let issued: Option<bool> = sqlx::query_scalar("SELECT f.offline FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND c.client_id = $3")
+                .bind(token_hash).bind(realm).bind(client_identifier).fetch_optional(&mut *conn).await?;
             tx.commit().await?;
-            return Ok(if issued {
-                RefreshRotation::SessionNotActive
-            } else {
-                RefreshRotation::Invalid
+            return Ok(match issued {
+                Some(true) => RefreshRotation::OfflineSessionNotFound,
+                Some(false) => RefreshRotation::SessionNotActive,
+                None => RefreshRotation::Invalid,
             });
         };
         let family: String = row.try_get("family_id")?;
@@ -1242,7 +1256,7 @@ impl Storage {
             return Ok(false);
         }
         let conn = tx.connection();
-        let row = sqlx::query("SELECT f.id AS family_id, us.id AS session_id FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND f.client_id = $3 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp() FOR UPDATE OF t, f, us, cs")
+        let row = sqlx::query("SELECT f.id AS family_id, f.offline, us.id AS session_id FROM refresh_tokens t JOIN refresh_families f ON f.id = t.family_id JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN client_sessions cs ON cs.realm_id = us.realm_id AND cs.user_session_id = us.id AND cs.client_id = f.client_id WHERE t.token_hash = $1 AND f.realm_id = $2 AND f.client_id = $3 AND f.revoked_at IS NULL AND (f.offline OR (us.revoked_at IS NULL AND us.expires_at > clock_timestamp())) FOR UPDATE OF t, f, us, cs")
             .bind(token_hash).bind(realm).bind(&client_id).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             return Ok(false);
@@ -1251,6 +1265,11 @@ impl Storage {
         let family: String = row.try_get("family_id")?;
         sqlx::query("UPDATE refresh_families SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE id = $1")
             .bind(family).execute(&mut *conn).await?;
+        // An offline token ends only its offline session.
+        if row.try_get::<bool, _>("offline")? {
+            tx.commit().await?;
+            return Ok(true);
+        }
         sqlx::query("DELETE FROM client_sessions WHERE realm_id = $1 AND client_id = $2 AND user_session_id = $3")
             .bind(realm).bind(client_id).bind(&session).execute(&mut *conn).await?;
         sqlx::query("UPDATE user_sessions SET revoked_at = clock_timestamp() WHERE realm_id = $1 AND id = $2 AND NOT EXISTS (SELECT 1 FROM client_sessions WHERE realm_id = $1 AND user_session_id = $2)")

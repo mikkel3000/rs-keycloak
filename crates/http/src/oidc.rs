@@ -32,7 +32,7 @@ use rs_keycloak_crypto::signing::{
 use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, RefreshRotation, RoleNames, Storage, UserRecord,
+    AccessTokenStatus, RefreshRotation, RoleNames, Storage, UserRecord, is_offline_scope,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -1043,6 +1043,9 @@ async fn token(
                 Ok(RefreshRotation::SessionNotActive) => {
                     return invalid_grant_described("Session not active");
                 }
+                Ok(RefreshRotation::OfflineSessionNotFound) => {
+                    return invalid_grant_described("Offline user session not found");
+                }
                 Ok(RefreshRotation::Invalid) => return invalid_grant(),
                 Err(_) => return unavailable(),
             };
@@ -1082,6 +1085,19 @@ async fn token(
         Err(_) => return unavailable(),
     };
     let openid = has_openid_scope(&grant.scope);
+    let offline = is_offline_scope(&grant.scope);
+    if offline && !roles.realm.iter().any(|role| role == "offline_access") {
+        // The reference's answer when the user lacks the offline_access role.
+        return (
+            StatusCode::BAD_REQUEST,
+            [
+                (header::CACHE_CONTROL, "no-store"),
+                (header::PRAGMA, "no-cache"),
+            ],
+            Json(json!({"error":"not_allowed","error_description":"Offline tokens not allowed for the user or client"})),
+        )
+            .into_response();
+    }
     let scope = grant.scope.clone();
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
@@ -1135,11 +1151,12 @@ async fn token(
         } else {
             None
         };
-        Some((
-            signer.sign(&claims).ok()?,
-            id_token,
-            signer.sign_refresh_token(&refresh_claims).ok()?,
-        ))
+        let refresh_token = if offline {
+            signer.sign_offline_token(&refresh_claims).ok()?
+        } else {
+            signer.sign_refresh_token(&refresh_claims).ok()?
+        };
+        Some((signer.sign(&claims).ok()?, id_token, refresh_token))
     })
     .await;
     let Ok(Some((access_token, id_token, refresh_token))) = tokens else {
@@ -1231,22 +1248,26 @@ fn resource_access(roles: &RoleNames) -> Option<BTreeMap<&str, RealmAccess<'_>>>
     })
 }
 
-/// The scopes a login grants: `openid` when requested, plus the reference's
-/// default `email` and `profile` scopes, which every client has. `None` when
+/// The scopes a login grants: `openid` and `offline_access` when requested,
+/// plus the reference's default `email` and `profile` scopes, which every
+/// client has. `None` when
 /// the request names a scope no client has here.
 fn granted_login_scope(requested: &str) -> Option<&'static str> {
     let mut openid = false;
+    let mut offline = false;
     for value in requested.split(' ').filter(|value| !value.is_empty()) {
         match value {
             "openid" => openid = true,
+            "offline_access" => offline = true,
             "email" | "profile" => (),
             _ => return None,
         }
     }
-    Some(if openid {
-        "openid email profile"
-    } else {
-        "email profile"
+    Some(match (openid, offline) {
+        (true, false) => "openid email profile",
+        (true, true) => "openid email offline_access profile",
+        (false, false) => "email profile",
+        (false, true) => "email offline_access profile",
     })
 }
 

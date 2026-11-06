@@ -13,12 +13,14 @@ pub enum RefreshLogout {
 }
 
 /// Revokes a user session and every refresh family bound to it.
+/// Ends a login session and its online refresh families; offline families
+/// outlive it, as in the reference.
 pub(crate) async fn end_session(
     connection: &mut PgConnection,
     realm_id: &str,
     session_id: &str,
 ) -> Result<(), StorageError> {
-    sqlx::query("UPDATE refresh_families SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE realm_id = $1 AND user_session_id = $2")
+    sqlx::query("UPDATE refresh_families SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE realm_id = $1 AND user_session_id = $2 AND NOT offline")
         .bind(realm_id).bind(session_id).execute(&mut *connection).await?;
     sqlx::query("UPDATE user_sessions SET revoked_at = COALESCE(revoked_at, clock_timestamp()) WHERE realm_id = $1 AND id = $2")
         .bind(realm_id).bind(session_id).execute(&mut *connection).await?;
@@ -76,14 +78,15 @@ impl Storage {
     }
 
     /// Reads the post-logout redirect URIs of an enabled client: its own
-    /// list, plus its redirect URIs when it uses Keycloak's "+".
+    /// list, plus its redirect URIs when it uses Keycloak's "+" or, as in
+    /// the reference, has no post-logout URIs of its own.
     pub async fn post_logout_rules(
         &self,
         realm_id: &str,
         client_identifier: &str,
     ) -> Result<Option<RedirectRules>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT c.root_url, c.bearer_only, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id UNION SELECT d.redirect_uri FROM client_redirect_uris d WHERE c.post_logout_uses_redirect_uris AND d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY 1) AS redirect_uris FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled")
+        let row = sqlx::query("SELECT c.root_url, c.bearer_only, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id UNION SELECT d.redirect_uri FROM client_redirect_uris d WHERE (c.post_logout_uses_redirect_uris OR NOT EXISTS (SELECT 1 FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id)) AND d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY 1) AS redirect_uris FROM clients c WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled")
             .bind(realm_id).bind(client_identifier).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         row.map(|row| {
