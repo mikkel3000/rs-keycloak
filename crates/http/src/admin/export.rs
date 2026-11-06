@@ -204,7 +204,8 @@ async fn partial_import(
 ) -> Result<Response, AdminError> {
     let actor = authorize(&state, &headers, &realm, Access::ManageRealm).await?;
     let realm_id = realm_id(&state, &realm).await?;
-    let body = super::users::json_object(&body)?;
+    let mut body = super::users::json_object(&body)?;
+    strip_export_fields(&mut body);
     if let Some(field) = body.keys().find(|key| {
         !matches!(
             key.as_str(),
@@ -660,4 +661,103 @@ async fn user_links(
             .await?;
     }
     Ok(())
+}
+
+/// Realm fields an export carries that import leaves alone, as the
+/// reference's partial import does.
+const REALM_FIELDS: [&str; 11] = [
+    "id",
+    "realm",
+    "enabled",
+    "displayName",
+    "accessTokenLifespan",
+    "resetPasswordAllowed",
+    "verifyEmail",
+    "smtpServer",
+    "clientScopes",
+    "requiredActions",
+    "defaultRole",
+];
+
+/// Removes what a partial export adds but an import cannot take, so an
+/// export imports as is: realm settings, identifiers, read-only fields,
+/// masked secrets (a new one is generated) and service-account users
+/// (created with their clients).
+fn strip_export_fields(body: &mut Map<String, Value>) {
+    for field in REALM_FIELDS {
+        body.remove(field);
+    }
+    let remove = |item: &mut Value, fields: &[&str]| {
+        if let Some(item) = item.as_object_mut() {
+            for field in fields {
+                item.remove(*field);
+            }
+            if item.get("attributes") == Some(&json!({})) {
+                item.remove("attributes");
+            }
+        }
+    };
+    if let Some(Value::Array(clients)) = body.get_mut("clients") {
+        for client in clients {
+            remove(
+                client,
+                &["id", "defaultClientScopes", "optionalClientScopes"],
+            );
+            if client.get("secret").and_then(Value::as_str) == Some(MASKED_SECRET)
+                && let Some(client) = client.as_object_mut()
+            {
+                client.remove("secret");
+            }
+        }
+    }
+    if let Some(Value::Array(users)) = body.get_mut("users") {
+        users.retain(|user| user.get("serviceAccountClientId").is_none());
+        for user in users {
+            remove(
+                user,
+                &[
+                    "id",
+                    "createdTimestamp",
+                    "totp",
+                    "disableableCredentialTypes",
+                    "notBefore",
+                ],
+            );
+        }
+    }
+    if let Some(Value::Object(roles)) = body.get_mut("roles") {
+        let realm_roles = roles
+            .get_mut("realm")
+            .and_then(Value::as_array_mut)
+            .into_iter()
+            .flatten();
+        for role in realm_roles {
+            remove(role, &["id", "composite", "clientRole", "containerId"]);
+        }
+        if let Some(Value::Object(clients)) = roles.get_mut("client") {
+            for role in clients
+                .values_mut()
+                .filter_map(Value::as_array_mut)
+                .flatten()
+            {
+                remove(role, &["id", "composite", "clientRole", "containerId"]);
+            }
+        }
+    }
+    fn strip_group(group: &mut Value) {
+        if let Some(fields) = group.as_object_mut() {
+            for field in ["id", "path", "parentId", "subGroupCount", "access"] {
+                fields.remove(field);
+            }
+            if fields.get("attributes") == Some(&json!({})) {
+                fields.remove("attributes");
+            }
+            if let Some(Value::Array(children)) = fields.get_mut("subGroups") {
+                children.iter_mut().for_each(strip_group);
+            }
+        }
+    }
+    if let Some(Value::Array(groups)) = body.get_mut("groups") {
+        groups.iter_mut().for_each(strip_group);
+    }
 }
