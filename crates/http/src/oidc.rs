@@ -29,6 +29,7 @@ use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, VerifiedToken,
 };
+use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
 use rs_keycloak_protocols::pkce::{self, Challenge};
 use rs_keycloak_storage_postgres::{AccessTokenStatus, RefreshRotation, RoleNames, Storage};
 use serde::Deserialize;
@@ -328,6 +329,25 @@ async fn authorize(
         Ok(None) => return failure(),
         Err(_) => return unavailable(),
     };
+    let rules = match s.storage.redirect_rules(&realm_id, &q.client_id).await {
+        Ok(Some(rules)) => rules,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    if rules.bearer_only {
+        return plain_page(
+            StatusCode::FORBIDDEN,
+            "Error",
+            "<p>Bearer-only applications are not allowed to initiate browser login.</p>",
+        );
+    }
+    let server = s.issuer_base.trim_end_matches('/');
+    let Some(registered) = rules.redirect_uris.iter().find(|registered| {
+        resolve_redirect(registered, rules.root_url.as_deref(), server)
+            .is_some_and(|resolved| redirect_matches(&resolved, &q.redirect_uri))
+    }) else {
+        return failure();
+    };
     let csrf = random_token();
     let request_id = random_token();
     match s
@@ -338,6 +358,7 @@ async fn authorize(
             &realm_id,
             &q.client_id,
             &q.redirect_uri,
+            registered,
             challenge.digest(),
             q.state.as_deref(),
             &q.scope,
@@ -349,21 +370,7 @@ async fn authorize(
         .await
     {
         Ok(true) => (),
-        Ok(false) => {
-            return match s
-                .storage
-                .client_is_bearer_only(&realm_id, &q.client_id)
-                .await
-            {
-                Ok(true) => plain_page(
-                    StatusCode::FORBIDDEN,
-                    "Error",
-                    "<p>Bearer-only applications are not allowed to initiate browser login.</p>",
-                ),
-                Ok(false) => failure(),
-                Err(_) => unavailable(),
-            };
-        }
+        Ok(false) => return failure(),
         Err(_) => return unavailable(),
     }
     let redirect = rs_keycloak_storage_postgres::AuthorizationRedirect {

@@ -514,8 +514,7 @@ access tokens carry `resource_access`. The account API now checks the real
 to change. `tests/public/client_roles_contract.py` checks 2 groups, the
 slowest in 381 ms; a fresh install with bootstrap creates the built-ins.
 
-Remaining differences: built-in clients have no redirect URIs, so
-`account-console` and `security-admin-console` cannot sign in yet; token `aud` still names the token's own client rather
+Remaining differences (built-in client URLs came later, see below): token `aud` still names the token's own client rather
 than the clients whose roles it carries.
 
 ## Bearer-only clients
@@ -655,3 +654,28 @@ empty, with client mappings keyed by public client identifier, following
 the 6 recorded cases in `tests/reference/role-mapping-observations.json`.
 One query reads every mapping with its client's identifier.
 `tests/public/role_mappings_contract.py` checks them in 353 ms.
+
+## Redirect URI matching and client URLs
+
+Clients may have `rootUrl` and `baseUrl`, and registered redirect URIs may
+be relative to the root URL or end in `/*`, following the 19 recorded
+cases in `tests/reference/redirect-matching-observations.json`. The
+authorization endpoint now reads the client's rules, checks bearer-only
+first as the reference does, and matches in Rust
+(`rs_keycloak_protocols::client_urls::redirect_matches`): `X/*` matches `X`
+and anything below `X/` with any query, but not user info or dot segments
+(also percent-encoded); other URIs match exactly; fragments never match.
+`${authBaseUrl}` and `${authAdminUrl}` resolve to the issuer base.
+Authorization requests and codes keep the requested URI for the token
+exchange and the matched registered URI for the cascade that cancels them
+when it is removed (migration 29). Every realm's `account`,
+`account-console` and `security-admin-console` now have the reference's
+root, base and redirect URLs, so `account-console` signs in.
+`tests/public/redirect_matching_contract.py` checks 4 groups, the slowest
+in 215 ms, including an `account-console` sign-in.
+
+Remaining differences: post-logout redirects still match registered URIs
+exactly, so a wildcard registration does not cover them; origins are not
+derived from relative redirect URIs; `security-admin-console` has no
+`webOrigins` (`+` is not supported) and no console is served at its URL;
+relative URIs require a `rootUrl`, which the reference may not require.

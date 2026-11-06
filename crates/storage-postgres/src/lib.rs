@@ -74,6 +74,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0026_bearer_only.sql"),
     include_str!("../../../migrations/0027_realm_admins.sql"),
     include_str!("../../../migrations/0028_group_roles.sql"),
+    include_str!("../../../migrations/0029_client_urls.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -456,6 +457,16 @@ pub struct ClientAuthEntry {
     /// How the client authenticates.
     pub material: ClientAuthMaterial,
     /// Bearer-only clients may only authenticate to introspection.
+    pub bearer_only: bool,
+}
+
+/// How a client accepts redirect URIs at the authorization endpoint.
+pub struct RedirectRules {
+    /// Root URL that relative redirect URIs resolve against.
+    pub root_url: Option<String>,
+    /// Registered redirect URIs, possibly relative or ending in `/*`.
+    pub redirect_uris: Vec<String>,
+    /// Bearer-only clients never start a login.
     pub bearer_only: bool,
 }
 
@@ -851,6 +862,7 @@ impl Storage {
         realm: &str,
         client_identifier: &str,
         redirect_uri: &str,
+        registered_redirect: &str,
         pkce_s256: &[u8],
         state: Option<&str>,
         scope: &str,
@@ -873,23 +885,31 @@ impl Storage {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
         sqlx::query("DELETE FROM authorization_requests WHERE id IN (SELECT id FROM authorization_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)").execute(&mut *conn).await?;
-        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, expires_at, response_mode, prompt_consent) SELECT $1, $2, r.id, c.id, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11, $12 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $5 AND r.enabled AND c.enabled AND c.standard_flow_enabled AND NOT c.bearer_only")
-            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).bind(prompt_consent).execute(&mut *conn).await?.rows_affected();
+        let count = sqlx::query("INSERT INTO authorization_requests (id, csrf_hash, realm_id, client_id, redirect_uri, registered_redirect, pkce_s256, state, scope, nonce, expires_at, response_mode, prompt_consent) SELECT $1, $2, r.id, c.id, $5, d.redirect_uri, $6, $7, $8, $9, clock_timestamp() + make_interval(secs => $10), $11, $12 FROM realms r JOIN clients c ON c.realm_id = r.id JOIN client_redirect_uris d ON d.realm_id = c.realm_id AND d.client_id = c.id WHERE r.id = $3 AND c.client_id = $4 AND d.redirect_uri = $13 AND r.enabled AND c.enabled AND c.standard_flow_enabled AND NOT c.bearer_only")
+            .bind(request_id).bind(csrf_hash).bind(realm).bind(client_identifier).bind(redirect_uri).bind(pkce_s256).bind(state).bind(scope).bind(nonce).bind(f64::from(ttl_seconds)).bind(response_mode).bind(prompt_consent).bind(registered_redirect)
+            .execute(&mut *conn).await?.rows_affected();
         tx.commit().await?;
         Ok(count == 1)
     }
 
-    /// Reports whether an enabled client of an enabled realm is bearer-only.
-    pub async fn client_is_bearer_only(
+    /// Reads how an enabled client of an enabled realm accepts redirect URIs.
+    pub async fn redirect_rules(
         &self,
         realm: &str,
         client_identifier: &str,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<RedirectRules>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let bearer_only = sqlx::query_scalar("SELECT c.bearer_only FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
+        let row = sqlx::query("SELECT c.root_url, c.bearer_only, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris FROM clients c JOIN realms r ON r.id = c.realm_id WHERE c.realm_id = $1 AND c.client_id = $2 AND c.enabled AND r.enabled")
             .bind(realm).bind(client_identifier).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(bearer_only.unwrap_or(false))
+        row.map(|row| {
+            Ok(RedirectRules {
+                root_url: row.try_get("root_url")?,
+                redirect_uris: row.try_get("redirect_uris")?,
+                bearer_only: row.try_get("bearer_only")?,
+            })
+        })
+        .transpose()
     }
 
     /// Resolve a live request to its realm and internal client after CSRF binding.
@@ -922,7 +942,7 @@ impl Storage {
         }
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let req = sqlx::query("UPDATE authorization_requests SET consumed_at = clock_timestamp() WHERE id = $1 AND csrf_hash = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, client_id, redirect_uri, pkce_s256, state, scope, nonce, response_mode")
+        let req = sqlx::query("UPDATE authorization_requests SET consumed_at = clock_timestamp() WHERE id = $1 AND csrf_hash = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING realm_id, client_id, redirect_uri, registered_redirect, pkce_s256, state, scope, nonce, response_mode")
             .bind(request_id).bind(csrf_hash).fetch_optional(&mut *conn).await?;
         let Some(req) = req else {
             return Ok(None);
@@ -937,8 +957,8 @@ impl Storage {
         }
         sqlx::query("DELETE FROM authorization_codes WHERE code_hash IN (SELECT a.code_hash FROM authorization_codes a WHERE a.replay_until <= clock_timestamp() AND NOT EXISTS (SELECT 1 FROM user_sessions us WHERE us.realm_id = a.realm_id AND us.id = a.user_session_id AND us.expires_at > clock_timestamp() AND us.revoked_at IS NULL) ORDER BY a.replay_until LIMIT 16 FOR UPDATE OF a SKIP LOCKED)").execute(&mut *conn).await?;
         let redirect_uri: String = req.try_get("redirect_uri")?;
-        sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, user_session_id, pkce_s256, scope, nonce, expires_at, replay_until) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $5))")
-            .bind(code_hash).bind(&realm).bind(&client).bind(&redirect_uri).bind(user_session_id).bind(req.try_get::<Vec<u8>, _>("pkce_s256")?).bind(req.try_get::<String, _>("scope")?).bind(req.try_get::<Option<String>, _>("nonce")?).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO authorization_codes (code_hash, realm_id, client_id, redirect_uri, registered_redirect, user_session_id, pkce_s256, scope, nonce, expires_at, replay_until) VALUES ($1, $2, $3, $4, $10, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $5))")
+            .bind(code_hash).bind(&realm).bind(&client).bind(&redirect_uri).bind(user_session_id).bind(req.try_get::<Vec<u8>, _>("pkce_s256")?).bind(req.try_get::<String, _>("scope")?).bind(req.try_get::<Option<String>, _>("nonce")?).bind(f64::from(ttl_seconds)).bind(req.try_get::<String, _>("registered_redirect")?).execute(&mut *conn).await?;
         let state = req.try_get("state")?;
         let response_mode = req.try_get("response_mode")?;
         tx.commit().await?;

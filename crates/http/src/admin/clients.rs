@@ -14,7 +14,9 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
-use rs_keycloak_protocols::client_urls::{validate_redirect_uri, validate_web_origin};
+use rs_keycloak_protocols::client_urls::{
+    validate_redirect_pattern, validate_redirect_uri, validate_root_url, validate_web_origin,
+};
 use rs_keycloak_storage_postgres::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
     client_secret_context,
@@ -189,12 +191,20 @@ fn representation(client: &ClientRecord, secret: Option<String>) -> Value {
     if let Some(secret) = secret {
         fields["secret"] = json!(secret);
     }
+    if let Some(root_url) = &client.root_url {
+        fields["rootUrl"] = json!(root_url);
+    }
+    if let Some(base_url) = &client.base_url {
+        fields["baseUrl"] = json!(base_url);
+    }
     fields
 }
 
 /// Request fields a client representation may carry here; the rest are
 /// refused rather than ignored.
-const SUPPORTED: [&str; 15] = [
+const SUPPORTED: [&str; 17] = [
+    "rootUrl",
+    "baseUrl",
     "consentRequired",
     "clientId",
     "enabled",
@@ -225,6 +235,8 @@ struct Settings {
     web_origins: Vec<String>,
     post_logout_redirect_uris: Vec<String>,
     post_logout_uses_redirect_uris: bool,
+    root_url: Option<String>,
+    base_url: Option<String>,
 }
 
 impl Settings {
@@ -241,6 +253,8 @@ impl Settings {
             web_origins: Vec::new(),
             post_logout_redirect_uris: Vec::new(),
             post_logout_uses_redirect_uris: false,
+            root_url: None,
+            base_url: None,
         }
     }
 
@@ -256,6 +270,8 @@ impl Settings {
             web_origins: client.web_origins.clone(),
             post_logout_redirect_uris: client.post_logout_redirect_uris.clone(),
             post_logout_uses_redirect_uris: client.post_logout_uses_redirect_uris,
+            root_url: client.root_url.clone(),
+            base_url: client.base_url.clone(),
         }
     }
 
@@ -287,11 +303,34 @@ impl Settings {
                 "Public clients cannot use service accounts",
             ));
         }
+        for (name, value) in [
+            ("rootUrl", &mut self.root_url),
+            ("baseUrl", &mut self.base_url),
+        ] {
+            match fields.get(name) {
+                None => (),
+                Some(Value::Null) => *value = None,
+                Some(Value::String(url)) if url.is_empty() => *value = None,
+                Some(Value::String(url)) if url.len() <= 2048 => *value = Some(url.clone()),
+                Some(_) => return Err(AdminError::bad_request(format!("Invalid {name}"))),
+            }
+        }
+        if let Some(root_url) = &self.root_url {
+            validate_root_url(root_url, false).map_err(AdminError::bad_request)?;
+        }
+        if let Some(base_url) = &self.base_url {
+            validate_redirect_pattern(base_url, false).map_err(AdminError::bad_request)?;
+        }
         if let Some(uris) = string_list(fields, "redirectUris")? {
             for uri in &uris {
-                validate_redirect_uri(uri, false).map_err(AdminError::bad_request)?;
+                validate_redirect_pattern(uri, false).map_err(AdminError::bad_request)?;
             }
             self.redirect_uris = uris;
+        }
+        if self.root_url.is_none() && self.redirect_uris.iter().any(|uri| uri.starts_with('/')) {
+            return Err(AdminError::bad_request(
+                "Relative redirect URIs require a rootUrl",
+            ));
         }
         if let Some(origins) = string_list(fields, "webOrigins")? {
             for origin in &origins {
@@ -321,6 +360,8 @@ impl Settings {
             post_logout_redirect_uris: &self.post_logout_redirect_uris,
             post_logout_uses_redirect_uris: self.post_logout_uses_redirect_uris,
             consent_required: self.consent_required,
+            root_url: self.root_url.as_deref(),
+            base_url: self.base_url.as_deref(),
         }
     }
 }
