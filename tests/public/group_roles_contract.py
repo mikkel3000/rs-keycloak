@@ -84,6 +84,12 @@ class GroupRolesContract(AdminCase):
         self.case(self.call("GET", f"{self.base}/users/{self.member}/role-mappings/realm"), "user/direct-realm")
         self.case(self.call("GET", f"{self.base}/users/{self.member}/role-mappings/realm/composite"), "user/effective-realm")
         self.case(self.call("GET", f"{self.base}/roles/parent-role/users"), "role/users")
+
+    def test_unmapping_and_group_deletion_remove_roles(self):
+        self.assertEqual(self.call("POST", f"{self.base}/groups/{self.parent}/role-mappings/realm", self.mapping("parent-role"))[0], 204)
+        self.assertEqual(self.call("POST", f"{self.base}/groups/{self.child}/role-mappings/realm", self.mapping("child-role"))[0], 204)
+        self.assertEqual(self.call("POST", f"{self.base}/groups/{self.child}/role-mappings/clients/{self.app}", self.mapping("app-role"))[0], 204)
+        self.assertEqual(self.call("PUT", f"{self.base}/users/{self.member}/groups/{self.child}")[0], 204)
         self.assertEqual(self.call("DELETE", f"{self.base}/groups/{self.parent}/role-mappings/realm", self.mapping("parent-role"))[0], 204)
         self.claims("token/after-remove")
         self.case(self.call("DELETE", f"{self.base}/groups/{self.child}"), "group/delete-child")

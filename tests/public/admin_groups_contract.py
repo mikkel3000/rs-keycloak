@@ -65,7 +65,7 @@ class AdminGroupsContract(ServerCase):
                 self.assertEqual(sorted({f for item in parsed for f in item}), [f for f in expected["item_fields"] if f != "access"], label)
         return response
 
-    def test_groups_membership_and_cascade(self):
+    def test_groups_creation_and_reads(self):
         self.assert_case(self.call("GET", self.groups), "list/initial")
         staff = self.assert_case(self.call("POST", self.groups, {"name": "staff"}), "create/top")[1]["location"].rsplit("/", 1)[1]
         self.assert_case(self.call("POST", self.groups, {"name": "staff"}), "create/duplicate")
@@ -80,6 +80,10 @@ class AdminGroupsContract(ServerCase):
         self.assert_case(self.call("GET", f"{self.groups}/{MISSING}"), "get/unknown")
         child = json.loads(self.assert_case(self.call("GET", f"{self.groups}/{staff}/children"), "children")[2])[0]["id"]
         self.assert_case(self.call("GET", f"{self.groups}/{child}"), "get/child")
+
+    def test_membership_and_cascade(self):
+        staff = self.call("POST", self.groups, {"name": "staff"})[1]["location"].rsplit("/", 1)[1]
+        child = json.loads(self.call("POST", f"{self.groups}/{staff}/children", {"name": "engineering"})[2])["id"]
         created = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "member", "enabled": True})
         user = created[1]["location"].replace(ISSUER_BASE, "")
         self.assert_case(self.call("GET", user + "/groups"), "membership/initial")

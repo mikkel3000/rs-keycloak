@@ -93,7 +93,6 @@ class OtpContract(AdminCase):
 
     def test_login_with_codes(self):
         secret = self.configure()
-        otp = next(c for c in json.loads(self.call("GET", self.users + "/credentials")[2]) if c["type"] == "otp")
         jar = {}
         observed, (action, _) = self.page(self.password_step(jar))
         self.assertEqual(observed, REFERENCE["login/otp-page"])
@@ -102,10 +101,19 @@ class OtpContract(AdminCase):
         code = totp(secret, time.time() + 30)
         observed, _ = self.page(self.post(action, jar, {"otp": code}))
         self.assertEqual(observed, REFERENCE["login/correct-code"])
-        jar = {}
-        _, (action, _) = self.page(self.password_step(jar))
-        observed, _ = self.page(self.post(action, jar, {"otp": code}))
-        self.assertEqual(observed, REFERENCE["login/reused-code"])
+
+    def test_used_code_is_refused(self):
+        secret = self.configure()
+        code = totp(secret, time.time() + 30)
+        for label in ("login/correct-code", "login/reused-code"):
+            jar = {}
+            _, (action, _) = self.page(self.password_step(jar))
+            observed, _ = self.page(self.post(action, jar, {"otp": code}))
+            self.assertEqual(observed, REFERENCE[label], label)
+
+    def test_deleted_credential_ends_the_second_factor(self):
+        self.configure()
+        otp = next(c for c in json.loads(self.call("GET", self.users + "/credentials")[2]) if c["type"] == "otp")
         self.assertEqual(self.call("DELETE", f"{self.users}/credentials/{otp['id']}")[0], REFERENCE["admin/delete-otp"]["status"])
         observed, _ = self.page(self.password_step({}))
         self.assertEqual(observed, REFERENCE["login/after-delete"])
