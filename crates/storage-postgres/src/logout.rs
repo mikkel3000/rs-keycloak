@@ -13,7 +13,7 @@ pub enum RefreshLogout {
 }
 
 /// Revokes a user session and every refresh family bound to it.
-async fn end_session(
+pub(crate) async fn end_session(
     connection: &mut PgConnection,
     realm_id: &str,
     session_id: &str,

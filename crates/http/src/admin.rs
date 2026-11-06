@@ -25,6 +25,7 @@ use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 mod clients;
 mod groups;
 mod roles;
+mod sessions;
 mod users;
 
 /// Admin routes, mounted with the public routes below the issuer path.
@@ -33,6 +34,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(clients::routes())
         .merge(groups::routes())
         .merge(roles::routes())
+        .merge(sessions::routes())
         .merge(users::routes())
         .route("/admin/realms", post(create_realm).get(list_realms))
         .route(

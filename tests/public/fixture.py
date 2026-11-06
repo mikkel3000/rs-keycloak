@@ -177,6 +177,52 @@ class ServerCase(unittest.TestCase):
         return json.loads(body)
 
 
+    def browser_session(self, realm, client, redirect_uri, username, password):
+        """Like `browser_login`, but also returns the SSO cookies it set."""
+        verifier = secrets.token_urlsafe(48)
+        challenge = b64(hashlib.sha256(verifier.encode()).digest())
+        query = urllib.parse.urlencode({
+            "client_id": client, "redirect_uri": redirect_uri, "response_type": "code",
+            "scope": "openid", "code_challenge": challenge, "code_challenge_method": "S256", "state": "s",
+        })
+        status, headers, body = self.request("GET", f"/realms/{realm}/protocol/openid-connect/auth?{query}")
+        self.assertEqual(status, 200, "authorization request")
+        action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
+        cookie = headers["set-cookie"].split(";", 1)[0]
+        status, pairs, _ = self.request_all("POST", action, {"Cookie": cookie}, {"username": username, "password": password})
+        self.assertIn(status, (302, 303), "password login")
+        jar = {}
+        for name, value in pairs:
+            if name.lower() == "set-cookie":
+                cookie_name, _, rest = value.partition("=")
+                if cookie_name in ("KEYCLOAK_IDENTITY", "KEYCLOAK_SESSION"):
+                    jar[cookie_name] = rest.split(";", 1)[0]
+        location = dict((k.lower(), v) for k, v in pairs)["location"]
+        return self.exchange_code(realm, client, redirect_uri, location, verifier), jar
+
+    def sso_login(self, realm, client, redirect_uri, jar):
+        """Signs in to another client through existing SSO cookies."""
+        verifier = secrets.token_urlsafe(48)
+        challenge = b64(hashlib.sha256(verifier.encode()).digest())
+        query = urllib.parse.urlencode({
+            "client_id": client, "redirect_uri": redirect_uri, "response_type": "code",
+            "scope": "openid", "code_challenge": challenge, "code_challenge_method": "S256", "state": "s",
+        })
+        cookies = "; ".join(f"{name}={value}" for name, value in jar.items())
+        status, headers, _ = self.request("GET", f"/realms/{realm}/protocol/openid-connect/auth?{query}", {"Cookie": cookies})
+        self.assertEqual(status, 302, "silent authorization")
+        return self.exchange_code(realm, client, redirect_uri, headers["location"], verifier)
+
+    def exchange_code(self, realm, client, redirect_uri, location, verifier):
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(location).query)["code"][0]
+        status, _, body = self.request("POST", f"/realms/{realm}/protocol/openid-connect/token", form={
+            "grant_type": "authorization_code", "code": code, "client_id": client,
+            "redirect_uri": redirect_uri, "code_verifier": verifier,
+        })
+        self.assertEqual(status, 200, "code exchange")
+        return json.loads(body)
+
+
 class AdminCase(ServerCase):
     """A server with a master admin service account and a fresh realm per test."""
 

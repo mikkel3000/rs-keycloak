@@ -738,3 +738,21 @@ ambiguous, where the reference accepts them on rename; moving a group under
 its own subgroup answers 400 "Cannot move a group into its own subgroup"
 where the reference fails with a 500; moving a group into itself is a 204
 no-op, as recorded; group attributes stay unsupported.
+
+## Admin session management
+
+`/users/{id}/sessions`, `POST /users/{id}/logout`, `DELETE /sessions/{id}`,
+`/clients/{id}/user-sessions` (with `first` and `max`),
+`/clients/{id}/session-count`, `/client-session-stats` and
+`POST /logout-all` follow the 15 recorded cases in
+`tests/reference/admin-session-observations.json`. Ending a session revokes
+its refresh families, so every client's refresh tokens stop working while
+other sessions continue. A session's `lastAccess` is its latest start or
+token refresh; each change is audited. The test fixture gained
+`browser_session` and `sso_login` for signing a second client into the same
+session. `tests/public/admin_sessions_contract.py` checks 5 groups, the
+slowest in 403 ms.
+
+Remaining differences: sessions have no `ipAddress`, since client addresses
+are not stored; offline sessions are not modelled, so `offline` counts are
+"0"; `logout-all` does not push a not-before time to clients.
