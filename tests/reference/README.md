@@ -263,3 +263,12 @@ group's `id` to a parent's `/children` or to `/groups`. Renaming to a name
 with `/` succeeds, moving a group into itself answers 204, and moving it
 under its own subgroup fails with a 500. The baseline passed a second,
 comparing run.
+
+`admin_sessions.py` records 15 cases in `admin-session-observations.json`:
+`/users/{id}/sessions` and `/clients/{id}/user-sessions` (one entry per user
+session, with its clients by `clientId`), `/clients/{id}/session-count`,
+`/client-session-stats` (counts as strings), `DELETE /sessions/{id}` (404
+"Sesssion not found", spelled so, when unknown), `POST /users/{id}/logout`
+and `POST /logout-all` (200 with `{}`), each followed by refresh checks: an
+ended session's refresh tokens of every client fail, other sessions keep
+working. The baseline passed a second, comparing run.
