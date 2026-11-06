@@ -325,3 +325,12 @@ found") after revocation or after the client's consent is removed; the
 admin lists it under `/users/{id}/offline-sessions/{client}` and counts it
 under `/clients/{id}/offline-session-count`. A plain `openid` login still
 gets a `Refresh` token. Recorded with `batch.py`.
+
+`account_console_api.py` records 8 cases in
+`account-console-api-observations.json`: `/account/applications` lists the
+clients of the current session (`inUse`) and those with offline access,
+`/account/sessions/devices` groups the user's sessions by device with the
+current one marked, `DELETE /account/sessions` ends every session but the
+current one, and `DELETE /account/applications/{clientId}/consent` removes
+the client's grant, offline access included ("No client with clientId: …
+found." when unknown). Recorded with `batch.py`.
