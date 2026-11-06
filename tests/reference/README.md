@@ -272,3 +272,11 @@ session, with its clients by `clientId`), `/clients/{id}/session-count`,
 and `POST /logout-all` (200 with `{}`), each followed by refresh checks: an
 ended session's refresh tokens of every client fail, other sessions keep
 working. The baseline passed a second, comparing run.
+
+`realm_settings.py` records 14 cases in `realm-setting-observations.json`:
+`displayName` (absent by default, shown on the login page once set, kept
+as `""` when cleared) and `accessTokenLifespan` (300 by default; it sets
+`expires_in` and the access and ID token lifetimes of client-credentials
+and code grants). The reference stores zero and negative lifespans and
+refuses text with 400 `unknown_error`. The baseline passed a second,
+comparing run.
