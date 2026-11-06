@@ -29,19 +29,34 @@ class AdminPermissionsContract(AdminCase):
         status, _, body = cls.request("POST", ENDPOINT + "/token", form={"grant_type": "client_credentials", "client_id": cls.ADMIN, "client_secret": cls.ADMIN_SECRET})
         assert status == 200
         cls.master_token = json.loads(body)["access_token"]
-        cls.other = "other-" + secrets.token_hex(6)
+        # One managed realm and one other realm serve every role's test;
+        # each role gets its own service account and new object names.
+        cls.managed, cls.other = "managed-" + secrets.token_hex(6), "other-" + secrets.token_hex(6)
         headers = {"Authorization": "Bearer " + cls.master_token, "Content-Type": "application/json"}
-        assert cls.request("POST", "/admin/realms", headers, body=json.dumps({"realm": cls.other, "enabled": True}))[0] == 201
+        for realm in (cls.managed, cls.other):
+            assert cls.request("POST", "/admin/realms", headers, body=json.dumps({"realm": realm, "enabled": True}))[0] == 201
+        base = f"/admin/realms/{cls.managed}"
+        cls.target_user = cls.request("POST", base + "/users", headers, body=json.dumps({"username": "target-user", "enabled": True}))[1]["location"].rsplit("/", 1)[1]
+        cls.target_client = cls.request("POST", base + "/clients", headers, body=json.dumps({"clientId": "target-client", "publicClient": True}))[1]["location"].rsplit("/", 1)[1]
+        assert cls.request("POST", base + "/groups", headers, body=json.dumps({"name": "target-group"}))[0] == 201
 
     @classmethod
     def tearDownClass(cls):
-        cls.request("DELETE", "/admin/realms/" + cls.other, {"Authorization": "Bearer " + cls.master_token})
+        for realm in (cls.managed, cls.other):
+            cls.request("DELETE", "/admin/realms/" + realm, {"Authorization": "Bearer " + cls.master_token})
         super().tearDownClass()
 
-    def realm_token(self, role):
+    def setUp(self):
+        self.token, self.realm = self.master_token, self.managed
+
+    def tearDown(self):
+        pass
+
+    def realm_token(self, role, client_id=None):
+        client_id = client_id or "sa-" + role
         base = f"/admin/realms/{self.realm}"
         secret = secrets.token_urlsafe(40)
-        status, headers, _ = self.call("POST", base + "/clients", {"clientId": "sa-" + role, "secret": secret, "serviceAccountsEnabled": True, "standardFlowEnabled": False})
+        status, headers, _ = self.call("POST", base + "/clients", {"clientId": client_id, "secret": secret, "serviceAccountsEnabled": True, "standardFlowEnabled": False})
         self.assertEqual(status, 201)
         client = headers["location"].rsplit("/", 1)[1]
         user = json.loads(self.call("GET", f"{base}/clients/{client}/service-account-user")[2])["id"]
@@ -49,16 +64,14 @@ class AdminPermissionsContract(AdminCase):
             management = json.loads(self.call("GET", base + "/clients?clientId=realm-management")[2])[0]["id"]
             described = json.loads(self.call("GET", f"{base}/clients/{management}/roles/{role}")[2])
             self.assertEqual(self.call("POST", f"{base}/users/{user}/role-mappings/clients/{management}", [{"id": described["id"], "name": role}])[0], 204)
-        status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "client_credentials", "client_id": "sa-" + role, "client_secret": secret})
+        status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "client_credentials", "client_id": client_id, "client_secret": secret})
         self.assertEqual(status, 200)
         return json.loads(body)["access_token"]
 
     def check_role(self, role):
         token = self.realm_token(role)
         base = f"/admin/realms/{self.realm}"
-        target_user = self.call("POST", base + "/users", {"username": "target-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
-        target_client = self.call("POST", base + "/clients", {"clientId": "target-client", "publicClient": True})[1]["location"].rsplit("/", 1)[1]
-        self.assertEqual(self.call("POST", base + "/groups", {"name": "target-group"})[0], 201)
+        target_user, target_client = self.target_user, self.target_client
         operations = [
             ("realm/get", "GET", base, None),
             ("realm/update", "PUT", base, {"enabled": True}),
@@ -95,11 +108,11 @@ class AdminPermissionsContract(AdminCase):
                 self.assertEqual(fields, [field for field in expected["fields"] if field != "displayName"], label)
 
     def test_acting_realm_admin_can_be_deleted(self):
-        token = self.realm_token("realm-admin")
+        token = self.realm_token("realm-admin", "deleted-admin")
         headers = {"Authorization": "Bearer " + token, "Content-Type": "application/json"}
         base = f"/admin/realms/{self.realm}"
         self.assertEqual(self.request("POST", base + "/users", headers, body=json.dumps({"username": "made-by-realm-admin", "enabled": True}))[0], 201)
-        client = json.loads(self.call("GET", base + "/clients?clientId=sa-realm-admin")[2])[0]["id"]
+        client = json.loads(self.call("GET", base + "/clients?clientId=deleted-admin")[2])[0]["id"]
         self.assertEqual(self.call("DELETE", f"{base}/clients/{client}")[0], 204)
         self.assertEqual(self.request("GET", base + "/users", headers)[0], 401)
 

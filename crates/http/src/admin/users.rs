@@ -14,12 +14,13 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use rs_keycloak_integrations::mail::{Mail, send};
-use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UsernameFilter};
+use rs_keycloak_storage_postgres::{NewUser, UserCreation, UserRecord, UserUpdate, UsernameFilter};
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::{Access, AdminError, authorize};
+use crate::mail::valid_email;
 use crate::oidc::{OidcState, digest, random_token};
 
 /// Keycloak's default page size for user searches.
@@ -36,7 +37,7 @@ pub(super) fn routes() -> Router<OidcState> {
         .route("/admin/realms/{realm}/users/count", get(count_users))
         .route(
             "/admin/realms/{realm}/users/{user}",
-            get(read_user).delete(delete_user),
+            get(read_user).put(update_user).delete(delete_user),
         )
         .route(
             "/admin/realms/{realm}/users/{user}/reset-password",
@@ -111,9 +112,9 @@ fn text(fields: &Map<String, Value>, name: &str) -> Result<Option<String>, Admin
     }
 }
 
-fn flag(fields: &Map<String, Value>, name: &str) -> Result<bool, AdminError> {
+fn flag(fields: &Map<String, Value>, name: &str, default: bool) -> Result<bool, AdminError> {
     match fields.get(name) {
-        None | Some(Value::Null) => Ok(false),
+        None | Some(Value::Null) => Ok(default),
         Some(Value::Bool(value)) => Ok(*value),
         Some(_) => Err(unparsable()),
     }
@@ -153,6 +154,121 @@ pub(super) fn json_response(value: Value) -> Response {
         .into_response()
 }
 
+/// User fields this server stores, from the creation defaults or a stored
+/// user, with a request's fields applied on top.
+struct UserSettings {
+    email: Option<String>,
+    email_verified: bool,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    enabled: bool,
+    required_actions: Vec<String>,
+}
+
+impl UserSettings {
+    fn defaults() -> Self {
+        Self {
+            email: None,
+            email_verified: false,
+            first_name: None,
+            last_name: None,
+            enabled: false,
+            required_actions: Vec::new(),
+        }
+    }
+
+    fn stored(user: &UserRecord) -> Self {
+        Self {
+            email: user.email.clone(),
+            email_verified: user.email_verified,
+            first_name: user.first_name.clone(),
+            last_name: user.last_name.clone(),
+            enabled: user.enabled,
+            required_actions: user.required_actions.clone(),
+        }
+    }
+
+    /// Applies the fields present; an empty name or email removes it, and
+    /// absent fields keep their value, as reference updates do.
+    fn apply(mut self, fields: &Map<String, Value>, allowed: &[&str]) -> Result<Self, AdminError> {
+        const SUPPORTED: [&str; 7] = [
+            "requiredActions",
+            "username",
+            "enabled",
+            "email",
+            "emailVerified",
+            "firstName",
+            "lastName",
+        ];
+        if let Some(field) = fields
+            .keys()
+            .find(|key| !SUPPORTED.contains(&key.as_str()) && !allowed.contains(&key.as_str()))
+        {
+            return Err(AdminError::bad_request(format!(
+                "Unsupported user field: {field}"
+            )));
+        }
+        if fields.contains_key("email") {
+            self.email = text(fields, "email")?.map(|email| email.to_lowercase());
+            if self
+                .email
+                .as_deref()
+                .is_some_and(|email| !valid_email(email))
+            {
+                return Err(AdminError::Field("error-invalid-email", "email"));
+            }
+        }
+        if fields.contains_key("firstName") {
+            self.first_name = text(fields, "firstName")?;
+        }
+        if fields.contains_key("lastName") {
+            self.last_name = text(fields, "lastName")?;
+        }
+        self.email_verified = flag(fields, "emailVerified", self.email_verified)?;
+        self.enabled = flag(fields, "enabled", self.enabled)?;
+        match fields.get("requiredActions") {
+            None | Some(Value::Null) => (),
+            Some(Value::Array(actions)) => {
+                self.required_actions = actions
+                    .iter()
+                    .map(|action| match action {
+                        Value::String(action)
+                            if matches!(
+                                action.as_str(),
+                                "CONFIGURE_TOTP" | "UPDATE_PASSWORD" | "UPDATE_PROFILE"
+                            ) =>
+                        {
+                            Ok(action.clone())
+                        }
+                        Value::String(action) => Err(AdminError::bad_request(format!(
+                            "Unsupported required action: {action}"
+                        ))),
+                        _ => Err(unparsable()),
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+            }
+            Some(_) => return Err(unparsable()),
+        }
+        Ok(self)
+    }
+
+    fn user<'a>(&'a self, username: &'a str) -> NewUser<'a> {
+        NewUser {
+            required_actions: &self.required_actions,
+            username,
+            email: self.email.as_deref(),
+            email_verified: self.email_verified,
+            first_name: self.first_name.as_deref(),
+            last_name: self.last_name.as_deref(),
+            enabled: self.enabled,
+        }
+    }
+}
+
+fn email_exists() -> AdminError {
+    AdminError::Message(StatusCode::CONFLICT, "User exists with same email".into())
+}
+
 async fn create_user(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -162,60 +278,14 @@ async fn create_user(
     let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
     let realm_id = realm_id(&state, &realm).await?;
     let fields = json_object(&body)?;
-    const SUPPORTED: [&str; 7] = [
-        "requiredActions",
-        "username",
-        "enabled",
-        "email",
-        "emailVerified",
-        "firstName",
-        "lastName",
-    ];
-    if let Some(field) = fields.keys().find(|key| !SUPPORTED.contains(&key.as_str())) {
-        return Err(AdminError::bad_request(format!(
-            "Unsupported user field: {field}"
-        )));
-    }
+    let settings = UserSettings::defaults().apply(&fields, &[])?;
     let username = text(&fields, "username")?
         .ok_or_else(|| AdminError::bad_request("User name is missing"))?
         .to_lowercase();
-    let email = text(&fields, "email")?.map(|email| email.to_lowercase());
-    let first_name = text(&fields, "firstName")?;
-    let last_name = text(&fields, "lastName")?;
-    let required_actions = match fields.get("requiredActions") {
-        None | Some(Value::Null) => Vec::new(),
-        Some(Value::Array(actions)) => actions
-            .iter()
-            .map(|action| match action {
-                Value::String(action)
-                    if matches!(
-                        action.as_str(),
-                        "CONFIGURE_TOTP" | "UPDATE_PASSWORD" | "UPDATE_PROFILE"
-                    ) =>
-                {
-                    Ok(action.clone())
-                }
-                Value::String(action) => Err(AdminError::bad_request(format!(
-                    "Unsupported required action: {action}"
-                ))),
-                _ => Err(unparsable()),
-            })
-            .collect::<Result<Vec<_>, _>>()?,
-        Some(_) => return Err(unparsable()),
-    };
     let user_id = Uuid::new_v4().to_string();
-    let user = NewUser {
-        required_actions: &required_actions,
-        username: &username,
-        email: email.as_deref(),
-        email_verified: flag(&fields, "emailVerified")?,
-        first_name: first_name.as_deref(),
-        last_name: last_name.as_deref(),
-        enabled: flag(&fields, "enabled")?,
-    };
     match state
         .storage
-        .create_user(&realm_id, &user_id, &user, &actor)
+        .create_user(&realm_id, &user_id, &settings.user(&username), &actor)
         .await?
     {
         UserCreation::Created => {
@@ -230,10 +300,41 @@ async fn create_user(
             StatusCode::CONFLICT,
             "User exists with same username".into(),
         )),
-        UserCreation::EmailExists => Err(AdminError::Message(
-            StatusCode::CONFLICT,
-            "User exists with same email".into(),
-        )),
+        UserCreation::EmailExists => Err(email_exists()),
+    }
+}
+
+/// Applies a partial representation. The username is read-only, as in the
+/// reference's default user profile, and a body `id` is ignored.
+async fn update_user(
+    State(state): State<OidcState>,
+    Path((realm, user)): Path<(String, String)>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<StatusCode, AdminError> {
+    let actor = authorize(&state, &headers, &realm, Access::ManageUsers).await?;
+    let realm_id = realm_id(&state, &realm).await?;
+    let stored = state
+        .storage
+        .user(&realm_id, &user)
+        .await?
+        .ok_or_else(user_not_found)?;
+    let fields = json_object(&body)?;
+    let settings = UserSettings::stored(&stored).apply(&fields, &["id"])?;
+    if text(&fields, "username")?.is_some_and(|name| name.to_lowercase() != stored.username) {
+        return Err(AdminError::Field(
+            "error-user-attribute-read-only",
+            "username",
+        ));
+    }
+    match state
+        .storage
+        .update_user(&realm_id, &user, &settings.user(&stored.username), &actor)
+        .await?
+    {
+        UserUpdate::Updated => Ok(StatusCode::NO_CONTENT),
+        UserUpdate::NotFound => Err(user_not_found()),
+        UserUpdate::EmailExists => Err(email_exists()),
     }
 }
 
@@ -347,7 +448,7 @@ async fn reset_password(
             ));
         }
     }
-    let temporary = flag(&fields, "temporary")?;
+    let temporary = flag(&fields, "temporary", false)?;
     let password = match fields.get("value") {
         Some(Value::String(value)) if !value.is_empty() => Zeroizing::new(value.clone()),
         None | Some(Value::Null | Value::String(_)) => {

@@ -201,7 +201,7 @@ change. A role may include itself and composites may form cycles, so a role
 that includes itself stays composite. The baseline passed a second,
 comparing run.
 
-`admin_user_update.py` records 27 user update cases in
+`admin_user_update.py` records 26 user update cases in
 `admin-user-update-observations.json`. Updates are partial and ignore a body
 `id`. An email change is lowercased and keeps `emailVerified`; a taken email
 answers 409, an invalid one 400 `error-invalid-email`. The username is

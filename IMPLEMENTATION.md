@@ -578,7 +578,8 @@ Admin events now record the actor's own realm. Migration 27 drops the
 actor's foreign key, so deleting a user who acted keeps the history (this
 also lets acting master admins be deleted, which failed before), and makes
 events go with their realm. `tests/public/admin_permissions_contract.py`
-checks every role in its own test, the slowest in 437 ms.
+checks every role in its own test against one shared managed realm, the
+slowest in 352 ms.
 
 Remaining differences: the brief realm form uses default values, since only
 field names were recorded, and lacks `displayName`, which is not stored;
@@ -622,3 +623,27 @@ slowest in 425 ms.
 
 Remaining differences: an unknown composite at creation answers 404 "Could
 not find composite role", a response the reference was not recorded for.
+
+## User updates
+
+`PUT /admin/realms/{realm}/users/{id}` applies a partial representation,
+following the 26 recorded cases in
+`tests/reference/admin-user-update-observations.json`. Creation and update
+share one parser over the creation defaults or the stored user, so both
+lowercase and validate email (400 `error-invalid-email` with its `field`,
+which creation did not check before) and accept the same fields. An admin
+email change keeps `emailVerified`, unlike the account API; an empty name
+or email removes it; `requiredActions` replaces the list; the username is
+read-only (400 `error-user-attribute-read-only`) unless unchanged; a body
+`id` is ignored. Disabling stops browser login until the user is enabled.
+`tests/public/admin_user_update_contract.py` checks 4 groups, the slowest in
+335 ms.
+
+Remaining differences: attributes and user-profile configuration are not
+modelled, so other fields are refused, and `editUsernameAllowed` cannot be
+turned on.
+
+One unexplained failure was seen once while running every contract: a
+`view-users` permission case answered 401 mid-test and did not reproduce in
+24 runs. Token checks reject an `iat` later than the server clock, so a
+clock step backwards would explain it; this is not confirmed.

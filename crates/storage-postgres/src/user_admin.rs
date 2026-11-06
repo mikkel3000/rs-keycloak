@@ -47,6 +47,16 @@ pub struct UserRecord {
     pub totp: bool,
 }
 
+/// Outcome of updating a user.
+pub enum UserUpdate {
+    /// The user was updated.
+    Updated,
+    /// No user has this identifier.
+    NotFound,
+    /// Another user in the realm has this email.
+    EmailExists,
+}
+
 /// Outcome of creating a user.
 pub enum UserCreation {
     /// The user was created.
@@ -111,6 +121,43 @@ impl Storage {
         audit(conn, actor, "user_created").await?;
         tx.commit().await?;
         Ok(UserCreation::Created)
+    }
+
+    /// Replaces a user's profile, enabled state and required actions; the
+    /// username stays, since the reference keeps it read-only.
+    pub async fn update_user(
+        &self,
+        realm_id: &str,
+        user_id: &str,
+        user: &NewUser<'_>,
+        actor: &Actor,
+    ) -> Result<UserUpdate, StorageError> {
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 FOR UPDATE)",
+        )
+        .bind(realm_id)
+        .bind(user_id)
+        .fetch_one(&mut *conn)
+        .await?;
+        if !exists {
+            tx.commit().await?;
+            return Ok(UserUpdate::NotFound);
+        }
+        let email_taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND email_normalized = $2 AND id <> $3)")
+            .bind(realm_id).bind(user.email).bind(user_id).fetch_one(&mut *conn).await?;
+        if email_taken {
+            tx.commit().await?;
+            return Ok(UserUpdate::EmailExists);
+        }
+        sqlx::query("UPDATE users SET email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id).bind(user_id).bind(user.email).bind(user.email_verified)
+            .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions)
+            .execute(&mut *conn).await?;
+        audit(conn, actor, "user_updated").await?;
+        tx.commit().await?;
+        Ok(UserUpdate::Updated)
     }
 
     /// Reads one user by identifier.

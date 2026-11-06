@@ -51,6 +51,9 @@ enum AdminError {
     RealmNotFound,
     /// A request error reported in an `errorMessage` body.
     Message(StatusCode, String),
+    /// A 400 for one representation field, reported with `errorMessage`
+    /// and `field`, as the reference's user profile does.
+    Field(&'static str, &'static str),
     /// An error reported in an `error` body.
     Error(StatusCode, String),
     /// An OAuth-style `error` and `error_description` body.
@@ -84,6 +87,11 @@ impl IntoResponse for AdminError {
                 (status, Json(json!({ "errorMessage": message }))).into_response()
             }
             Self::Error(status, message) => error(status, &message).into_response(),
+            Self::Field(message, field) => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "errorMessage": message, "field": field })),
+            )
+                .into_response(),
             Self::OAuth(status, code, description) => (
                 status,
                 Json(json!({ "error": code, "error_description": description })),
