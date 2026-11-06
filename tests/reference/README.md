@@ -235,3 +235,14 @@ baseline passed a second, comparing run.
 wildcards cover paths and queries below them but not dot segments, and an
 explicit list does not include the redirect URIs. The baseline passed a
 second, comparing run.
+
+`user_search.py` records 26 user search and count cases in
+`user-search-observations.json`. `search` matches a case-insensitive prefix
+of the username, email, first or last name (`*` is a wildcard, a quoted
+value must match exactly) and takes precedence over `username`; `email`,
+`firstName` and `lastName` match anywhere in the value, or exactly
+(case-insensitively) with `exact=true`; `enabled` and `emailVerified`
+filter; filters combine with AND, results are ordered by username, and
+`/users/count` takes the same filters. `briefRepresentation` leaves out
+`totp`, `requiredActions` and the credential fields. The baseline passed a
+second, comparing run.
