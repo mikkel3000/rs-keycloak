@@ -5,8 +5,10 @@ Usage: extract_account_console.py ARCHIVE OUTPUT_DIR
 
 ARCHIVE is the pinned distribution named in reference.lock, checked by its
 digest. OUTPUT_DIR receives account/ (the keycloak.v3 account theme: built
-resources, messages and theme properties) and common/ (the shared vendor
-modules the console imports). Both come from Apache-2.0 Keycloak jars.
+resources, messages and theme properties), account-base/ (the base account
+theme it extends: messages and the theme's locale list) and common/ (the
+shared vendor modules the console imports). All come from Apache-2.0
+Keycloak jars.
 """
 import hashlib
 import json
@@ -21,6 +23,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 # Jar, prefix inside the jar, destination below OUTPUT_DIR.
 PARTS = [
     ('keycloak-account-ui', 'theme/keycloak.v3/account/', 'account/'),
+    ('keycloak-themes', 'theme/base/account/', 'account-base/'),
     ('keycloak-themes-vendor', 'theme/keycloak/common/resources/', 'common/'),
 ]
 

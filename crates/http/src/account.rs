@@ -21,10 +21,16 @@ use rs_keycloak_protocols::client_urls::resolve_redirect;
 use crate::oidc::{OidcState, digest, verified_access};
 
 /// Account routes, mounted with the public routes below the issuer path.
-pub(crate) fn routes() -> Router<OidcState> {
+/// With the console configured, browser navigation to any of them, which
+/// sends no JSON media type, gets the console page instead.
+pub(crate) fn routes(state: OidcState) -> Router<OidcState> {
     Router::new()
         .route(
             "/realms/{realm}/account",
+            get(read_profile).post(update_profile),
+        )
+        .route(
+            "/realms/{realm}/account/",
             get(read_profile).post(update_profile),
         )
         .route("/realms/{realm}/account/credentials", get(credentials))
@@ -42,6 +48,19 @@ pub(crate) fn routes() -> Router<OidcState> {
             "/realms/{realm}/account/sessions/{session}",
             delete(end_session),
         )
+        .route(
+            "/realms/{realm}/account/supportedLocales",
+            get(supported_locales),
+        )
+        .route(
+            "/realms/{realm}/account/linked-accounts",
+            get(linked_accounts),
+        )
+        .route("/realms/{realm}/account/groups", get(groups))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::account_console::navigation,
+        ))
 }
 
 /// Account API failures with the reference body shapes.
@@ -101,6 +120,8 @@ enum Need {
     View,
     /// Change the profile or end sessions.
     Manage,
+    /// List the user's groups.
+    Groups,
 }
 
 async fn authorize(
@@ -151,6 +172,9 @@ async fn authorize(
             .iter()
             .any(|role| role == "view-profile" || role == "manage-account"),
         Need::Manage => account_roles.iter().any(|role| role == "manage-account"),
+        Need::Groups => account_roles
+            .iter()
+            .any(|role| role == "manage-account" || role == "view-groups"),
     };
     if !allowed {
         return Err(AccountError::Forbidden);
@@ -164,23 +188,106 @@ async fn authorize(
 
 fn json_response(value: Value) -> Response {
     (
-        [(header::CONTENT_TYPE, "application/json")],
+        [(header::CONTENT_TYPE, "application/json;charset=UTF-8")],
         value.to_string(),
     )
         .into_response()
 }
 
-/// The fixed default user profile: username, email, first and last name.
+/// The fixed default user profile: username, email, first and last name,
+/// with the reference's validators and its user-metadata group.
 fn profile_metadata() -> Value {
-    let attribute = |name: &str, display: &str, read_only: bool| json!({ "name": name, "displayName": display, "required": true, "readOnly": read_only, "multivalued": false });
     json!({
         "attributes": [
-            attribute("username", "${username}", true),
-            attribute("email", "${email}", false),
-            attribute("firstName", "${firstName}", false),
-            attribute("lastName", "${lastName}", false),
+            {
+                "name": "username",
+                "displayName": "${username}",
+                "required": true,
+                "readOnly": true,
+                "validators": {
+                    "username-prohibited-characters": {
+                        "ignore.empty.value": true
+                    },
+                    "multivalued": {
+                        "max": "1"
+                    },
+                    "length": {
+                        "max": 255,
+                        "ignore.empty.value": true,
+                        "min": 3
+                    },
+                    "up-username-not-idn-homograph": {
+                        "ignore.empty.value": true
+                    }
+                },
+                "multivalued": false
+            },
+            {
+                "name": "email",
+                "displayName": "${email}",
+                "required": true,
+                "readOnly": false,
+                "annotations": {},
+                "validators": {
+                    "multivalued": {
+                        "max": "1"
+                    },
+                    "length": {
+                        "max": 255,
+                        "ignore.empty.value": true
+                    },
+                    "email": {
+                        "ignore.empty.value": true
+                    }
+                },
+                "multivalued": false
+            },
+            {
+                "name": "firstName",
+                "displayName": "${firstName}",
+                "required": true,
+                "readOnly": false,
+                "validators": {
+                    "person-name-prohibited-characters": {
+                        "ignore.empty.value": true
+                    },
+                    "multivalued": {
+                        "max": "1"
+                    },
+                    "length": {
+                        "max": 255,
+                        "ignore.empty.value": true
+                    }
+                },
+                "multivalued": false
+            },
+            {
+                "name": "lastName",
+                "displayName": "${lastName}",
+                "required": true,
+                "readOnly": false,
+                "validators": {
+                    "person-name-prohibited-characters": {
+                        "ignore.empty.value": true
+                    },
+                    "multivalued": {
+                        "max": "1"
+                    },
+                    "length": {
+                        "max": 255,
+                        "ignore.empty.value": true
+                    }
+                },
+                "multivalued": false
+            }
         ],
-        "groups": [],
+        "groups": [
+            {
+                "name": "user-metadata",
+                "displayHeader": "User metadata",
+                "displayDescription": "Attributes, which refer to user metadata"
+            }
+        ]
     })
 }
 
@@ -496,4 +603,54 @@ async fn end_session(
         .logout_session(&account.realm_id, &session, &account.user_id)
         .await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Realms here have no internationalization settings, so the console
+/// offers no locale choice, as the reference does by default.
+async fn supported_locales(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    authorize(&state, &realm, &headers, Need::View).await?;
+    Ok(json_response(json!([])))
+}
+
+/// Realms here have no identity providers, so there is nothing to link.
+async fn linked_accounts(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    authorize(&state, &realm, &headers, Need::View).await?;
+    Ok(json_response(json!([])))
+}
+
+/// The groups the user is a direct member of, in brief form.
+async fn groups(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, AccountError> {
+    let account = authorize(&state, &realm, &headers, Need::Groups).await?;
+    let groups = state
+        .storage
+        .user_groups(&account.realm_id, &account.user_id)
+        .await?
+        .ok_or(AccountError::Unauthorized)?
+        .into_iter()
+        .map(|group| {
+            let mut fields = json!({
+                "id": group.id,
+                "name": group.name,
+                "path": group.path,
+                "subGroups": [],
+            });
+            if let Some(parent) = group.parent_id {
+                fields["parentId"] = json!(parent);
+            }
+            fields
+        })
+        .collect();
+    Ok(json_response(Value::Array(groups)))
 }

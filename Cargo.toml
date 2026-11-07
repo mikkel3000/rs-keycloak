@@ -10,7 +10,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 axum = "=0.8.9"
-tokio = { version = "=1.53.3", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+tokio = { version = "=1.53.3", features = ["fs", "macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
 url = "=2.5.8"
 
 # Password hashing and RSA dominate test request time in unoptimized builds;

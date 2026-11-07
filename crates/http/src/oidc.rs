@@ -5,6 +5,7 @@ mod authorization_response;
 mod client_credentials;
 mod consent;
 mod cors;
+mod iframes;
 mod introspection;
 mod login_steps;
 mod logout;
@@ -15,6 +16,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::account_console::AccountConsole;
 use crate::client_auth::{
     self, ClientAuthResult, ClientAuthenticator, InvalidClientAuthentication,
 };
@@ -24,6 +26,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use base64::Engine;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
@@ -36,7 +40,7 @@ use rs_keycloak_storage_postgres::{
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha384};
 use tokio::sync::Semaphore;
 use url::Url;
 use uuid::Uuid;
@@ -56,6 +60,8 @@ pub struct OidcState {
     pub(crate) secret_key: Option<Arc<SecretKey>>,
     pub(crate) issuer_base: String,
     path_prefix: String,
+    /// The pinned account console, when its directory is configured.
+    pub(crate) account_console: Option<Arc<AccountConsole>>,
 }
 
 impl OidcState {
@@ -82,7 +88,20 @@ impl OidcState {
             secret_key,
             issuer_base,
             path_prefix,
+            account_console: None,
         })
+    }
+
+    /// Serves the account console from an extracted directory.
+    #[must_use]
+    pub fn with_account_console(mut self, console: AccountConsole) -> Self {
+        self.account_console = Some(Arc::new(console));
+        self
+    }
+
+    /// The issuer's path below its origin, empty or starting with `/`.
+    pub(crate) fn path_prefix(&self) -> &str {
+        &self.path_prefix
     }
 }
 
@@ -199,7 +218,9 @@ pub fn router(state: OidcState) -> Router {
                 .layer(axum::middleware::from_fn(cors::metadata)),
         )
         .merge(crate::admin::routes())
-        .merge(crate::account::routes())
+        .merge(crate::account::routes(state.clone()))
+        .merge(crate::account_console::routes())
+        .merge(iframes::routes())
         .layer(DefaultBodyLimit::max(16 * 1024))
         .with_state(state);
     if prefix.is_empty() {
@@ -225,7 +246,7 @@ struct AuthorizationQuery {
 }
 
 /// Reads one cookie value from the request.
-fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+pub(crate) fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers
         .get_all(header::COOKIE)
         .iter()
@@ -236,13 +257,16 @@ fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 }
 
 /// The SSO session cookies, set after login and cleared at logout.
+/// `KEYCLOAK_SESSION` carries the unpadded base64url SHA-384 of the session
+/// ID, which the login status iframe compares with `session_state`.
 fn sso_cookies(path_prefix: &str, realm: &str, identity: Option<(&str, &str)>) -> [String; 2] {
     let path = format!("{path_prefix}/realms/{realm}/");
     match identity {
         Some((token, session_id)) => [
             format!("KEYCLOAK_IDENTITY={token}; Path={path}; Secure; HttpOnly; SameSite=None"),
             format!(
-                "KEYCLOAK_SESSION={session_id}; Path={path}; Max-Age={SSO_SESSION_SECONDS}; Secure; SameSite=None"
+                "KEYCLOAK_SESSION={}; Path={path}; Max-Age={SSO_SESSION_SECONDS}; Secure; SameSite=None",
+                URL_SAFE_NO_PAD.encode(Sha384::digest(session_id.as_bytes()))
             ),
         ],
         None => [

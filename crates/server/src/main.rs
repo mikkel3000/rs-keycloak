@@ -24,6 +24,7 @@ struct Config {
     http_listen: SocketAddr,
     issuer_base: String,
     secret_key: Option<SecretKey>,
+    account_console: Option<std::path::PathBuf>,
 }
 
 /// Reads the optional AES-256-GCM key for recoverable client secrets.
@@ -105,6 +106,7 @@ fn config() -> Result<Config, &'static str> {
                     | "RS_KEYCLOAK_HTTP_LISTEN"
                     | "RS_KEYCLOAK_SIGNING_KEY_PKCS8"
                     | "RS_KEYCLOAK_SECRET_KEY"
+                    | "RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR"
             )
         {
             return Err("Unknown RS_KEYCLOAK_ environment variable");
@@ -154,12 +156,21 @@ fn config() -> Result<Config, &'static str> {
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse::<SocketAddr>()
         .map_err(|_| "RS_KEYCLOAK_HTTP_LISTEN must be an IP address and port")?;
+    let account_console =
+        env::var_os("RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR").map(std::path::PathBuf::from);
+    if account_console
+        .as_ref()
+        .is_some_and(|dir| !dir.is_absolute() || !dir.is_dir())
+    {
+        return Err("RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR must be an absolute path to a directory");
+    }
     Ok(Config {
         database_url,
         management_listen,
         http_listen,
         issuer_base: issuer.to_string(),
         secret_key: secret_key()?,
+        account_console,
     })
 }
 
@@ -256,7 +267,7 @@ async fn run() -> Result<(), &'static str> {
                         .await
                         .map_err(|_| "Database check failed")?,
                 );
-                let state = rs_keycloak_http::oidc::OidcState::new(
+                let mut state = rs_keycloak_http::oidc::OidcState::new(
                     storage,
                     signer,
                     config.issuer_base,
@@ -264,6 +275,15 @@ async fn run() -> Result<(), &'static str> {
                 )
                 .await
                 .map_err(|_| "Authentication startup failed")?;
+                if let Some(directory) = &config.account_console {
+                    let console =
+                        rs_keycloak_http::account_console::AccountConsole::load(directory)
+                            .map_err(|error| {
+                                eprintln!("{error}");
+                                "Account console directory is unusable"
+                            })?;
+                    state = state.with_account_console(console);
+                }
                 let http_listener = tokio::net::TcpListener::bind(config.http_listen)
                     .await
                     .map_err(|_| "HTTP listener failed")?;

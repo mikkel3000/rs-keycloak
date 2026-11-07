@@ -497,8 +497,8 @@ module.
 Remaining differences: realms have no built-in `account-console` client or
 account client roles, so access follows the default role instead; sessions
 report no IP address, browser or separate last-access time; linked accounts,
-applications, consents and credential removal through the account API, and
-the account console web interface itself, are not implemented.
+applications, consents and credential removal through the account API are
+not implemented; see "Account console" for the web interface.
 
 ## Client roles and built-in clients
 
@@ -899,8 +899,8 @@ checks 3 groups.
 
 Remaining differences: user agents and addresses are not recorded, so all
 sessions belong to one unknown device without `ipAddress` or browser, and
-`clientName` repeats the client id; the console's web interface itself is
-not served yet.
+`clientName` repeats the client id. The console itself is described in
+"Account console" below.
 
 ## Realm partial export
 
@@ -960,3 +960,66 @@ parsing and hashing are shared with password reset.
 Remaining differences: an empty password is refused with 400, where the
 reference stores a password credential without data; hashed or OTP
 credentials cannot be imported.
+
+## Account console
+
+The optional `RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR` setting names a directory
+that `compatibility/extract_account_console.py` fills from the pinned
+distribution: `account/` (the keycloak.v3 theme), `account-base/` (the base
+theme it extends) and `common/` (vendor modules). The server reads the
+build manifest, theme locales and every locale's messages once at startup
+and refuses to start if the directory is unusable. Everything follows
+`tests/reference/account-console-observations.json`:
+
+- `/realms/{realm}/account/` and every path below it render the reference's
+  `index.ftl` output byte for byte, with the environment block filled from
+  the issuer, the realm, `referrer`/`referrer_uri` (checked against the
+  client's redirect URIs, else its base URL) and `scope`. A signed-in
+  visitor's `KEYCLOAK_IDENTITY` enables applications, groups (when the user
+  has any) and account deletion (when `delete_account` is enabled), from the
+  account roles the `account-console` scope can carry. `index.html`
+  redirects one level up, as recorded.
+- Account routes dispatch as in the reference: a GET without an
+  `application/json` Accept entry or content type gets the page, so
+  `/account/applications` in a browser is the console, while the console's
+  own calls reach the API. `/account/` with JSON is the profile, and
+  `/account/supportedLocales`, `/account/linked-accounts` and
+  `/account/groups` are new. Profile metadata now has the reference's
+  validators, annotations and user-metadata group, and API answers say
+  `application/json;charset=UTF-8`.
+- `/resources/{version}/account|common/{theme}/{path}` serves files with the
+  reference's types and `no-cache`. Files under `assets/` carry a content
+  hash: any well-formed version serves them, with the current version as
+  ETag and 304 on a match. Other files under another version redirect (307)
+  to the current one. Encoded, dot-segment and unknown paths answer 404.
+  The version is five `[0-9a-z]` characters derived from the server version.
+- `/resources/{realm}/account/{locale}` lists messages: English, then the
+  language, then the full tag, base theme before keycloak.v3, plus
+  `locale_<tag>` display names. Locales resolve against the theme's list
+  (exact tag, then first of the same language, else `en`), and `zh-CN` and
+  `zh-TW` read the `zh_Hans` and `zh_Hant` files, which reproduces all 43
+  recorded bundles. Display names come from the JDK in the reference, so
+  the recorded values are embedded. Any origin may read them, with
+  credentials; `?source=true` adds `"source": "THEME"`.
+- The iframes keycloak-js loads, `3p-cookies/step1.html`, `step2.html` and
+  `login-status-iframe.html` with its `/init` origin check, serve the
+  reference's pages with its caching rules. `KEYCLOAK_SESSION` now holds the
+  base64url SHA-384 of the session ID, which the login status iframe
+  compares with `session_state`; before, the iframe would have reported
+  every session as changed.
+- These routes send the reference's security headers (`security_headers`
+  module); other routes are unchanged.
+
+`tests/public/account_console_contract.py` checks 13 groups, the slowest in
+268 ms; console cases skip unless `RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR` is set.
+Without the setting, console routes answer 404 and account routes stay
+JSON only.
+
+Remaining differences: clients have no display name, so the referrer name
+is the client ID; realms have no internationalization, `editUsernameAllowed`
+or `registrationEmailAsUsername` settings, so the page is always English
+with those features off and `supportedLocales` is empty; the signed-in page
+does not re-issue the SSO cookies; `/account/groups` has only the brief
+form; login, admin and email theme resources and messages are not served;
+names and scopes are JSON-escaped in the page, where the reference inserts
+them as they are; the token response still has no `session_state`.
