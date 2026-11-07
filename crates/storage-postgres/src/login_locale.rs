@@ -81,21 +81,20 @@ impl Storage {
         Ok(changed == 1)
     }
 
-    /// Forgets a request's `kc_locale` pick, as the reference's
-    /// forgot-password step does when it forks the authentication session.
-    pub async fn forget_request_locale(
-        &self,
-        realm_id: &str,
-        request_id: &str,
-    ) -> Result<(), StorageError> {
+    /// Reads the locale state of a realm for a page outside any live
+    /// request: the realm's settings and label alone.
+    pub async fn realm_locale(&self, realm_id: &str) -> Result<LoginLocale, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        sqlx::query("UPDATE authorization_requests SET requested_locale = NULL WHERE realm_id = $1 AND id = $2")
+        let row = sqlx::query("SELECT internationalization_enabled, supported_locales, default_locale, edit_username_allowed, registration_email_as_username, COALESCE(NULLIF(display_name, ''), name) AS realm_label FROM realms WHERE id = $1")
             .bind(realm_id)
-            .bind(request_id)
-            .execute(tx.connection())
+            .fetch_one(tx.connection())
             .await?;
         tx.commit().await?;
-        Ok(())
+        Ok(LoginLocale {
+            settings: user_settings_row(&row)?,
+            realm_label: row.try_get("realm_label")?,
+            ..LoginLocale::default()
+        })
     }
 
     /// Stores the locale the request picked as the session user's own, as
@@ -107,12 +106,48 @@ impl Storage {
         request_id: &str,
         session_id: &str,
     ) -> Result<Option<UserLocaleUpdate>, StorageError> {
+        self.apply_requested_locale_where(
+            realm_id,
+            request_id,
+            "FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE us.realm_id = $1 AND us.id = $3",
+            session_id,
+        )
+        .await
+    }
+
+    /// Stores the locale the request picked as a user's own, as
+    /// `apply_requested_locale` does, for a user known before a session
+    /// exists, such as the one an emailed link names.
+    pub async fn apply_requested_locale_to_user(
+        &self,
+        realm_id: &str,
+        request_id: &str,
+        user_id: &str,
+    ) -> Result<Option<UserLocaleUpdate>, StorageError> {
+        self.apply_requested_locale_where(
+            realm_id,
+            request_id,
+            "FROM users u WHERE u.realm_id = $1 AND u.id = $3",
+            user_id,
+        )
+        .await
+    }
+
+    /// Applies the request's pick to the user that `user_rows` (with `$3`
+    /// bound to `user_key`) selects.
+    async fn apply_requested_locale_where(
+        &self,
+        realm_id: &str,
+        request_id: &str,
+        user_rows: &str,
+        user_key: &str,
+    ) -> Result<Option<UserLocaleUpdate>, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT u.id, u.locale, (SELECT a.requested_locale FROM authorization_requests a WHERE a.realm_id = $1 AND a.id = $2) AS requested FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE us.realm_id = $1 AND us.id = $3 FOR UPDATE OF u")
+        let row = sqlx::query(&format!("SELECT u.id, u.locale, (SELECT a.requested_locale FROM authorization_requests a WHERE a.realm_id = $1 AND a.id = $2) AS requested {user_rows} FOR UPDATE OF u"))
             .bind(realm_id)
             .bind(request_id)
-            .bind(session_id)
+            .bind(user_key)
             .fetch_optional(&mut *conn)
             .await?;
         let Some(row) = row else {

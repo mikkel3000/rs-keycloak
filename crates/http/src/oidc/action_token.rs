@@ -16,11 +16,9 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::consent::escape;
-use super::login_steps::{Held, continue_login};
-use super::{OidcState, csrf, digest, plain_page, unavailable, valid_realm};
-
-/// Longest password the login path accepts.
-const MAX_PASSWORD_BYTES: usize = 1024;
+use super::login_locale::{self, LocaleQuery};
+use super::login_steps::{Held, PasswordError, continue_login, password_form};
+use super::{Frame, OidcState, csrf, digest, framed_page, plain_page, unavailable, valid_realm};
 
 /// Session lifetime, matching password login.
 const SESSION_SECONDS: i32 = 1800;
@@ -81,17 +79,96 @@ fn link(s: &OidcState, realm: &str, key: &str) -> String {
     ))
 }
 
-fn password_form(s: &OidcState, realm: &str, key: &str, error: bool) -> Response {
-    let message = if error {
-        "<p role=\"alert\">Passwords must match and must not be empty.</p>"
+/// The login request a token continues, when this browser started it.
+async fn bound_request(
+    s: &OidcState,
+    token: &ActionToken,
+    headers: &HeaderMap,
+) -> Result<Option<String>, ()> {
+    let (Some(request_id), Some(csrf)) = (
+        token.authorization_request_id.as_deref(),
+        csrf(headers).filter(|csrf| csrf.len() == 64),
+    ) else {
+        return Ok(None);
+    };
+    match s
+        .storage
+        .authorization_request_client(request_id, &digest(csrf))
+        .await
+    {
+        Ok(found) => Ok(found.map(|_| request_id.to_owned())),
+        Err(_) => Err(()),
+    }
+}
+
+/// What the new-password page of a link needs.
+struct PasswordLink<'a> {
+    realm: &'a str,
+    realm_id: &'a str,
+    key: &'a str,
+    /// Whether the link names its action, as admin-sent links do.
+    execute: bool,
+}
+
+/// Shows the new-password form of a link in the login request's locale, or
+/// the realm's in another browser, with language links that keep the key,
+/// as the reference forwards it. Once the link names the user, the
+/// reference's locale action runs, so a pick becomes the user's locale.
+async fn password_page(
+    s: &OidcState,
+    link: &PasswordLink<'_>,
+    token: &ActionToken,
+    query: &LocaleQuery,
+    headers: &HeaderMap,
+    error: PasswordError,
+) -> Response {
+    let Ok(request) = bound_request(s, token, headers).await else {
+        return unavailable();
+    };
+    let Ok((locale, picked)) = login_locale::link_page(
+        s,
+        link.realm,
+        link.realm_id,
+        request.as_deref(),
+        query,
+        headers,
+    )
+    .await
+    else {
+        return unavailable();
+    };
+    let adopted = match &request {
+        Some(request_id) => match login_locale::adopt_for_user(
+            s,
+            link.realm,
+            link.realm_id,
+            request_id,
+            &token.user_id,
+            headers,
+        )
+        .await
+        {
+            Ok(adopted) => adopted,
+            Err(()) => return unavailable(),
+        },
+        None => None,
+    };
+    let execute = if link.execute {
+        "&execute=UPDATE_PASSWORD"
     } else {
         ""
     };
-    let body = format!(
-        "<h1>Update your password</h1>{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{action}\"><label>New password <input name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required></label><label>Confirm password <input name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required></label><label><input name=\"logout-sessions\" type=\"checkbox\"> Sign out other devices</label><button>Submit</button></form>",
-        action = link(s, realm, key),
+    let action = format!(
+        "{}/realms/{}/login-actions/action-token?key={}{execute}",
+        s.path_prefix, link.realm, link.key
     );
-    plain_page(StatusCode::OK, "Update your password", &body)
+    let frame = Frame {
+        heading: locale.messages.text("updatePasswordTitle", &[]),
+        switch: format!("{action}&kc_locale="),
+    };
+    let body = password_form(&locale, &action, error, "resetPasswordMessage");
+    let response = framed_page(link.realm, &locale, &frame, &body);
+    login_locale::with_cookie(login_locale::with_cookie(response, picked), adopted)
 }
 
 /// Handles an email-verification key, or returns `None` for other keys.
@@ -187,21 +264,37 @@ pub(super) async fn show(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    Query(locale_query): Query<LocaleQuery>,
     headers: HeaderMap,
 ) -> Response {
     let key = params.get("key").map(String::as_str);
     if let Some(response) = verify_email(&s, &realm, key, &params, &headers).await {
         return response;
     }
-    let token = match live(&s, &realm, key).await {
-        Ok((_, token)) => token,
+    let (realm_id, token) = match live(&s, &realm, key).await {
+        Ok(found) => found,
         Err(refused) => return refused.into_response(),
     };
     let key = key.unwrap_or_default();
     // A link requested from the login page opens the form directly; an
     // admin-sent link first lists the requested actions.
-    if token.from_login || params.get("execute").map(String::as_str) == Some("UPDATE_PASSWORD") {
-        return password_form(&s, &realm, key, false);
+    let execute = params.get("execute").map(String::as_str) == Some("UPDATE_PASSWORD");
+    if token.from_login || execute {
+        let link = PasswordLink {
+            realm: &realm,
+            realm_id: &realm_id,
+            key,
+            execute,
+        };
+        return password_page(
+            &s,
+            &link,
+            &token,
+            &locale_query,
+            &headers,
+            PasswordError::None,
+        )
+        .await;
     }
     let body = format!(
         "<h1>Perform the following action</h1><ul><li>Update Password</li></ul><p><a href=\"{proceed}&amp;execute=UPDATE_PASSWORD\">Click here to proceed</a></p>",
@@ -226,6 +319,7 @@ pub(super) async fn submit(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    Query(locale_query): Query<LocaleQuery>,
     headers: HeaderMap,
     Form(form): Form<PasswordForm>,
 ) -> Response {
@@ -237,8 +331,15 @@ pub(super) async fn submit(
     let key = key.unwrap_or_default();
     let password = Zeroizing::new(form.password_new);
     let confirm = Zeroizing::new(form.password_confirm);
-    if password.is_empty() || password.len() > MAX_PASSWORD_BYTES || *password != *confirm {
-        return password_form(&s, &realm, key, true);
+    let error = PasswordError::check(&password, &confirm);
+    if error != PasswordError::None {
+        let link = PasswordLink {
+            realm: &realm,
+            realm_id: &realm_id,
+            key,
+            execute: params.get("execute").map(String::as_str) == Some("UPDATE_PASSWORD"),
+        };
+        return password_page(&s, &link, &token, &locale_query, &headers, error).await;
     }
     let Ok(permit) = Arc::clone(&s.hash_slots).try_acquire_owned() else {
         return unavailable();

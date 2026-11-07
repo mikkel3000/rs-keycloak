@@ -518,10 +518,17 @@ async fn login_page(
         Err(_) => return unavailable(),
     };
     let locale = match &record {
-        Some(record) => match login_locale::page(s, &record.id, request_id, headers).await {
-            Ok(locale) => locale,
-            Err(()) => return unavailable(),
-        },
+        Some(record) => {
+            let locale = if notice == LoginNotice::EmailSent {
+                login_locale::page_without_pick(s, &record.id, request_id, headers).await
+            } else {
+                login_locale::page(s, &record.id, request_id, headers).await
+            };
+            match locale {
+                Ok(locale) => locale,
+                Err(()) => return unavailable(),
+            }
+        }
         None => PageLocale::english(),
     };
     let reset_allowed = record
@@ -838,18 +845,10 @@ fn language_links(locale: &PageLocale, switch: &str) -> String {
     )
 }
 
-/// Renders a login page that keeps the request's CSRF cookie so the page's
-/// form stays bound to this browser. As the reference's login template
-/// does, the page is titled after the realm, names it above the heading,
-/// and offers the realm's locales when it has several.
-fn step_page(
-    path_prefix: &str,
-    realm: &str,
-    csrf: &str,
-    locale: &PageLocale,
-    frame: &Frame,
-    body: &str,
-) -> Response {
+/// Renders a login-theme page without cookies. As the reference's login
+/// template does, the page is titled after the realm, names it above the
+/// heading, and offers the realm's locales when it has several.
+fn framed_page(realm: &str, locale: &PageLocale, frame: &Frame, body: &str) -> Response {
     let label = if locale.realm_label.is_empty() {
         realm
     } else {
@@ -862,7 +861,20 @@ fn step_page(
         escape(&frame.heading),
         language_links(locale, &frame.switch)
     );
-    let mut response = page(StatusCode::OK, locale, &title, &body);
+    page(StatusCode::OK, locale, &title, &body)
+}
+
+/// Renders a login-theme page that keeps the request's CSRF cookie so the
+/// page's form stays bound to this browser.
+fn step_page(
+    path_prefix: &str,
+    realm: &str,
+    csrf: &str,
+    locale: &PageLocale,
+    frame: &Frame,
+    body: &str,
+) -> Response {
+    let mut response = framed_page(realm, locale, frame, body);
     let headers = response.headers_mut();
     let cookie = format!(
         "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"

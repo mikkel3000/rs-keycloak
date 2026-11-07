@@ -33,6 +33,7 @@ from page_texts import page_texts  # noqa: E402
 from smtp_sink import SmtpSink  # noqa: E402
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "reference"))
+from execute_actions import mail_summary  # noqa: E402
 from otp import Forms, totp  # noqa: E402
 
 REFERENCE = json.loads(
@@ -285,6 +286,12 @@ class ResetPageContract(LoginMessagesCase):
         self.check("switch/reset/to-fr", switched, browser)
         login = self.new_user("i18n", "reset-de")
         self.check("reset-sent/i18n/fr", browser.submit(switched, {"username": login}), browser)
+        _, link = mail_summary(self.sink.wait(1)[-1], ISSUER_BASE, self.names["i18n"])
+        page = browser.visit(link)
+        self.check("reset-link/i18n/de", page, browser)
+        response = browser.submit(page, {"password-new": "one", "password-confirm": "two"})
+        self.check("reset-link-mismatch/i18n/de", response, browser)
+        self.check("switch/reset-link/to-fr", browser.follow(response, "fr"), browser)
 
 
 class RequiredActionContract(LoginMessagesCase):

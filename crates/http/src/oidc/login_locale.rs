@@ -8,6 +8,7 @@
 
 use axum::http::{HeaderMap, HeaderValue, header};
 use axum::response::Response;
+use rs_keycloak_storage_postgres::{LoginLocale, UserLocaleUpdate};
 use serde::Deserialize;
 
 use super::{OidcState, cookie};
@@ -66,6 +67,77 @@ pub(super) async fn page(
     }))
 }
 
+/// The locale of the login page shown once a forgot-password email is
+/// sent: the reference shows it from a fork of the login, which keeps the
+/// client's `ui_locales` but not the `kc_locale` pick.
+pub(super) async fn page_without_pick(
+    s: &OidcState,
+    realm_id: &str,
+    request_id: &str,
+    headers: &HeaderMap,
+) -> Result<PageLocale, ()> {
+    let state = s
+        .storage
+        .login_locale(realm_id, request_id)
+        .await
+        .map_err(|_| ())?;
+    Ok(state.map_or_else(PageLocale::english, |state| {
+        let forked = LoginLocale {
+            requested: None,
+            ..state
+        };
+        PageLocale::login(&forked, headers)
+    }))
+}
+
+/// The locale of a page an emailed link opens, and the cookie a
+/// `kc_locale` pick sets: the login request's when the link continues one
+/// in this browser, else the realm's, with a pick that lasts for this
+/// response, as the reference keeps it without an authentication session.
+pub(super) async fn link_page(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request_id: Option<&str>,
+    query: &LocaleQuery,
+    headers: &HeaderMap,
+) -> Result<(PageLocale, Option<String>), ()> {
+    if let Some(request_id) = request_id {
+        let picked = pick(s, realm, realm_id, request_id, query).await?;
+        return Ok((page(s, realm_id, request_id, headers).await?, picked));
+    }
+    let state = s.storage.realm_locale(realm_id).await.map_err(|_| ())?;
+    let picked = query
+        .kc_locale
+        .as_deref()
+        .filter(|picked| locale::acceptable_pick(picked))
+        .filter(|_| state.settings.internationalization_enabled);
+    let cookie = picked.map(|picked| locale::cookie(&s.path_prefix, realm, picked));
+    let state = LoginLocale {
+        requested: picked.map(str::to_owned),
+        ..state
+    };
+    Ok((PageLocale::login(&state, headers), cookie))
+}
+
+/// The reference's locale required action for a user an emailed link
+/// names, before any session exists: as `adopt`, for that user.
+pub(super) async fn adopt_for_user(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request_id: &str,
+    user_id: &str,
+    headers: &HeaderMap,
+) -> Result<Option<String>, ()> {
+    let update = s
+        .storage
+        .apply_requested_locale_to_user(realm_id, request_id, user_id)
+        .await
+        .map_err(|_| ())?;
+    Ok(update.and_then(|update| adopted_cookie(s, realm, update, headers)))
+}
+
 /// The reference's locale required action, run once the user is known: a
 /// pick that differs from the user's locale becomes theirs and is
 /// remembered; else the user's locale is remembered; else a remembered
@@ -78,16 +150,23 @@ pub(super) async fn adopt(
     session_id: &str,
     headers: &HeaderMap,
 ) -> Result<Option<String>, ()> {
-    let Some(update) = s
+    let update = s
         .storage
         .apply_requested_locale(realm_id, request_id, session_id)
         .await
-        .map_err(|_| ())?
-    else {
-        return Ok(None);
-    };
+        .map_err(|_| ())?;
+    Ok(update.and_then(|update| adopted_cookie(s, realm, update, headers)))
+}
+
+/// The cookie header the locale required action sends after an update.
+fn adopted_cookie(
+    s: &OidcState,
+    realm: &str,
+    update: UserLocaleUpdate,
+    headers: &HeaderMap,
+) -> Option<String> {
     let prefix = &s.path_prefix;
-    Ok(match (update.requested, update.previous) {
+    match (update.requested, update.previous) {
         (Some(picked), previous) => {
             (previous.as_ref() != Some(&picked)).then(|| locale::cookie(prefix, realm, &picked))
         }
@@ -95,7 +174,7 @@ pub(super) async fn adopt(
         (None, None) => {
             cookie(headers, locale::COOKIE).map(|_| locale::expired_cookie(prefix, realm))
         }
-    })
+    }
 }
 
 /// Adds a locale cookie header unless the response already sets one, as

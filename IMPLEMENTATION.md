@@ -1157,13 +1157,18 @@ templates):
   `missingPasswordMessage` and `notMatchPasswordMessage`, and the profile's
   `error-user-attribute-required`, with `missingEmailMessage` before it for
   an empty email. An empty forgot-password request shows the form again
-  with `missingUsernameMessage`; a sent one forgets the `kc_locale` pick,
-  as the reference's forked login does. The OTP page shows the username
+  with `missingUsernameMessage`; the login page after a sent one ignores
+  the `kc_locale` pick, as the reference shows it from a fork of the
+  login. The emailed link's new-password form is the same form with
+  `resetPasswordMessage`, in the login's locale when this browser started
+  it, else the realm's; there it makes the kept pick the user's locale,
+  and its language links keep the key, as the reference forwards it. The
+  OTP page shows the username
   and leaves the locale cookie and user locale alone, since the reference
   runs its locale action after authentication.
 
 `tests/public/login_messages_contract.py` checks 21 groups, the slowest in
-213 ms.
+under 300 ms.
 
 Remaining differences: the language links name `authenticate`, where the
 reference names each step's login-actions path, so links are compared by
@@ -1174,4 +1179,7 @@ differ for scripts the JDK's collator orders otherwise; TOTP setup shows
 the manual-entry steps without a QR code, and re-showing it draws a new
 key, where the reference keeps the first; realm localization texts, the
 `loginWithEmailAllowed` setting and themes other than the pinned default
-are not implemented; action-token, logout and error pages stay English.
+are not implemented; a login continued from the page after a sent email
+keeps the pick, where the reference's fork has none; the other
+action-token pages (the action list, email confirmation, account
+updated, expired link), logout and error pages stay English.

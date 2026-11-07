@@ -160,15 +160,6 @@ pub(super) async fn request(
         request_id,
         csrf,
     } = bound;
-    // The reference answers from a fork of the login, which keeps the
-    // client's ui_locales but not a kc_locale pick.
-    if s.storage
-        .forget_request_locale(&realm_id, &request_id)
-        .await
-        .is_err()
-    {
-        return unavailable();
-    }
     if name.len() > 255 {
         return login_page(
             &s,

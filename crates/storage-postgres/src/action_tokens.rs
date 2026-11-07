@@ -18,6 +18,8 @@ pub struct ActionToken {
     pub actions: Vec<String>,
     /// Whether the token was requested from a login page.
     pub from_login: bool,
+    /// The login request the token was requested from, if any.
+    pub authorization_request_id: Option<String>,
 }
 
 impl Storage {
@@ -55,14 +57,17 @@ impl Storage {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
-        let row: Option<(String, Vec<String>, bool)> = sqlx::query_as("SELECT t.user_id, t.actions, t.authorization_request_id IS NOT NULL FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND t.used_at IS NULL AND t.expires_at > clock_timestamp() AND u.enabled")
+        let row: Option<(String, Vec<String>, Option<String>)> = sqlx::query_as("SELECT t.user_id, t.actions, t.authorization_request_id FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND t.used_at IS NULL AND t.expires_at > clock_timestamp() AND u.enabled")
             .bind(token_hash).bind(realm_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(row.map(|(user_id, actions, from_login)| ActionToken {
-            user_id,
-            actions,
-            from_login,
-        }))
+        Ok(
+            row.map(|(user_id, actions, authorization_request_id)| ActionToken {
+                user_id,
+                actions,
+                from_login: authorization_request_id.is_some(),
+                authorization_request_id,
+            }),
+        )
     }
 
     /// Uses an UPDATE_PASSWORD token once: replaces the user's password and

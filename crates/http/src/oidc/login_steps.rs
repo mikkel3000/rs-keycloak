@@ -566,7 +566,7 @@ pub(super) async fn continue_login(
 
 /// Why a new password was refused.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PasswordError {
+pub(super) enum PasswordError {
     None,
     /// The new password is empty.
     Missing,
@@ -576,19 +576,49 @@ enum PasswordError {
     Mismatch,
 }
 
+impl PasswordError {
+    /// Checks a new password and its confirmation, in the reference's
+    /// order.
+    pub(super) fn check(password: &str, confirm: &str) -> Self {
+        if password.is_empty() {
+            Self::Missing
+        } else if password.len() > MAX_PASSWORD_BYTES {
+            Self::TooLong
+        } else if password != confirm {
+            Self::Mismatch
+        } else {
+            Self::None
+        }
+    }
+}
+
 fn password_page(
     s: &OidcState,
     request: StepRequest<'_>,
     locale: &PageLocale,
     error: PasswordError,
 ) -> Response {
-    let (realm, request_id) = (request.realm, request.request_id);
-    let prefix = escape(&s.path_prefix);
+    let action = format!(
+        "{}/realms/{}/login-actions/update-password/{}",
+        s.path_prefix, request.realm, request.request_id
+    );
+    let body = password_form(locale, &action, error, "updatePasswordMessage");
+    request.page(s, locale, "updatePasswordTitle", &body)
+}
+
+/// The new-password form posting to `action`; without an error it shows
+/// the message `reminder` above it.
+pub(super) fn password_form(
+    locale: &PageLocale,
+    action: &str,
+    error: PasswordError,
+    reminder: &str,
+) -> String {
     let texts = &locale.messages;
     let longest = MAX_PASSWORD_BYTES.to_string();
     let (message, new_error, confirm_error) = match error {
         PasswordError::None => (
-            notice_message("alert", &texts.html("updatePasswordMessage", &[])),
+            notice_message("alert", &texts.html(reminder, &[])),
             String::new(),
             String::new(),
         ),
@@ -614,14 +644,14 @@ fn password_page(
             ),
         ),
     };
-    let body = format!(
-        "{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-password/{request_id}\"><label for=\"password-new\">{new_label}</label><input id=\"password-new\" name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required>{new_error}<label for=\"password-confirm\">{confirm_label}</label><input id=\"password-confirm\" name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required>{confirm_error}{logout}<button id=\"kc-submit\" name=\"login\">{submit}</button></form>",
+    format!(
+        "{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{action}\"><label for=\"password-new\">{new_label}</label><input id=\"password-new\" name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required>{new_error}<label for=\"password-confirm\">{confirm_label}</label><input id=\"password-confirm\" name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required>{confirm_error}{logout}<button id=\"kc-submit\" name=\"login\">{submit}</button></form>",
+        action = escape(action),
         new_label = texts.html("passwordNew", &[]),
         confirm_label = texts.html("passwordConfirm", &[]),
         logout = logout_checkbox(locale),
         submit = texts.html("doSubmit", &[]),
-    );
-    request.page(s, locale, "updatePasswordTitle", &body)
+    )
 }
 
 #[derive(Deserialize)]
@@ -669,15 +699,7 @@ async fn replace_password(
     }
     let password = Zeroizing::new(form.password_new);
     let confirm = Zeroizing::new(form.password_confirm);
-    let error = if password.is_empty() {
-        PasswordError::Missing
-    } else if password.len() > MAX_PASSWORD_BYTES {
-        PasswordError::TooLong
-    } else if *password != *confirm {
-        PasswordError::Mismatch
-    } else {
-        PasswordError::None
-    };
+    let error = PasswordError::check(&password, &confirm);
     if error != PasswordError::None {
         return match shown_locale(s, held, request_id, headers).await {
             Ok(locale) => password_page(
