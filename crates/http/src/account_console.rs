@@ -514,7 +514,11 @@ pub(crate) async fn page(
     );
     let common_url = format!("{prefix}/resources/{}/common/keycloak", resource_version());
     let (referrer_name, referrer_url) = referrer.unwrap_or_default();
-    let locale = locale::resolve(&settings, features.locale.as_deref(), headers);
+    let choices = locale::Choices {
+        user: features.locale.as_deref(),
+        ..locale::Choices::default()
+    };
+    let locale = locale::resolve(&settings, choices, headers);
     let direction = if console
         .locale_label(&locale)
         .is_some_and(locale::is_right_to_left)

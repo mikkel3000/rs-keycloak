@@ -21,7 +21,7 @@ use serde_json::{Map, Value, json};
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::{Access, AdminError, authorize};
+use super::{Access, AdminError, FieldError, authorize};
 use crate::mail::valid_email;
 use crate::oidc::{OidcState, digest, random_token};
 
@@ -212,13 +212,6 @@ impl UserSettings {
         }
         if fields.contains_key("email") {
             self.email = text(fields, "email")?.map(|email| email.to_lowercase());
-            if self
-                .email
-                .as_deref()
-                .is_some_and(|email| !valid_email(email))
-            {
-                return Err(AdminError::Field("error-invalid-email", "email"));
-            }
         }
         if fields.contains_key("firstName") {
             self.first_name = text(fields, "firstName")?;
@@ -252,6 +245,23 @@ impl UserSettings {
             Some(_) => return Err(unparsable()),
         }
         Ok(self)
+    }
+
+    /// The reference's error for a malformed email, naming the sent value.
+    fn email_error(&self, fields: &Map<String, Value>) -> Option<AdminError> {
+        let email = self.email.as_deref()?;
+        if valid_email(email) {
+            return None;
+        }
+        let sent = match fields.get("email") {
+            Some(Value::String(sent)) => sent.clone(),
+            _ => email.to_owned(),
+        };
+        Some(AdminError::field(
+            "email",
+            "error-invalid-email",
+            vec!["email".into(), sent],
+        ))
     }
 
     fn user<'a>(&'a self, username: &'a str) -> NewUser<'a> {
@@ -297,6 +307,9 @@ pub(super) async fn create_from(
     actor: &Actor,
 ) -> Result<String, AdminError> {
     let settings = UserSettings::defaults().apply(fields, &["credentials"])?;
+    if let Some(error) = settings.email_error(fields) {
+        return Err(error);
+    }
     // A realm that uses the email as username takes the email when given.
     let email_as_username = state
         .storage
@@ -343,8 +356,8 @@ pub(super) async fn create_from(
     }
 }
 
-/// Applies a partial representation. The username is read-only, as in the
-/// reference's default user profile, and a body `id` is ignored.
+/// Applies a partial representation under the realm's username rules; a
+/// body `id` is ignored.
 async fn update_user(
     State(state): State<OidcState>,
     Path((realm, user)): Path<(String, String)>,
@@ -363,7 +376,14 @@ async fn update_user(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// Applies a partial representation to a stored user; the username stays.
+/// Applies a partial representation to a stored user under the realm's
+/// username rules, as the pinned user profile does for the admin API and
+/// `tests/reference/login-settings-observations.json` records. When the
+/// email is the username, the username follows the email and a sent one is
+/// ignored; otherwise a sent username changes only with
+/// `editUsernameAllowed`. The reference collects every error, then answers
+/// with the first missing username, taken username or taken email, else
+/// with the field errors.
 pub(super) async fn update_from(
     state: &OidcState,
     realm_id: &str,
@@ -372,25 +392,54 @@ pub(super) async fn update_from(
     actor: &Actor,
 ) -> Result<(), AdminError> {
     let settings = UserSettings::stored(stored).apply(fields, &["id"])?;
-    if text(fields, "username")?.is_some_and(|name| name.to_lowercase() != stored.username) {
-        return Err(AdminError::Field(
-            "error-user-attribute-read-only",
-            "username",
-        ));
+    let rules = state.storage.user_settings(realm_id).await?;
+    let missing = || AdminError::bad_request("User name is missing");
+    let username = if rules.registration_email_as_username {
+        settings.email.clone().ok_or_else(missing)?
+    } else {
+        match fields.get("username") {
+            None | Some(Value::Null) => stored.username.clone(),
+            Some(_) => text(fields, "username")?
+                .ok_or_else(missing)?
+                .to_lowercase(),
+        }
+    };
+    let mut errors = Vec::new();
+    if !rules.registration_email_as_username
+        && !rules.edit_username_allowed
+        && username != stored.username
+    {
+        errors.push(FieldError {
+            field: "username",
+            message: "error-user-attribute-read-only",
+            params: vec!["username".into()],
+        });
     }
-    match state
+    if let Some(AdminError::Fields(email)) = settings.email_error(fields) {
+        errors.extend(email);
+    }
+    let checked = state
         .storage
         .update_user(
             realm_id,
             &stored.id,
-            &settings.user(&stored.username),
+            &settings.user(&username),
+            errors.is_empty(),
             actor,
         )
-        .await?
-    {
+        .await?;
+    match checked {
         UserUpdate::Updated => Ok(()),
         UserUpdate::NotFound => Err(user_not_found()),
+        // When the email is the username, the reference reports the
+        // collision on the email.
+        UserUpdate::UsernameExists if rules.registration_email_as_username => Err(email_exists()),
+        UserUpdate::UsernameExists => Err(AdminError::Message(
+            StatusCode::CONFLICT,
+            "User exists with same username".into(),
+        )),
         UserUpdate::EmailExists => Err(email_exists()),
+        UserUpdate::Checked => Err(AdminError::Fields(errors)),
     }
 }
 

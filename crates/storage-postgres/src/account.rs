@@ -1,6 +1,6 @@
 //! A user's own account: authorization, profile and sessions.
 
-use sqlx::Row;
+use sqlx::{PgConnection, Row};
 
 use crate::login_steps::{Profile, save_profile};
 use crate::{Storage, StorageError};
@@ -79,6 +79,34 @@ impl AccountConflicts {
     }
 }
 
+/// Checks a user's own username and email change against other users, as
+/// the reference's user profile validators do.
+pub(crate) async fn account_conflicts(
+    connection: &mut PgConnection,
+    realm_id: &str,
+    user_id: &str,
+    change: &AccountChange<'_>,
+) -> Result<AccountConflicts, StorageError> {
+    let username = change.checked_username.to_lowercase();
+    let email = change.profile.email.as_deref().map(str::to_lowercase);
+    let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $3) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3) AS username_is_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $4) AS email_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $4) AS email_is_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept")
+        .bind(realm_id).bind(user_id).bind(&username).bind(&email).fetch_one(connection).await?;
+    let username_taken: bool = row.try_get("username_taken")?;
+    let email_kept: bool = row.try_get("email_kept")?;
+    let email_taken = row.try_get::<bool, _>("email_taken")?;
+    Ok(AccountConflicts {
+        username_taken,
+        username_is_email: !username_taken
+            && username.find('@').is_some_and(|at| at > 0)
+            && row.try_get::<bool, _>("username_is_email")?,
+        email_taken: !email_kept && email_taken,
+        email_is_username: !email_kept
+            && !email_taken
+            && row.try_get::<bool, _>("email_is_username")?,
+        email_as_username: change.email_as_username && email_taken,
+    })
+}
+
 impl Storage {
     /// Lists the clients of the user's current session, and those the user
     /// has consented to or holds offline tokens for.
@@ -117,26 +145,9 @@ impl Storage {
         change: &AccountChange<'_>,
         apply: bool,
     ) -> Result<AccountConflicts, StorageError> {
-        let username = change.checked_username.to_lowercase();
-        let email = change.profile.email.as_deref().map(str::to_lowercase);
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $3) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3) AS username_is_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $4) AS email_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $4) AS email_is_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept")
-            .bind(realm_id).bind(user_id).bind(&username).bind(&email).fetch_one(&mut *conn).await?;
-        let username_taken: bool = row.try_get("username_taken")?;
-        let email_kept: bool = row.try_get("email_kept")?;
-        let email_taken = row.try_get::<bool, _>("email_taken")?;
-        let conflicts = AccountConflicts {
-            username_taken,
-            username_is_email: !username_taken
-                && username.find('@').is_some_and(|at| at > 0)
-                && row.try_get::<bool, _>("username_is_email")?,
-            email_taken: !email_kept && email_taken,
-            email_is_username: !email_kept
-                && !email_taken
-                && row.try_get::<bool, _>("email_is_username")?,
-            email_as_username: change.email_as_username && email_taken,
-        };
+        let conflicts = account_conflicts(conn, realm_id, user_id, change).await?;
         if !apply || conflicts.any() {
             tx.commit().await?;
             return Ok(conflicts);

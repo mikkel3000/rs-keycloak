@@ -16,7 +16,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::consent::escape;
-use super::login_steps::continue_login;
+use super::login_steps::{Held, continue_login};
 use super::{OidcState, csrf, digest, plain_page, unavailable, valid_realm};
 
 /// Longest password the login path accepts.
@@ -142,15 +142,12 @@ async fn verify_email(
                         .await
                     {
                         Ok(true) => {
-                            continue_login(
-                                s,
-                                realm,
-                                &realm_id,
-                                request_id,
-                                csrf,
-                                &pending.session_id,
-                            )
-                            .await
+                            let held = Held {
+                                realm_id: realm_id.clone(),
+                                session_id: pending.session_id,
+                                csrf: csrf.to_owned(),
+                            };
+                            continue_login(s, realm, request_id, &held, headers).await
                         }
                         Ok(false) => expired(),
                         Err(_) => unavailable(),
@@ -297,7 +294,12 @@ pub(super) async fn submit(
             .await
         {
             Ok(true) => {
-                return continue_login(&s, &realm, &realm_id, request_id, csrf, &session_id).await;
+                let held = Held {
+                    realm_id,
+                    session_id,
+                    csrf: csrf.to_owned(),
+                };
+                return continue_login(&s, &realm, request_id, &held, &headers).await;
             }
             Ok(false) => (),
             Err(_) => return unavailable(),

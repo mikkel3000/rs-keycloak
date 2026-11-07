@@ -475,9 +475,9 @@ and before email verification, as Keycloak's default priorities order them.
 OTP contract was split so its login case no longer repeats the setup checks;
 its slowest case now takes 383 ms.
 
-Remaining differences: the user profile is fixed to email, first and last
-name; configurable profile attributes, `editUsernameAllowed` and
-`registrationEmailAsUsername` are not implemented.
+Remaining differences: the user profile is fixed to username, email, first
+and last name; configurable profile attributes are not implemented. The
+username settings are applied since "Realm settings in the login flow".
 
 ## Account REST API
 
@@ -1068,6 +1068,56 @@ several locales that match a request equally the first sorted one wins;
 `Accept-Language` entries with quality zero are left out, which was not
 recorded; an update that leaves out `attributes` removes the user's locale,
 which was not recorded either; the admin user representation does not show
-the locale attribute; admin user updates and the login flow's profile
-update do not apply the username rules yet; the theme's own page texts
-stay English, as in the reference.
+the locale attribute; the theme's own page texts stay English, as in the
+reference. Admin user updates and the login flow's profile update follow
+the username rules since "Realm settings in the login flow".
+
+## Realm settings in the login flow
+
+The login flow follows realm internationalization and the username
+settings, as recorded in `tests/reference/login-settings-observations.json`
+and read from the pinned source (`DefaultLocaleSelectorProvider`,
+`LocaleUtil`, `UpdateUserLocaleAction`, `DefaultLocaleUpdaterProvider`,
+`LocaleBean` and the user profile's username and email conditions):
+
+- Login, required-action, consent and forgot-password pages choose their
+  locale from the `kc_locale` pick, the user's locale once the password is
+  checked, the client's `ui_locales` (its first supported tag), the
+  `KEYCLOAK_LOCALE` cookie, `Accept-Language`, the default locale, then
+  English. `html` carries `lang`, and `dir` only while internationalization
+  is on, decided as for the account console. Migration 34 keeps
+  `ui_locales` and the pick with the authorization request.
+- `kc_locale` counts on login-actions posts only (the password form and
+  required actions), as in the reference, where the authorization endpoint
+  reads it only for registration. With internationalization on, the pick is
+  kept for the request and sets
+  `KEYCLOAK_LOCALE=<tag>;Version=1;Path=/realms/<realm>/;Secure;HttpOnly;SameSite=None`.
+- Once the user is known, every login step does what the reference's
+  locale required action does: a pick that differs from the user's locale
+  becomes theirs and is remembered; else the user's locale is remembered;
+  else a sent cookie is removed with `Max-Age=0`. This also runs while
+  internationalization is off, as in the reference.
+- UPDATE_PROFILE shows the username only with `editUsernameAllowed` and
+  without `registrationEmailAsUsername`, and the email unless it is the
+  username and usernames may not change. A changed username the form does
+  not show re-renders the form without a message, as the reference reports
+  it on the hidden field; when the email is the username, the username
+  follows the email. Messages use the reference texts, each field's format
+  error first, then collisions with other users' usernames and emails.
+- Admin user updates rename users only with `editUsernameAllowed`, and
+  with `registrationEmailAsUsername` take the email as username and ignore
+  a sent one. As the reference does, every error is collected, then the
+  first missing username, taken username or taken email answers, else the
+  field errors with `params`, one alone or several in an `errors` list. An
+  email that is another user's username counts as taken.
+
+`tests/public/login_settings_contract.py` checks 59 groups, the slowest in
+192 ms.
+
+Remaining differences: the reference reaches required actions through a
+redirect and sets the locale cookie on each hop, where this server answers
+with the page, so the contract compares an exchange's locale cookies as a
+set; `kc_locale` values other than letters, digits, `-` and `_` are
+ignored, where the reference keeps them as sent; `kc_locale` on the
+forgot-password page, the SSO path and logout, and the language links of
+the reference's login theme, are not implemented; page texts stay English.

@@ -15,6 +15,7 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use super::consent::escape;
+use super::login_locale;
 use super::{
     LoginNotice, OidcState, Rejection, csrf, digest, failure, login_page, random_token, step_page,
     unavailable, valid_realm,
@@ -68,10 +69,15 @@ pub(super) async fn form(
     headers: HeaderMap,
 ) -> Response {
     let Bound {
-        request_id, csrf, ..
+        realm_id,
+        request_id,
+        csrf,
     } = match bound(&s, &realm, &params, &headers).await {
         Ok(bound) => bound,
         Err(rejection) => return rejection.into_response(),
+    };
+    let Ok(locale) = login_locale::page(&s, &realm_id, &request_id, &headers).await else {
+        return unavailable();
     };
     let body = format!(
         "<h1>Forgot your password?</h1><form id=\"kc-reset-password-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\"><label>Username or email <input name=\"username\" autocomplete=\"username\" required></label><button>Submit</button></form>",
@@ -81,6 +87,7 @@ pub(super) async fn form(
         &s.path_prefix,
         &realm,
         &csrf,
+        &locale,
         "Forgot your password?",
         &body,
     )
@@ -115,7 +122,15 @@ pub(super) async fn request(
     };
     let name = form.username.trim();
     if name.is_empty() || name.len() > 255 {
-        return login_page(&s, &realm, &request_id, &csrf, LoginNotice::EmailSent).await;
+        return login_page(
+            &s,
+            &realm,
+            &request_id,
+            &csrf,
+            LoginNotice::EmailSent,
+            &headers,
+        )
+        .await;
     }
     let target = match s.storage.reset_target(&realm_id, name).await {
         Ok(target) => target,
@@ -168,5 +183,13 @@ pub(super) async fn request(
             Err(_) => return unavailable(),
         }
     }
-    login_page(&s, &realm, &request_id, &csrf, LoginNotice::EmailSent).await
+    login_page(
+        &s,
+        &realm,
+        &request_id,
+        &csrf,
+        LoginNotice::EmailSent,
+        &headers,
+    )
+    .await
 }

@@ -1,13 +1,113 @@
 //! The locale of a request, as Keycloak's default locale selector picks it:
-//! the user's own locale, the `KEYCLOAK_LOCALE` cookie, then
-//! `Accept-Language`, each matched against the realm's supported locales,
-//! then the realm's default locale, then English.
+//! the locale picked with `kc_locale`, the user's own locale, the client's
+//! `ui_locales`, the `KEYCLOAK_LOCALE` cookie, then `Accept-Language`, each
+//! matched against the realm's supported locales, then the realm's default
+//! locale, then English.
 //!
-//! Follows `DefaultLocaleSelectorProvider` at the pinned revision and
-//! `tests/reference/account-settings-observations.json`.
+//! Follows `DefaultLocaleSelectorProvider`, `LocaleBean` and
+//! `DefaultLocaleUpdaterProvider` at the pinned revision, and
+//! `tests/reference/account-settings-observations.json` and
+//! `tests/reference/login-settings-observations.json`.
+
+use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use axum::http::{HeaderMap, header};
-use rs_keycloak_storage_postgres::UserSettings;
+use rs_keycloak_storage_postgres::{LoginLocale, UserSettings};
+
+/// The name of the cookie that remembers a chosen locale.
+pub(crate) const COOKIE: &str = "KEYCLOAK_LOCALE";
+
+/// Each theme locale's display name in its own language, as the pinned
+/// themes generate them; the login and account themes list the same
+/// locales.
+static OWN_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
+    let names: HashMap<String, HashMap<String, String>> =
+        serde_json::from_str(include_str!("account_console/locale_names.json")).unwrap_or_default();
+    names
+        .into_iter()
+        .filter_map(|(tag, mut names)| names.remove(&tag).map(|name| (tag, name)))
+        .collect()
+});
+
+/// The locale choices a request carries besides its headers.
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct Choices<'a> {
+    /// The locale picked with `kc_locale` during this login.
+    pub(crate) picked: Option<&'a str>,
+    /// The user's stored locale.
+    pub(crate) user: Option<&'a str>,
+    /// The client's space-separated `ui_locales`.
+    pub(crate) client: Option<&'a str>,
+}
+
+/// The `lang` and `dir` of a login page's `html` element.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PageLocale {
+    /// The page's language tag.
+    pub(crate) lang: String,
+    /// `rtl` or `ltr`; absent unless the realm is internationalized, as the
+    /// reference's login template writes it.
+    pub(crate) dir: Option<&'static str>,
+}
+
+impl PageLocale {
+    /// English without a direction, for pages outside a realm's login.
+    pub(crate) fn english() -> Self {
+        Self {
+            lang: "en".to_owned(),
+            dir: None,
+        }
+    }
+
+    /// The locale of a login or required-action page.
+    pub(crate) fn login(state: &LoginLocale, headers: &HeaderMap) -> Self {
+        let choices = Choices {
+            picked: state.requested.as_deref(),
+            user: state.user.as_deref(),
+            client: state.client.as_deref(),
+        };
+        let lang = resolve(&state.settings, choices, headers);
+        let dir = state.settings.internationalization_enabled.then(|| {
+            // `LocaleBean` names the locale by the theme's label, else the
+            // tag itself, and checks that name's direction.
+            let name = OWN_NAMES.get(&lang).map_or(lang.as_str(), String::as_str);
+            if is_right_to_left(name) { "rtl" } else { "ltr" }
+        });
+        Self { lang, dir }
+    }
+
+    /// The `html` element's attributes, starting with a space.
+    pub(crate) fn attributes(&self) -> String {
+        match self.dir {
+            Some(dir) => format!(" lang=\"{}\" dir=\"{dir}\"", self.lang),
+            None => format!(" lang=\"{}\"", self.lang),
+        }
+    }
+}
+
+/// The `KEYCLOAK_LOCALE` cookie for a realm, as the reference sets it.
+pub(crate) fn cookie(path_prefix: &str, realm: &str, locale: &str) -> String {
+    format!(
+        "{COOKIE}={locale};Version=1;Path={path_prefix}/realms/{realm}/;Secure;HttpOnly;SameSite=None"
+    )
+}
+
+/// The header that removes the `KEYCLOAK_LOCALE` cookie, as the reference
+/// sends it.
+pub(crate) fn expired_cookie(path_prefix: &str, realm: &str) -> String {
+    format!("{COOKIE}=;Version=1;Path={path_prefix}/realms/{realm}/;Max-Age=0")
+}
+
+/// Whether a `kc_locale` value can be kept and sent back in a cookie:
+/// letters, digits, `-` and `_`, up to 255 bytes.
+pub(crate) fn acceptable_pick(locale: &str) -> bool {
+    !locale.is_empty()
+        && locale.len() <= 255
+        && locale
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
 
 /// The parts of a language tag that matching compares, as Java's
 /// `Locale.forLanguageTag` reads them.
@@ -129,20 +229,33 @@ fn accepted_languages(headers: &HeaderMap) -> Vec<String> {
 /// The locale a page is shown in, as a language tag.
 pub(crate) fn resolve(
     settings: &UserSettings,
-    user_locale: Option<&str>,
+    choices: Choices<'_>,
     headers: &HeaderMap,
 ) -> String {
     if !settings.internationalization_enabled {
         return "en".to_owned();
     }
     let supported = &settings.supported_locales;
-    let cookie = crate::oidc::cookie(headers, "KEYCLOAK_LOCALE");
-    user_locale
+    let cookie = crate::oidc::cookie(headers, COOKIE);
+    // `ui_locales` counts by its first tag that matches.
+    let client = choices
+        .client
+        .and_then(|tags| tags.split(' ').find_map(|tag| best_match(supported, tag)));
+    choices
+        .picked
         .into_iter()
-        .chain(cookie)
-        .map(str::to_owned)
-        .chain(accepted_languages(headers))
-        .find_map(|requested| best_match(supported, &requested))
+        .chain(choices.user)
+        .map(|tag| best_match(supported, tag))
+        .chain([client])
+        .flatten()
+        .chain(
+            cookie
+                .map(str::to_owned)
+                .into_iter()
+                .chain(accepted_languages(headers))
+                .filter_map(|requested| best_match(supported, &requested)),
+        )
+        .next()
         .or_else(|| {
             settings
                 .default_locale
@@ -208,12 +321,20 @@ mod tests {
     #[test]
     fn higher_quality_comes_first() {
         let realm = settings(&["fr", "ja"], Some("de"));
+        let none = Choices::default();
         assert_eq!(
-            resolve(&realm, None, &accepting("fr;q=0.2, ja;q=0.8")),
+            resolve(&realm, none, &accepting("fr;q=0.2, ja;q=0.8")),
             "ja"
         );
-        assert_eq!(resolve(&realm, None, &accepting("ja;q=0, fr;q=0.1")), "fr");
-        assert_eq!(resolve(&realm, None, &accepting("*")), "de");
+        assert_eq!(resolve(&realm, none, &accepting("ja;q=0, fr;q=0.1")), "fr");
+        assert_eq!(resolve(&realm, none, &accepting("*")), "de");
+    }
+
+    fn user(locale: &str) -> Choices<'_> {
+        Choices {
+            user: Some(locale),
+            ..Choices::default()
+        }
     }
 
     #[test]
@@ -224,16 +345,63 @@ mod tests {
             header::COOKIE,
             HeaderValue::from_static("KEYCLOAK_LOCALE=fr"),
         );
-        assert_eq!(resolve(&realm, Some("ar"), &headers), "ar");
-        assert_eq!(resolve(&realm, Some("it"), &headers), "fr");
-        assert_eq!(resolve(&realm, None, &accepting("it")), "en");
+        assert_eq!(resolve(&realm, user("ar"), &headers), "ar");
+        assert_eq!(resolve(&realm, user("it"), &headers), "fr");
+        assert_eq!(resolve(&realm, Choices::default(), &accepting("it")), "en");
+    }
+
+    #[test]
+    fn the_pick_comes_first_and_ui_locales_after_the_user() {
+        let realm = settings(&["ar", "fr", "ja"], None);
+        let mut headers = accepting("fr");
+        headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("KEYCLOAK_LOCALE=fr"),
+        );
+        let choices = |picked, user, client| Choices {
+            picked,
+            user,
+            client,
+        };
+        let all = choices(Some("ar"), Some("ja"), Some("fr"));
+        assert_eq!(resolve(&realm, all, &headers), "ar");
+        let no_pick = choices(Some("it"), Some("ja"), Some("ar"));
+        assert_eq!(resolve(&realm, no_pick, &headers), "ja");
+        let client = choices(None, None, Some("it ja ar"));
+        assert_eq!(resolve(&realm, client, &headers), "ja");
+        let unsupported = choices(None, None, Some("it"));
+        assert_eq!(resolve(&realm, unsupported, &headers), "fr");
     }
 
     #[test]
     fn disabled_internationalization_is_english() {
         let mut realm = settings(&["de"], Some("de"));
         realm.internationalization_enabled = false;
-        assert_eq!(resolve(&realm, Some("de"), &accepting("de")), "en");
+        assert_eq!(resolve(&realm, user("de"), &accepting("de")), "en");
+    }
+
+    #[test]
+    fn login_pages_name_their_direction_only_when_internationalized() {
+        let state = |enabled| LoginLocale {
+            settings: UserSettings {
+                internationalization_enabled: enabled,
+                ..settings(&["ar", "he", "de"], None)
+            },
+            ..LoginLocale::default()
+        };
+        let page = |enabled, accepted| PageLocale::login(&state(enabled), &accepting(accepted));
+        assert_eq!(page(true, "ar").attributes(), " lang=\"ar\" dir=\"rtl\"");
+        // The theme does not name he, so its tag decides.
+        assert_eq!(page(true, "he").attributes(), " lang=\"he\" dir=\"ltr\"");
+        assert_eq!(page(false, "ar").attributes(), " lang=\"en\"");
+    }
+
+    #[test]
+    fn picks_are_kept_only_as_cookie_safe_tags() {
+        assert!(acceptable_pick("pt-BR"));
+        assert!(!acceptable_pick(""));
+        assert!(!acceptable_pick("de;Path=/"));
+        assert!(!acceptable_pick(&"a".repeat(256)));
     }
 
     #[test]

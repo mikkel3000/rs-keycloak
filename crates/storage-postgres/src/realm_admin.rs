@@ -136,7 +136,7 @@ pub enum RealmDeletion {
 
 const REALM_COLUMNS: &str = "id, name, enabled, reset_password_allowed, verify_email, smtp_host, smtp_port, smtp_from, smtp_from_display_name, smtp_starttls, smtp_ssl, display_name, access_token_lifespan, internationalization_enabled, supported_locales, default_locale, edit_username_allowed, registration_email_as_username";
 
-fn user_settings_row(row: &PgRow) -> Result<UserSettings, StorageError> {
+pub(crate) fn user_settings_row(row: &PgRow) -> Result<UserSettings, StorageError> {
     Ok(UserSettings {
         internationalization_enabled: row.try_get("internationalization_enabled")?,
         supported_locales: row.try_get("supported_locales")?,

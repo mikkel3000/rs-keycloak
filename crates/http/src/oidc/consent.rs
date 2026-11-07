@@ -13,6 +13,7 @@ use super::{
     OidcState, authorization_response, csrf, digest, failure, random_token, step_page, unavailable,
     valid_realm,
 };
+use crate::locale::PageLocale;
 
 pub(super) fn escape(value: &str) -> String {
     value
@@ -31,6 +32,7 @@ pub(super) fn page(
     client_identifier: &str,
     scope: &str,
     csrf: &str,
+    locale: &PageLocale,
 ) -> Response {
     let body = format!(
         "<h1>Grant access to {client}</h1><p>Requested scope: {scope}</p><form id=\"kc-oauth\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/consent/{request_id}\"><input type=\"submit\" name=\"accept\" value=\"Yes\"><input type=\"submit\" name=\"cancel\" value=\"No\"></form>",
@@ -38,7 +40,7 @@ pub(super) fn page(
         scope = escape(scope),
         prefix = escape(path_prefix),
     );
-    step_page(path_prefix, realm, csrf, "Grant access", &body)
+    step_page(path_prefix, realm, csrf, locale, "Grant access", &body)
 }
 
 /// The consent answer; exactly one of the two submit buttons is sent.

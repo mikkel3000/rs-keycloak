@@ -7,6 +7,7 @@ mod consent;
 mod cors;
 mod iframes;
 mod introspection;
+mod login_locale;
 mod login_steps;
 mod logout;
 mod reset_credentials;
@@ -20,6 +21,7 @@ use crate::account_console::AccountConsole;
 use crate::client_auth::{
     self, ClientAuthResult, ClientAuthenticator, InvalidClientAuthentication,
 };
+use crate::locale::PageLocale;
 use axum::extract::rejection::FormRejection;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -28,6 +30,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use login_locale::LocaleQuery;
 use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
@@ -243,6 +246,7 @@ struct AuthorizationQuery {
     nonce: Option<String>,
     prompt: Option<String>,
     max_age: Option<String>,
+    ui_locales: Option<String>,
 }
 
 /// Reads one cookie value from the request.
@@ -412,6 +416,10 @@ async fn authorize(
             300,
             response_mode,
             prompts.contains(&"consent"),
+            // Overlong ui_locales count as absent rather than failing the login.
+            q.ui_locales
+                .as_deref()
+                .filter(|tags| !tags.is_empty() && tags.len() <= 2048),
         )
         .await
     {
@@ -443,9 +451,11 @@ async fn authorize(
         if let Some(session) = session {
             let request = RequestContext {
                 realm: &realm,
+                realm_id: &realm_id,
                 request_id: &request_id,
                 csrf: &csrf,
                 issuer: &issuer,
+                headers: &headers,
             };
             return match sso_response(&s, &request, &realm_id, &q.client_id, &session.session_id)
                 .await
@@ -460,7 +470,7 @@ async fn authorize(
                 .unwrap_or_else(|()| unavailable());
         }
     }
-    login_page(&s, &realm, &request_id, &csrf, LoginNotice::None).await
+    login_page(&s, &realm, &request_id, &csrf, LoginNotice::None, &headers).await
 }
 
 /// Renders the password form; after a failed attempt it shows the same form
@@ -500,10 +510,18 @@ async fn login_page(
     request_id: &str,
     csrf: &str,
     notice: LoginNotice,
+    headers: &HeaderMap,
 ) -> Response {
     let record = match s.storage.realm_by_name(realm).await {
         Ok(record) => record,
         Err(_) => return unavailable(),
+    };
+    let locale = match &record {
+        Some(record) => match login_locale::page(s, &record.id, request_id, headers).await {
+            Ok(locale) => locale,
+            Err(()) => return unavailable(),
+        },
+        None => PageLocale::english(),
     };
     let reset_allowed = record
         .as_ref()
@@ -534,7 +552,7 @@ async fn login_page(
     let body = format!(
         "<p id=\"kc-header\">{shown}</p><h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>{reset}"
     );
-    step_page(&s.path_prefix, realm, csrf, "Sign in", &body)
+    step_page(&s.path_prefix, realm, csrf, &locale, "Sign in", &body)
 }
 
 #[derive(Deserialize)]
@@ -556,6 +574,7 @@ fn csrf(headers: &HeaderMap) -> Option<&str> {
 async fn authenticate(
     State(s): State<OidcState>,
     Path((realm, request_id)): Path<(String, String)>,
+    Query(locale_query): Query<LocaleQuery>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
@@ -587,6 +606,10 @@ async fn authenticate(
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
     }
+    let picked = match login_locale::pick(&s, &realm, &realm_id, &request_id, &locale_query).await {
+        Ok(picked) => picked,
+        Err(()) => return unavailable(),
+    };
     let password = Zeroizing::new(form.password.into_bytes());
     let result = s
         .login
@@ -597,14 +620,21 @@ async fn authenticate(
             password,
         )
         .await;
-    let session_id = match result {
-        Ok(LoginResult::Authenticated { session_id }) => session_id,
+    let response = match result {
+        Ok(LoginResult::Authenticated { session_id }) => {
+            let held = login_steps::Held {
+                realm_id,
+                session_id,
+                csrf: csrf.to_owned(),
+            };
+            login_steps::continue_login(&s, &realm, &request_id, &held, &headers).await
+        }
         Ok(LoginResult::Denied) => {
-            return login_page(&s, &realm, &request_id, csrf, LoginNotice::Failed).await;
+            login_page(&s, &realm, &request_id, csrf, LoginNotice::Failed, &headers).await
         }
         Err(_) => return unavailable(),
     };
-    login_steps::continue_login(&s, &realm, &realm_id, &request_id, csrf, &session_id).await
+    login_locale::with_cookie(response, picked)
 }
 
 /// Finishes an authenticated login: sets the SSO cookies, then shows consent
@@ -612,11 +642,15 @@ async fn authenticate(
 async fn complete_login(
     s: &OidcState,
     realm: &str,
-    realm_id: &str,
     request_id: &str,
-    csrf: &str,
-    session_id: &str,
+    held: &login_steps::Held,
+    headers: &HeaderMap,
 ) -> Response {
+    let (realm_id, csrf, session_id) = (
+        held.realm_id.as_str(),
+        held.csrf.as_str(),
+        held.session_id.as_str(),
+    );
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let sso_token = random_token();
     match s
@@ -630,9 +664,11 @@ async fn complete_login(
     }
     let request = RequestContext {
         realm,
+        realm_id,
         request_id,
         csrf,
         issuer: &issuer,
+        headers,
     };
     let (mut response, consent_pending) = match consent_or_code(s, &request, session_id).await {
         Ok(Some(Answer::Consent(response))) => (response, true),
@@ -661,10 +697,18 @@ async fn complete_login(
     response
 }
 
-/// Renders a page with the login pages' security headers and no cookies.
+/// Renders an English page with the login pages' security headers and no
+/// cookies.
 fn plain_page(status: StatusCode, title: &str, body: &str) -> Response {
+    page(status, &PageLocale::english(), title, body)
+}
+
+/// Renders a page in a locale with the login pages' security headers and no
+/// cookies.
+fn page(status: StatusCode, locale: &PageLocale, title: &str, body: &str) -> Response {
     let html = format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title></head><body>{body}</body></html>"
+        "<!doctype html><html{}><head><meta charset=\"utf-8\"><title>{title}</title></head><body>{body}</body></html>",
+        locale.attributes()
     );
     let mut response = (status, Html(html)).into_response();
     let headers = response.headers_mut();
@@ -682,8 +726,15 @@ fn plain_page(status: StatusCode, title: &str, body: &str) -> Response {
 
 /// Renders a login-step page (second factor, consent) that keeps the
 /// request's CSRF cookie so the page's form stays bound to this browser.
-fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str) -> Response {
-    let mut response = plain_page(StatusCode::OK, title, body);
+fn step_page(
+    path_prefix: &str,
+    realm: &str,
+    csrf: &str,
+    locale: &PageLocale,
+    title: &str,
+    body: &str,
+) -> Response {
+    let mut response = page(StatusCode::OK, locale, title, body);
     let headers = response.headers_mut();
     let cookie = format!(
         "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
@@ -700,9 +751,12 @@ fn step_page(path_prefix: &str, realm: &str, csrf: &str, title: &str, body: &str
 /// A validated authorization request bound to its CSRF cookie.
 struct RequestContext<'a> {
     realm: &'a str,
+    realm_id: &'a str,
     request_id: &'a str,
     csrf: &'a str,
     issuer: &'a str,
+    /// The browser's headers, which help choose the consent page's locale.
+    headers: &'a HeaderMap,
 }
 
 /// How an authenticated authorization request is answered.
@@ -739,16 +793,20 @@ async fn consent_or_code(
             .attach_pending_session(request.request_id, &csrf_hash, session_id)
             .await
             .map_err(|_| ())?;
-        return Ok(pending.map(|pending| {
-            Answer::Consent(consent::page(
-                &s.path_prefix,
-                request.realm,
-                request.request_id,
-                &pending.client_identifier,
-                &pending.scope,
-                request.csrf,
-            ))
-        }));
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
+        let locale =
+            login_locale::page(s, request.realm_id, request.request_id, request.headers).await?;
+        return Ok(Some(Answer::Consent(consent::page(
+            &s.path_prefix,
+            request.realm,
+            request.request_id,
+            &pending.client_identifier,
+            &pending.scope,
+            request.csrf,
+            &locale,
+        ))));
     }
     let code = random_token();
     let redirect = s

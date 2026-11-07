@@ -65,8 +65,13 @@ pub enum UserUpdate {
     Updated,
     /// No user has this identifier.
     NotFound,
-    /// Another user in the realm has this email.
+    /// Another user in the realm has this username.
+    UsernameExists,
+    /// Another user in the realm has this email, or has a changed email as
+    /// username.
     EmailExists,
+    /// Nothing collides; the caller asked only for the check.
+    Checked,
 }
 
 /// Outcome of creating a user.
@@ -162,13 +167,16 @@ impl Storage {
         Ok(UserCreation::Created)
     }
 
-    /// Replaces a user's profile, enabled state and required actions; the
-    /// username stays, since the reference keeps it read-only.
+    /// Checks a user's username and email against other users and, if
+    /// nothing collides and `apply` is set, replaces the username, profile,
+    /// enabled state and required actions. The username collision comes
+    /// first, as in the reference's validation order.
     pub async fn update_user(
         &self,
         realm_id: &str,
         user_id: &str,
         user: &NewUser<'_>,
+        apply: bool,
         actor: &Actor,
     ) -> Result<UserUpdate, StorageError> {
         let mut tx = self.begin_request(false).await?;
@@ -184,15 +192,26 @@ impl Storage {
             tx.commit().await?;
             return Ok(UserUpdate::NotFound);
         }
-        let email_taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND email_normalized = $2 AND id <> $3)")
-            .bind(realm_id).bind(user.email).bind(user_id).fetch_one(&mut *conn).await?;
-        if email_taken {
+        let username = user.username.to_lowercase();
+        let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND username_normalized = $2 AND id <> $4) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $4 AND (email_normalized = $3 OR (username_normalized = $3 AND NOT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $4 AND email_normalized IS NOT DISTINCT FROM $3)))) AS email_taken")
+            .bind(realm_id).bind(&username).bind(user.email).bind(user_id).fetch_one(&mut *conn).await?;
+        let outcome = if row.try_get("username_taken")? {
+            UserUpdate::UsernameExists
+        } else if row.try_get("email_taken")? {
+            UserUpdate::EmailExists
+        } else if !apply {
+            UserUpdate::Checked
+        } else {
+            UserUpdate::Updated
+        };
+        if !matches!(outcome, UserUpdate::Updated) {
             tx.commit().await?;
-            return Ok(UserUpdate::EmailExists);
+            return Ok(outcome);
         }
-        sqlx::query("UPDATE users SET email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 WHERE realm_id = $1 AND id = $2")
+        sqlx::query("UPDATE users SET username = $9, username_normalized = $9, email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 WHERE realm_id = $1 AND id = $2")
             .bind(realm_id).bind(user_id).bind(user.email).bind(user.email_verified)
             .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions)
+            .bind(&username)
             .execute(&mut *conn).await?;
         audit(conn, actor, "user_updated").await?;
         tx.commit().await?;

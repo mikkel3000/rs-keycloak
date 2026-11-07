@@ -60,9 +60,10 @@ enum AdminError {
     RealmNotFound,
     /// A request error reported in an `errorMessage` body.
     Message(StatusCode, String),
-    /// A 400 for one representation field, reported with `errorMessage`
-    /// and `field`, as the reference's user profile does.
-    Field(&'static str, &'static str),
+    /// A 400 for representation fields, as the reference's user profile
+    /// reports them: one error alone as its `field`, `errorMessage` and
+    /// `params`, several in an `errors` list.
+    Fields(Vec<FieldError>),
     /// An error reported in an `error` body.
     Error(StatusCode, String),
     /// An OAuth-style `error` and `error_description` body.
@@ -71,9 +72,31 @@ enum AdminError {
     Unavailable,
 }
 
+/// One user profile error on a representation field.
+struct FieldError {
+    field: &'static str,
+    message: &'static str,
+    params: Vec<String>,
+}
+
+impl FieldError {
+    fn body(&self) -> Value {
+        json!({ "field": self.field, "errorMessage": self.message, "params": self.params })
+    }
+}
+
 impl AdminError {
     fn bad_request(message: impl Into<String>) -> Self {
         Self::Message(StatusCode::BAD_REQUEST, message.into())
+    }
+
+    /// One field error with the reference's message parameters.
+    fn field(field: &'static str, message: &'static str, params: Vec<String>) -> Self {
+        Self::Fields(vec![FieldError {
+            field,
+            message,
+            params,
+        }])
     }
 }
 
@@ -96,11 +119,15 @@ impl IntoResponse for AdminError {
                 (status, Json(json!({ "errorMessage": message }))).into_response()
             }
             Self::Error(status, message) => error(status, &message).into_response(),
-            Self::Field(message, field) => (
-                StatusCode::BAD_REQUEST,
-                Json(json!({ "errorMessage": message, "field": field })),
-            )
-                .into_response(),
+            Self::Fields(errors) => {
+                let body = match errors.as_slice() {
+                    [error] => error.body(),
+                    errors => {
+                        json!({ "errors": errors.iter().map(FieldError::body).collect::<Vec<_>>() })
+                    }
+                };
+                (StatusCode::BAD_REQUEST, Json(body)).into_response()
+            }
             Self::OAuth(status, code, description) => (
                 status,
                 Json(json!({ "error": code, "error_description": description })),

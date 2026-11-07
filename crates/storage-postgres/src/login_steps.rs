@@ -4,7 +4,8 @@
 
 use sqlx::{PgConnection, Row};
 
-use crate::{Actor, Storage, StorageError, audit};
+use crate::account::account_conflicts;
+use crate::{AccountChange, AccountConflicts, Actor, Storage, StorageError, audit};
 
 /// What a freshly authenticated session still needs before a code is issued.
 pub enum LoginStep {
@@ -17,7 +18,12 @@ pub enum LoginStep {
     /// The user must choose a new password.
     UpdatePassword,
     /// The user must review their profile; carries the current values.
-    UpdateProfile(Profile),
+    UpdateProfile {
+        /// The stored username.
+        username: String,
+        /// The stored name and email.
+        profile: Profile,
+    },
     /// The user must verify their email address.
     VerifyEmail {
         /// User whose address is unverified.
@@ -42,8 +48,9 @@ pub struct Profile {
 pub enum ProfileUpdate {
     /// The profile was saved.
     Updated,
-    /// Another user already has this email.
-    EmailTaken,
+    /// Nothing was saved: the username or email collides, or the caller
+    /// only asked for the check.
+    Checked(AccountConflicts),
     /// The session is no longer waiting on this step.
     NotPending,
 }
@@ -198,7 +205,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, u.id AS user_id, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
+        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, u.id AS user_id, u.username, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
             configure = assigned("CONFIGURE_TOTP", "configure"),
             update_password = assigned("UPDATE_PASSWORD", "update_password"),
             verify_email = assigned("VERIFY_EMAIL", "verify_email"),
@@ -231,11 +238,14 @@ impl Storage {
             return Ok(LoginStep::UpdatePassword);
         }
         if row.try_get::<bool, _>("update_profile")? {
-            return Ok(LoginStep::UpdateProfile(Profile {
-                first_name: row.try_get("first_name")?,
-                last_name: row.try_get("last_name")?,
-                email: row.try_get("email")?,
-            }));
+            return Ok(LoginStep::UpdateProfile {
+                username: row.try_get("username")?,
+                profile: Profile {
+                    first_name: row.try_get("first_name")?,
+                    last_name: row.try_get("last_name")?,
+                    email: row.try_get("email")?,
+                },
+            });
         }
         if row.try_get::<bool, _>("verify_email")?
             && let Some(email) = row.try_get::<Option<String>, _>("email")?
@@ -396,14 +406,17 @@ impl Storage {
         Ok(deleted == 1)
     }
 
-    /// Saves a reviewed profile, completes UPDATE_PROFILE and settles the
-    /// session. A changed email becomes unverified, and in a realm that
-    /// verifies email the user must then verify it.
+    /// Checks a reviewed profile against other users like an account
+    /// update; if nothing collides and `apply` is set, saves it with the
+    /// username, completes UPDATE_PROFILE and settles the session. A changed
+    /// email becomes unverified, and in a realm that verifies email the user
+    /// must then verify it.
     pub async fn update_profile_step(
         &self,
         realm_id: &str,
         session_id: &str,
-        profile: &Profile,
+        change: &AccountChange<'_>,
+        apply: bool,
     ) -> Result<ProfileUpdate, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
@@ -411,9 +424,19 @@ impl Storage {
             tx.commit().await?;
             return Ok(ProfileUpdate::NotPending);
         };
-        if !save_profile(conn, realm_id, &user, profile, true).await? {
+        let conflicts = account_conflicts(conn, realm_id, &user, change).await?;
+        if !apply || conflicts.any() {
             tx.commit().await?;
-            return Ok(ProfileUpdate::EmailTaken);
+            return Ok(ProfileUpdate::Checked(conflicts));
+        }
+        sqlx::query("UPDATE users SET username = $3, username_normalized = $3 WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(&user)
+            .bind(change.saved_username.to_lowercase())
+            .execute(&mut *conn)
+            .await?;
+        if !save_profile(conn, realm_id, &user, &change.profile, true).await? {
+            return Err(StorageError::InvalidInput);
         }
         settle_session(conn, realm_id, session_id).await?;
         tx.commit().await?;
