@@ -14,10 +14,12 @@ use serde::Deserialize;
 use super::{OidcState, cookie};
 use crate::locale::{self, PageLocale};
 
-/// The `kc_locale` query parameter of a login-actions URL.
+/// The `kc_locale` query parameter of a login-actions URL, and the pick an
+/// emailed link's pages carry onwards in `picked_locale`.
 #[derive(Deserialize)]
 pub(super) struct LocaleQuery {
     kc_locale: Option<String>,
+    picked_locale: Option<String>,
 }
 
 /// Keeps a `kc_locale` pick for the rest of the request when the realm is
@@ -118,6 +120,93 @@ pub(super) async fn link_page(
         ..state
     };
     Ok((PageLocale::login(&state, headers), cookie))
+}
+
+/// The locale of a page outside any login, such as an error page: the
+/// realm's, read from this browser's cookie and headers.
+pub(super) async fn realm_page(
+    s: &OidcState,
+    realm_id: &str,
+    headers: &HeaderMap,
+) -> Result<PageLocale, ()> {
+    let state = s.storage.realm_locale(realm_id).await.map_err(|_| ())?;
+    Ok(PageLocale::login(&state, headers))
+}
+
+/// The locales of a page an emailed link opens outside its login.
+pub(super) struct TokenPage {
+    /// The page's locale, which reads the user's.
+    pub(super) page: PageLocale,
+    /// The locale of a heading the reference formats before it knows the
+    /// user.
+    pub(super) anonymous: PageLocale,
+    /// The cookie a new `kc_locale` pick sets.
+    pub(super) picked: Option<String>,
+    /// The pick in force, which the page's onward links carry.
+    pub(super) requested: Option<String>,
+}
+
+impl TokenPage {
+    /// The query suffix that carries the pick onwards.
+    pub(super) fn carried(&self) -> String {
+        self.requested
+            .as_deref()
+            .map(|tag| format!("&picked_locale={tag}"))
+            .unwrap_or_default()
+    }
+}
+
+/// The locales of a page an emailed link opens outside its login. The
+/// reference keeps a `kc_locale` pick in the authentication session the
+/// link starts in this browser; here the page's onward links carry it in
+/// `picked_locale`. The pick comes before the user's locale.
+pub(super) async fn token_page(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    user_locale: Option<&str>,
+    query: &LocaleQuery,
+    headers: &HeaderMap,
+) -> Result<TokenPage, ()> {
+    let state = s.storage.realm_locale(realm_id).await.map_err(|_| ())?;
+    let enabled = state.settings.internationalization_enabled;
+    let acceptable = |picked: &&str| enabled && locale::acceptable_pick(picked);
+    let new = query.kc_locale.as_deref().filter(acceptable);
+    let requested = new
+        .or(query.picked_locale.as_deref().filter(acceptable))
+        .map(str::to_owned);
+    let anonymous = LoginLocale {
+        requested: requested.clone(),
+        ..state
+    };
+    let page = LoginLocale {
+        user: user_locale.map(str::to_owned),
+        ..anonymous.clone()
+    };
+    Ok(TokenPage {
+        page: PageLocale::login(&page, headers),
+        anonymous: PageLocale::login(&anonymous, headers),
+        picked: new.map(|new| locale::cookie(&s.path_prefix, realm, new)),
+        requested,
+    })
+}
+
+/// The reference's locale required action for a user an emailed link
+/// names outside its login: as `adopt`, with the pick its page carries.
+pub(super) async fn adopt_for_token(
+    s: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    token_hash: &[u8],
+    requested: Option<&str>,
+    headers: &HeaderMap,
+) -> Result<Option<String>, ()> {
+    let update = s
+        .storage
+        .apply_token_locale(realm_id, token_hash, requested)
+        .await
+        .map_err(|_| ())?;
+    Ok(update.and_then(|update| adopted_cookie(s, realm, update, headers)))
 }
 
 /// The reference's locale required action for a user an emailed link

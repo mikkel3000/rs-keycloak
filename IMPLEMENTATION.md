@@ -1180,6 +1180,56 @@ the manual-entry steps without a QR code, and re-showing it draws a new
 key, where the reference keeps the first; realm localization texts, the
 `loginWithEmailAllowed` setting and themes other than the pinned default
 are not implemented; a login continued from the page after a sent email
-keeps the pick, where the reference's fork has none; the other
-action-token pages (the action list, email confirmation, account
-updated, expired link), logout and error pages stay English.
+keeps the pick, where the reference's fork has none; logout pages stay
+English, see "Info and error pages".
+
+## Info and error pages
+
+The pages an emailed link opens outside its login, and the error pages of
+refused authorizations, show the pinned theme's `info.ftl` and
+`error.ftl` texts, as recorded in
+`tests/reference/login-info-page-observations.json` and read from the
+pinned source (`ExecuteActionsActionTokenHandler`,
+`VerifyEmailActionTokenHandler`, `LoginActionsService.handleActionToken`
+and `detachedInfo`, `DetachedInfoStateChecker`, `MessageFormatterMethod`):
+
+- An admin-sent link lists its actions under `confirmExecutionOfActions`
+  with a `proceedWithAction` link; its pages read a `kc_locale` pick, then
+  the user's locale, the cookie, `Accept-Language` and the realm default.
+  The reference keeps the pick in the authentication session the link
+  starts in this browser; here the page's onward links carry it in
+  `picked_locale`, so another browser does not see it. The password form
+  then runs the locale action, which makes the pick the user's locale, and
+  ends on `accountUpdatedTitle` and `accountUpdatedMessage`.
+- A verification link shows `confirmEmailAddressVerification`, then
+  verifies and ends on the same account-updated page; an already verified
+  address shows `emailVerifiedAlreadyMessage` with a back link. Their
+  headings use the locale without the user's own, as the reference formats
+  them before it knows the user, and are read again as a message pattern,
+  as `info.ftl` passes them to `msg`, so French `l''adresse` shows as
+  `ladresse`.
+- A used or expired key shows `expiredActionMessage` with a link back to
+  the account console; a key never issued shows `invalidCodeMessage`. An
+  unknown client, a bearer-only client and an unregistered redirect URI
+  of an authorization show `clientNotFoundMessage`, `bearerOnlyMessage`
+  (403) and `invalidParameterMessage`. These pages skip the user's locale
+  and the client's `ui_locales`, as the reference shows them before a
+  login exists.
+- Pages without a login to re-show them from link their languages to
+  `login-actions/detached-info` with a fresh `kc_state_checker`, and set
+  the `KC_STATE_CHECKER` cookie (path of the realm, 300 seconds, strict)
+  that holds the message, as the reference does. The cookie is sealed with
+  an HMAC key derived by HKDF from the signing key, where the reference
+  signs it with the realm's HMAC key, so every instance with the same
+  signing key accepts it. A state that matches neither the cookie's
+  current nor rendered state shows `expiredActionTokenNoSessionMessage`.
+
+`tests/public/login_info_pages_contract.py` checks these pages, each test
+under 200 ms.
+
+Remaining differences: the detached page keeps a back link as a URL,
+where the reference keeps the client and re-checks it; the action list
+offers only UPDATE_PASSWORD, as before; a key past its lifespan shows
+`expiredActionMessage`, where the reference's expiry check shows
+`expiredActionTokenNoSessionMessage`, and once its row is purged it reads
+as never issued.

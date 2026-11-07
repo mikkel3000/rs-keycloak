@@ -1,6 +1,8 @@
 //! Single-use action tokens sent by email, stored only as digests.
 
-use crate::{Storage, StorageError};
+use sqlx::Row;
+
+use crate::{Storage, StorageError, UserLocaleUpdate};
 
 /// What a redeemed password token was bound to.
 pub struct RedeemedToken {
@@ -20,6 +22,18 @@ pub struct ActionToken {
     pub from_login: bool,
     /// The login request the token was requested from, if any.
     pub authorization_request_id: Option<String>,
+    /// The user's stored locale.
+    pub user_locale: Option<String>,
+}
+
+/// What an action token digest names.
+pub enum TokenLookup {
+    /// Unused and unexpired, for an enabled user.
+    Live(ActionToken),
+    /// Issued, but used or expired.
+    Spent,
+    /// Never issued, removed, or for a disabled user.
+    Unknown,
 }
 
 impl Storage {
@@ -47,27 +61,70 @@ impl Storage {
         Ok(issued == 1)
     }
 
-    /// Returns an unused, unexpired action token of an enabled user.
+    /// Looks up an action token of an enabled user.
     pub async fn action_token(
         &self,
         realm_id: &str,
         token_hash: &[u8],
-    ) -> Result<Option<ActionToken>, StorageError> {
+    ) -> Result<TokenLookup, StorageError> {
         if token_hash.len() != 32 {
-            return Ok(None);
+            return Ok(TokenLookup::Unknown);
         }
         let mut tx = self.begin_request(true).await?;
-        let row: Option<(String, Vec<String>, Option<String>)> = sqlx::query_as("SELECT t.user_id, t.actions, t.authorization_request_id FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND t.used_at IS NULL AND t.expires_at > clock_timestamp() AND u.enabled")
+        let row = sqlx::query("SELECT t.user_id, t.actions, t.authorization_request_id, u.locale, t.used_at IS NULL AND t.expires_at > clock_timestamp() AS live FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND u.enabled")
             .bind(token_hash).bind(realm_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(
-            row.map(|(user_id, actions, authorization_request_id)| ActionToken {
-                user_id,
-                actions,
-                from_login: authorization_request_id.is_some(),
-                authorization_request_id,
-            }),
-        )
+        let Some(row) = row else {
+            return Ok(TokenLookup::Unknown);
+        };
+        if !row.try_get::<bool, _>("live")? {
+            return Ok(TokenLookup::Spent);
+        }
+        let authorization_request_id: Option<String> = row.try_get("authorization_request_id")?;
+        Ok(TokenLookup::Live(ActionToken {
+            user_id: row.try_get("user_id")?,
+            actions: row.try_get("actions")?,
+            from_login: authorization_request_id.is_some(),
+            authorization_request_id,
+            user_locale: row.try_get("locale")?,
+        }))
+    }
+
+    /// Makes a token's user's locale `requested` when it differs, as the
+    /// reference's locale required action does; returns both values, or
+    /// `None` for an unknown token.
+    pub async fn apply_token_locale(
+        &self,
+        realm_id: &str,
+        token_hash: &[u8],
+        requested: Option<&str>,
+    ) -> Result<Option<UserLocaleUpdate>, StorageError> {
+        if requested.is_some_and(|locale| locale.is_empty() || locale.len() > 255) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let conn = tx.connection();
+        let row: Option<(String, Option<String>)> = sqlx::query_as("SELECT u.id, u.locale FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 FOR UPDATE OF u")
+            .bind(token_hash).bind(realm_id).fetch_optional(&mut *conn).await?;
+        let Some((user, previous)) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if let Some(requested) = requested
+            && previous.as_deref() != Some(requested)
+        {
+            sqlx::query("UPDATE users SET locale = $3 WHERE realm_id = $1 AND id = $2")
+                .bind(realm_id)
+                .bind(&user)
+                .bind(requested)
+                .execute(&mut *conn)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(Some(UserLocaleUpdate {
+            requested: requested.map(str::to_owned),
+            previous,
+        }))
     }
 
     /// Uses an UPDATE_PASSWORD token once: replaces the user's password and
@@ -157,17 +214,31 @@ impl Storage {
             return Ok(VerifyLink::Unknown);
         }
         let mut tx = self.begin_request(true).await?;
-        let row: Option<(Option<String>, bool, bool, bool)> = sqlx::query_as("SELECT t.authorization_request_id, t.used_at IS NOT NULL, t.expires_at > clock_timestamp(), u.email_verified FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND 'VERIFY_EMAIL' = ANY(t.actions) AND u.enabled")
+        let row = sqlx::query("SELECT t.authorization_request_id, t.used_at IS NULL AND t.expires_at > clock_timestamp() AS live, u.email_verified, u.email, u.locale FROM action_tokens t JOIN users u ON u.realm_id = t.realm_id AND u.id = t.user_id WHERE t.token_hash = $1 AND t.realm_id = $2 AND 'VERIFY_EMAIL' = ANY(t.actions) AND u.enabled")
             .bind(token_hash).bind(realm_id).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(match row {
-            None => VerifyLink::Unknown,
-            Some((_, _, _, true)) => VerifyLink::AlreadyVerified,
-            Some((_, true, _, false) | (_, false, false, false)) => VerifyLink::Unknown,
-            Some((request, false, true, false)) => VerifyLink::Live {
-                authorization_request_id: request,
+        let Some(row) = row else {
+            return Ok(VerifyLink::Unknown);
+        };
+        let user = LinkUser {
+            email: row
+                .try_get::<Option<String>, _>("email")?
+                .unwrap_or_default(),
+            locale: row.try_get("locale")?,
+        };
+        Ok(
+            match (
+                row.try_get::<bool, _>("email_verified")?,
+                row.try_get::<bool, _>("live")?,
+            ) {
+                (true, _) => VerifyLink::AlreadyVerified(user),
+                (false, false) => VerifyLink::Unknown,
+                (false, true) => VerifyLink::Live {
+                    authorization_request_id: row.try_get("authorization_request_id")?,
+                    user,
+                },
             },
-        })
+        )
     }
 
     /// Uses a verification link once: marks the email verified, clears
@@ -197,15 +268,25 @@ impl Storage {
     }
 }
 
+/// What an email-verification link's pages show of its user.
+pub struct LinkUser {
+    /// The address to verify.
+    pub email: String,
+    /// The user's stored locale.
+    pub locale: Option<String>,
+}
+
 /// The state of an email-verification link.
 pub enum VerifyLink {
     /// Usable; bound to the login request it was sent from, if any.
     Live {
         /// Login request to continue in the same browser.
         authorization_request_id: Option<String>,
+        /// What the link's pages show of its user.
+        user: LinkUser,
     },
     /// The user's address is already verified.
-    AlreadyVerified,
+    AlreadyVerified(LinkUser),
     /// Unknown, expired or used without verifying.
     Unknown,
 }

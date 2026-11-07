@@ -17,7 +17,7 @@ mod sso;
 mod user_admin;
 
 pub use account::{AccountApplication, AccountChange, AccountConflicts, AccountSession};
-pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
+pub use action_tokens::{ActionToken, LinkUser, RedeemedToken, TokenLookup, VerifyLink};
 pub use client_admin::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
 };

@@ -10,6 +10,7 @@ mod introspection;
 mod login_locale;
 mod login_steps;
 mod logout;
+mod notice;
 mod reset_credentials;
 mod revocation;
 
@@ -167,6 +168,10 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/action-token",
             get(action_token::show).post(action_token::submit),
+        )
+        .route(
+            "/realms/{realm}/login-actions/detached-info",
+            get(notice::detached_info),
         )
         .route(
             "/realms/{realm}/protocol/openid-connect/token",
@@ -369,24 +374,31 @@ async fn authorize(
         Ok(None) => return failure(),
         Err(_) => return unavailable(),
     };
+    // The reference refuses these before a login exists, so its error
+    // pages skip the client's ui_locales.
+    let refuse = async |status, key, args: &[&str]| {
+        let notice = notice::Notice::error(status, key).with_args(args);
+        notice::error_page(&s, &realm, &realm_id, &headers, &notice).await
+    };
     let rules = match s.storage.redirect_rules(&realm_id, &q.client_id).await {
         Ok(Some(rules)) => rules,
-        Ok(None) => return failure(),
+        Ok(None) => return refuse(StatusCode::BAD_REQUEST, "clientNotFoundMessage", &[]).await,
         Err(_) => return unavailable(),
     };
     if rules.bearer_only {
-        return plain_page(
-            StatusCode::FORBIDDEN,
-            "Error",
-            "<p>Bearer-only applications are not allowed to initiate browser login.</p>",
-        );
+        return refuse(StatusCode::FORBIDDEN, "bearerOnlyMessage", &[]).await;
     }
     let server = s.issuer_base.trim_end_matches('/');
     let Some(registered) = rules.redirect_uris.iter().find(|registered| {
         resolve_redirect(registered, rules.root_url.as_deref(), server)
             .is_some_and(|resolved| redirect_matches(&resolved, &q.redirect_uri))
     }) else {
-        return failure();
+        return refuse(
+            StatusCode::BAD_REQUEST,
+            "invalidParameterMessage",
+            &["redirect_uri"],
+        )
+        .await;
     };
     let Some(scope) = granted_login_scope(&q.scope) else {
         // The redirect URI is verified, so the error can go back to the client.
@@ -758,12 +770,6 @@ async fn complete_login(
         }
     }
     response
-}
-
-/// Renders an English page with the login pages' security headers and no
-/// cookies.
-fn plain_page(status: StatusCode, title: &str, body: &str) -> Response {
-    page(status, &PageLocale::english(), title, body)
 }
 
 /// Renders a page in a locale with the login pages' security headers and no

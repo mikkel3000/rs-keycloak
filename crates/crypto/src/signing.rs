@@ -9,6 +9,7 @@ use ring::rand::SystemRandom;
 use ring::signature::{
     KeyPair, RSA_PKCS1_2048_8192_SHA256, RSA_PKCS1_SHA256, RsaKeyPair, UnparsedPublicKey,
 };
+use ring::{hkdf, hmac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use spki::SubjectPublicKeyInfoRef;
@@ -24,6 +25,9 @@ pub struct SigningKey {
     n: String,
     e: String,
     public_key_info: String,
+    /// Authenticates state handed to browsers; derived from the private key
+    /// so every instance holding the key accepts it.
+    state_key: hmac::Key,
 }
 
 /// Public JSON Web Key for the active signing key.
@@ -188,12 +192,18 @@ impl SigningKey {
             subject_public_key: BitStringRef::from_bytes(public_der).map_err(|_| SigningError)?,
         };
         let public_key_info = STANDARD.encode(info.to_der().map_err(|_| SigningError)?);
+        let state_key = hkdf::Salt::new(hkdf::HKDF_SHA256, b"rs-keycloak")
+            .extract(der)
+            .expand(&[b"browser state"], hmac::HMAC_SHA256)
+            .map_err(|_| SigningError)?
+            .into();
         Ok(Self {
             key,
             key_id,
             n,
             e,
             public_key_info,
+            state_key,
         })
     }
 
@@ -207,6 +217,18 @@ impl SigningKey {
             n: self.n.clone(),
             e: self.e.clone(),
         }
+    }
+
+    /// The base64url tag that authenticates state handed to a browser.
+    pub fn seal_state(&self, state: &[u8]) -> String {
+        URL_SAFE_NO_PAD.encode(hmac::sign(&self.state_key, state))
+    }
+
+    /// Whether `tag` is the tag `seal_state` gives `state`.
+    pub fn state_is_sealed(&self, state: &[u8], tag: &str) -> bool {
+        URL_SAFE_NO_PAD
+            .decode(tag)
+            .is_ok_and(|tag| hmac::verify(&self.state_key, state, &tag).is_ok())
     }
 
     /// The key identifier published in the JWKS.
