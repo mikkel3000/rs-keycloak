@@ -19,6 +19,7 @@ import sys
 import urllib.parse
 
 import oauth
+from execute_actions import mail_summary
 from otp import Forms, totp
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
@@ -191,6 +192,14 @@ def run(base, bootstrap_secret, record=False):
                     observations['switch/reset/to-fr'] = shown(switched, browser)
                     login = new_user('i18n', 'reset-de')
                     observations['reset-sent/i18n/fr'] = shown(browser.submit(switched, {'username': login}), browser)
+                    # The emailed link, opened in the same browser.
+                    _, link = mail_summary(sink.wait(1)[-1], base, names['i18n'])
+                    href = urllib.parse.urlsplit(link)
+                    page = browser.send(href.path + '?' + href.query)
+                    observations['reset-link/i18n/de'] = shown(page, browser)
+                    response = browser.submit(page, {'password-new': 'one', 'password-confirm': 'two'})
+                    observations['reset-link-mismatch/i18n/de'] = shown(response, browser)
+                    observations['switch/reset-link/to-fr'] = shown(browser.follow(response, 'fr'), browser)
             browser = Browser('off')
             page = browser.authorize('de')
             forgot = re.search(r'href="([^"]*/login-actions/reset-credentials[^"]*)"', page[2].decode()).group(1).replace('&amp;', '&')
