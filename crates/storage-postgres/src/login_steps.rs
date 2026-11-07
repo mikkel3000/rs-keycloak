@@ -12,7 +12,12 @@ pub enum LoginStep {
     /// Every step has passed.
     Complete,
     /// The user must enter a code for this OTP credential.
-    VerifyTotp(OtpCredential),
+    VerifyTotp {
+        /// The credential to check the code against.
+        credential: OtpCredential,
+        /// The signed-in user's username, which the code page shows.
+        username: String,
+    },
     /// The user must set up TOTP.
     ConfigureTotp,
     /// The user must choose a new password.
@@ -224,12 +229,15 @@ impl Storage {
             && !configure
             && !row.try_get::<bool, _>("otp_verified")?
         {
-            return Ok(LoginStep::VerifyTotp(OtpCredential {
-                id,
-                sealed: row.try_get("secret_data")?,
-                key_id: row.try_get("secret_key_id")?,
-                last_step: row.try_get("otp_last_step")?,
-            }));
+            return Ok(LoginStep::VerifyTotp {
+                credential: OtpCredential {
+                    id,
+                    sealed: row.try_get("secret_data")?,
+                    key_id: row.try_get("secret_key_id")?,
+                    last_step: row.try_get("otp_last_step")?,
+                },
+                username: row.try_get("username")?,
+            });
         }
         if configure {
             return Ok(LoginStep::ConfigureTotp);

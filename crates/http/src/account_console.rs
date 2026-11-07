@@ -7,7 +7,7 @@
 //! Follows `tests/reference/account-console-observations.json`. Without the
 //! setting, every route here answers 404 and account routes stay JSON only.
 
-mod properties;
+pub(crate) mod properties;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};

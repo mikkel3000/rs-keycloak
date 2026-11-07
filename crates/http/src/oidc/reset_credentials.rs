@@ -15,10 +15,10 @@ use serde::Deserialize;
 use zeroize::Zeroizing;
 
 use super::consent::escape;
-use super::login_locale;
+use super::login_locale::{self, LocaleQuery};
 use super::{
-    LoginNotice, OidcState, Rejection, csrf, digest, failure, login_page, random_token, step_page,
-    unavailable, valid_realm,
+    Frame, LoginNotice, OidcState, Rejection, csrf, digest, failure, field_error, login_page,
+    random_token, step_page, unavailable, valid_realm,
 };
 
 /// Lifespan of a user-requested link, as Keycloak's default (5 minutes).
@@ -61,36 +61,71 @@ async fn bound(
     }
 }
 
-/// Shows the forgot-password form.
+/// Renders the forgot-password form, with the missing-username error after
+/// an empty request, as the reference does.
+async fn reset_form(
+    s: &OidcState,
+    realm: &str,
+    bound: &Bound,
+    headers: &HeaderMap,
+    missing: bool,
+) -> Response {
+    let Ok(locale) = login_locale::page(s, &bound.realm_id, &bound.request_id, headers).await
+    else {
+        return unavailable();
+    };
+    let texts = &locale.messages;
+    let prefix = escape(&s.path_prefix);
+    let request_id = &bound.request_id;
+    let error = if missing {
+        field_error("username", &texts.html("missingUsernameMessage", &[]))
+    } else {
+        String::new()
+    };
+    let body = format!(
+        "<form id=\"kc-reset-password-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required>{error}<button>{submit}</button></form><p><a href=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\">{back}</a></p><p>{instruction}</p>",
+        username = texts.html(locale.username_key(), &[]),
+        submit = texts.html("doSubmit", &[]),
+        back = texts.html("backToLogin", &[]),
+        instruction = texts.html("emailInstruction", &[]),
+    );
+    let frame = Frame {
+        heading: texts.text("emailForgotTitle", &[]),
+        switch: format!(
+            "{}/realms/{realm}/login-actions/reset-credentials?request={request_id}&kc_locale=",
+            s.path_prefix
+        ),
+    };
+    step_page(&s.path_prefix, realm, &bound.csrf, &locale, &frame, &body)
+}
+
+/// Shows the forgot-password form, after a language link's `kc_locale`
+/// pick.
 pub(super) async fn form(
     State(s): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    Query(locale_query): Query<LocaleQuery>,
     headers: HeaderMap,
 ) -> Response {
-    let Bound {
-        realm_id,
-        request_id,
-        csrf,
-    } = match bound(&s, &realm, &params, &headers).await {
+    let bound = match bound(&s, &realm, &params, &headers).await {
         Ok(bound) => bound,
         Err(rejection) => return rejection.into_response(),
     };
-    let Ok(locale) = login_locale::page(&s, &realm_id, &request_id, &headers).await else {
-        return unavailable();
-    };
-    let body = format!(
-        "<h1>Forgot your password?</h1><form id=\"kc-reset-password-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\"><label>Username or email <input name=\"username\" autocomplete=\"username\" required></label><button>Submit</button></form>",
-        prefix = escape(&s.path_prefix),
-    );
-    step_page(
-        &s.path_prefix,
+    let picked = match login_locale::pick(
+        &s,
         &realm,
-        &csrf,
-        &locale,
-        "Forgot your password?",
-        &body,
+        &bound.realm_id,
+        &bound.request_id,
+        &locale_query,
     )
+    .await
+    {
+        Ok(picked) => picked,
+        Err(()) => return unavailable(),
+    };
+    let response = reset_form(&s, &realm, &bound, &headers, false).await;
+    login_locale::with_cookie(response, picked)
 }
 
 #[derive(Deserialize)]
@@ -107,11 +142,7 @@ pub(super) async fn request(
     headers: HeaderMap,
     Form(form): Form<ResetForm>,
 ) -> Response {
-    let Bound {
-        realm_id,
-        request_id,
-        csrf,
-    } = match bound(&s, &realm, &params, &headers).await {
+    let bound = match bound(&s, &realm, &params, &headers).await {
         Ok(bound) => bound,
         Err(rejection) => return rejection.into_response(),
     };
@@ -121,7 +152,24 @@ pub(super) async fn request(
         Err(_) => return unavailable(),
     };
     let name = form.username.trim();
-    if name.is_empty() || name.len() > 255 {
+    if name.is_empty() {
+        return reset_form(&s, &realm, &bound, &headers, true).await;
+    }
+    let Bound {
+        realm_id,
+        request_id,
+        csrf,
+    } = bound;
+    // The reference answers from a fork of the login, which keeps the
+    // client's ui_locales but not a kc_locale pick.
+    if s.storage
+        .forget_request_locale(&realm_id, &request_id)
+        .await
+        .is_err()
+    {
+        return unavailable();
+    }
+    if name.len() > 255 {
         return login_page(
             &s,
             &realm,

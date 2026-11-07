@@ -22,6 +22,7 @@ use crate::client_auth::{
     self, ClientAuthResult, ClientAuthenticator, InvalidClientAuthentication,
 };
 use crate::locale::PageLocale;
+use crate::login_theme::escape;
 use axum::extract::rejection::FormRejection;
 use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -133,7 +134,7 @@ pub fn router(state: OidcState) -> Router {
         )
         .route(
             "/realms/{realm}/login-actions/authenticate/{request_id}",
-            post(authenticate),
+            get(reshow).post(authenticate),
         )
         .route(
             "/realms/{realm}/login-actions/consent/{request_id}",
@@ -526,33 +527,88 @@ async fn login_page(
     let reset_allowed = record
         .as_ref()
         .is_some_and(|record| record.reset_password_allowed);
-    // The page names the realm by its display name, as the reference does.
-    let shown = consent::escape(
-        record
-            .as_ref()
-            .and_then(|record| record.display_name.as_deref())
-            .filter(|name| !name.is_empty())
-            .unwrap_or(realm),
-    );
-    let prefix = consent::escape(&s.path_prefix);
-    let message = match notice {
-        LoginNotice::None => "",
-        LoginNotice::Failed => "<p role=\"alert\">Invalid username or password.</p>",
-        LoginNotice::EmailSent => {
-            "<p role=\"status\">You should receive an email shortly with further instructions.</p>"
-        }
+    let prefix = escape(&s.path_prefix);
+    let texts = &locale.messages;
+    // A failed attempt marks the username field, as the reference does.
+    let (message, error) = match notice {
+        LoginNotice::None => (String::new(), String::new()),
+        LoginNotice::Failed => (
+            String::new(),
+            field_error("username", &texts.html("invalidUserMessage", &[])),
+        ),
+        LoginNotice::EmailSent => (
+            notice_message("status", &texts.html("emailSentMessage", &[])),
+            String::new(),
+        ),
     };
     let reset = if reset_allowed {
         format!(
-            "<p><a href=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\">Forgot Password?</a></p>"
+            "<p><a href=\"{prefix}/realms/{realm}/login-actions/reset-credentials?request={request_id}\">{}</a></p>",
+            texts.html("doForgotPassword", &[])
         )
     } else {
         String::new()
     };
     let body = format!(
-        "<p id=\"kc-header\">{shown}</p><h1>Sign in</h1>{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label>Username <input name=\"username\" autocomplete=\"username\" required></label><label>Password <input name=\"password\" type=\"password\" autocomplete=\"current-password\" required></label><button>Sign in</button></form>{reset}"
+        "{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required>{error}<label for=\"password\">{password}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required><button id=\"kc-login\" name=\"login\">{submit}</button></form>{reset}",
+        username = texts.html(locale.username_key(), &[]),
+        password = texts.html("password", &[]),
+        submit = texts.html("doLogIn", &[]),
     );
-    step_page(&s.path_prefix, realm, csrf, &locale, "Sign in", &body)
+    let frame = Frame {
+        heading: texts.text("loginAccountTitle", &[]),
+        switch: reshow_url(&s.path_prefix, realm, request_id),
+    };
+    step_page(&s.path_prefix, realm, csrf, &locale, &frame, &body)
+}
+
+/// Re-shows a live login's current page, after a language link's
+/// `kc_locale` pick: the password form, or once the password is checked,
+/// the session's next step, as the reference's login-actions URLs do.
+async fn reshow(
+    State(s): State<OidcState>,
+    Path((realm, request_id)): Path<(String, String)>,
+    Query(locale_query): Query<LocaleQuery>,
+    headers: HeaderMap,
+) -> Response {
+    if !valid_realm(&realm) || request_id.len() != 64 {
+        return failure();
+    }
+    let Some(csrf) = csrf(&headers).filter(|csrf| csrf.len() == 64) else {
+        return failure();
+    };
+    let csrf_hash = digest(csrf);
+    let realm_id = match s
+        .storage
+        .authorization_request_client(&request_id, &csrf_hash)
+        .await
+    {
+        Ok(Some((realm_id, _))) => realm_id,
+        Ok(None) => return failure(),
+        Err(_) => return unavailable(),
+    };
+    match s.storage.realm_id_by_name(&realm).await {
+        Ok(Some(id)) if id == realm_id => (),
+        Ok(_) => return failure(),
+        Err(_) => return unavailable(),
+    }
+    let picked = match login_locale::pick(&s, &realm, &realm_id, &request_id, &locale_query).await {
+        Ok(picked) => picked,
+        Err(()) => return unavailable(),
+    };
+    let response = match s.storage.pending_request(&request_id, &csrf_hash).await {
+        Ok(Some(pending)) => {
+            let held = login_steps::Held {
+                realm_id,
+                session_id: pending.session_id,
+                csrf: csrf.to_owned(),
+            };
+            login_steps::continue_login(&s, &realm, &request_id, &held, &headers).await
+        }
+        Ok(None) => login_page(&s, &realm, &request_id, csrf, LoginNotice::None, &headers).await,
+        Err(_) => return unavailable(),
+    };
+    login_locale::with_cookie(response, picked)
 }
 
 #[derive(Deserialize)]
@@ -724,17 +780,89 @@ fn page(status: StatusCode, locale: &PageLocale, title: &str, body: &str) -> Res
     response
 }
 
-/// Renders a login-step page (second factor, consent) that keeps the
-/// request's CSRF cookie so the page's form stays bound to this browser.
+/// What frames a login page's form: its heading, and the URL that re-shows
+/// the page once a locale tag is appended.
+struct Frame {
+    /// The heading as text.
+    heading: String,
+    /// Ends in `kc_locale=`.
+    switch: String,
+}
+
+/// The URL that re-shows a live login's current page in a locale, once the
+/// tag is appended.
+fn reshow_url(path_prefix: &str, realm: &str, request_id: &str) -> String {
+    format!("{path_prefix}/realms/{realm}/login-actions/authenticate/{request_id}?kc_locale=")
+}
+
+/// A field's error, which the reference shows below the field.
+fn field_error(field: &str, html: &str) -> String {
+    format!("<span id=\"input-error-{field}\" role=\"alert\">{html}</span>")
+}
+
+/// A message above the form; `role` is `alert` for warnings and errors,
+/// `status` for news.
+fn notice_message(role: &str, html: &str) -> String {
+    format!("<p class=\"kc-feedback-text\" role=\"{role}\">{html}</p>")
+}
+
+/// The realm's locales as links that re-show the page in each, the current
+/// one marked, as the reference's language choice lists them.
+fn language_links(locale: &PageLocale, switch: &str) -> String {
+    if locale.languages.is_empty() {
+        return String::new();
+    }
+    let links: Vec<String> = locale
+        .languages
+        .iter()
+        .map(|(tag, label)| {
+            let current = if *tag == locale.lang {
+                " aria-current=\"true\""
+            } else {
+                ""
+            };
+            let encoded =
+                percent_encoding::utf8_percent_encode(tag, percent_encoding::NON_ALPHANUMERIC);
+            format!(
+                "<a href=\"{}{encoded}\" hreflang=\"{}\"{current}>{}</a>",
+                escape(switch),
+                escape(tag),
+                escape(label)
+            )
+        })
+        .collect();
+    format!(
+        "<nav id=\"kc-locale\" aria-label=\"{}\">{}</nav>",
+        locale.messages.html("languages", &[]),
+        links.join(" ")
+    )
+}
+
+/// Renders a login page that keeps the request's CSRF cookie so the page's
+/// form stays bound to this browser. As the reference's login template
+/// does, the page is titled after the realm, names it above the heading,
+/// and offers the realm's locales when it has several.
 fn step_page(
     path_prefix: &str,
     realm: &str,
     csrf: &str,
     locale: &PageLocale,
-    title: &str,
+    frame: &Frame,
     body: &str,
 ) -> Response {
-    let mut response = page(StatusCode::OK, locale, title, body);
+    let label = if locale.realm_label.is_empty() {
+        realm
+    } else {
+        &locale.realm_label
+    };
+    let title = locale.messages.html("loginTitle", &[label]);
+    let body = format!(
+        "<p id=\"kc-header\">{}</p><h1 id=\"kc-page-title\">{}</h1>{}{body}",
+        escape(label),
+        escape(&frame.heading),
+        language_links(locale, &frame.switch)
+    );
+    let mut response = page(StatusCode::OK, locale, &title, &body);
     let headers = response.headers_mut();
     let cookie = format!(
         "rs_auth={csrf}; Path={path_prefix}/realms/{realm}/login-actions/; Max-Age=300; Secure; HttpOnly; SameSite=Strict"
@@ -803,7 +931,6 @@ async fn consent_or_code(
             request.realm,
             request.request_id,
             &pending.client_identifier,
-            &pending.scope,
             request.csrf,
             &locale,
         ))));

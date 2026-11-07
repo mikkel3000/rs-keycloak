@@ -21,6 +21,7 @@ mod account;
 pub mod account_console;
 mod admin;
 mod locale;
+mod login_theme;
 mod mail;
 mod security_headers;
 

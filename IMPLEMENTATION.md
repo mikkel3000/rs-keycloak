@@ -1118,6 +1118,60 @@ Remaining differences: the reference reaches required actions through a
 redirect and sets the locale cookie on each hop, where this server answers
 with the page, so the contract compares an exchange's locale cookies as a
 set; `kc_locale` values other than letters, digits, `-` and `_` are
-ignored, where the reference keeps them as sent; `kc_locale` on the
-forgot-password page, the SSO path and logout, and the language links of
-the reference's login theme, are not implemented; page texts stay English.
+ignored, where the reference keeps them as sent; `kc_locale` on the SSO
+path and logout is not implemented. Page texts and language links came
+later, see "Login page texts".
+
+## Login page texts
+
+The login, OTP, CONFIGURE_TOTP, UPDATE_PASSWORD, UPDATE_PROFILE,
+VERIFY_EMAIL, consent and forgot-password pages show their titles,
+headings, labels, buttons, links, messages and field errors from the pinned
+login theme, as recorded in `tests/reference/login-message-observations.json`
+and read from the pinned source (`DefaultThemeManager`, `FileBasedTheme`,
+`LocaleUtil`, `LocaleBean`, `MessageFormatterMethod`, the keycloak.v2
+templates):
+
+- The base login theme's 41 bundles are embedded from
+  `crates/http/src/login_theme`, extracted by
+  `compatibility/extract_login_messages.py` from the pinned distribution;
+  the keycloak.v2 theme on top only adds theme descriptions.
+- A page reads its locale's bundles, then its parents': a region falls
+  back to its language, a language to the realm's default locale, and that
+  to English, unless the default has the page's language. Each locale
+  reads its JDK bundle name, and `zh-CN` and `zh-TW` also `zh_Hans` and
+  `zh_Hant`. Values are Java `MessageFormat` patterns, with `''` quotes
+  and `{n}` arguments; a missing key shows as itself.
+- With internationalization on and more than one supported locale, the
+  page lists the realm's locales as links, the current one marked, labelled
+  as the theme generates them (the JDK's name in the page's language, then
+  the locale's own name) or by the tag outside the theme's locales, and
+  sorted ignoring accents and case. A link re-shows the page through
+  `login-actions/authenticate/{request}?kc_locale=<tag>` (the
+  forgot-password form through its own URL), which keeps the pick and sets
+  the cookie; once the password is checked, that URL shows the session's
+  next step. `dir` now follows the same label.
+- Pages carry the reference's messages: the required action's reminder,
+  `invalidUserMessage` on the username field, `emailSentMessage`, TOTP's
+  `missingTotpMessage` and `invalidTotpMessage`, the password's
+  `missingPasswordMessage` and `notMatchPasswordMessage`, and the profile's
+  `error-user-attribute-required`, with `missingEmailMessage` before it for
+  an empty email. An empty forgot-password request shows the form again
+  with `missingUsernameMessage`; a sent one forgets the `kc_locale` pick,
+  as the reference's forked login does. The OTP page shows the username
+  and leaves the locale cookie and user locale alone, since the reference
+  runs its locale action after authentication.
+
+`tests/public/login_messages_contract.py` checks 21 groups, the slowest in
+213 ms.
+
+Remaining differences: the language links name `authenticate`, where the
+reference names each step's login-actions path, so links are compared by
+label, selection and locale; a page in a locale outside the theme whose
+language the theme lacks (such as `eo`) takes its language labels from its
+fallback locale, where the reference asks the JDK, and the order can
+differ for scripts the JDK's collator orders otherwise; TOTP setup shows
+the manual-entry steps without a QR code, and re-showing it draws a new
+key, where the reference keeps the first; realm localization texts, the
+`loginWithEmailAllowed` setting and themes other than the pinned default
+are not implemented; action-token, logout and error pages stay English.

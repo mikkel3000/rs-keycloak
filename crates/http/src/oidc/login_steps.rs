@@ -23,8 +23,8 @@ use zeroize::Zeroizing;
 use super::consent::escape;
 use super::login_locale::{self, LocaleQuery};
 use super::{
-    OidcState, Rejection, complete_login, csrf, digest, failure, step_page, unavailable,
-    valid_realm,
+    Frame, OidcState, Rejection, complete_login, csrf, digest, failure, field_error,
+    notice_message, reshow_url, step_page, unavailable, valid_realm,
 };
 use crate::locale::PageLocale;
 
@@ -63,70 +63,146 @@ fn now() -> u64 {
         .map_or(0, |now| now.as_secs())
 }
 
+/// What a login step page's form came back with.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CodeError {
+    None,
+    /// No code was entered.
+    Missing,
+    /// The code did not match.
+    Invalid,
+}
+
+/// The login request a step page belongs to.
+#[derive(Clone, Copy)]
+struct StepRequest<'a> {
+    realm: &'a str,
+    request_id: &'a str,
+    /// The request's CSRF cookie, which the page keeps.
+    csrf: &'a str,
+}
+
+impl<'a> StepRequest<'a> {
+    fn new(realm: &'a str, request_id: &'a str, csrf: &'a str) -> Self {
+        Self {
+            realm,
+            request_id,
+            csrf,
+        }
+    }
+
+    /// Renders a step page headed by the message `heading`, whose language
+    /// links re-show the step.
+    fn page(self, s: &OidcState, locale: &PageLocale, heading: &str, body: &str) -> Response {
+        let frame = Frame {
+            heading: locale.messages.text(heading, &[]),
+            switch: reshow_url(&s.path_prefix, self.realm, self.request_id),
+        };
+        step_page(&s.path_prefix, self.realm, self.csrf, locale, &frame, body)
+    }
+}
+
+/// The checkbox that ends the user's other sessions, as the reference
+/// offers it with a new password or authenticator.
+fn logout_checkbox(locale: &PageLocale) -> String {
+    format!(
+        "<label for=\"logout-sessions\"><input id=\"logout-sessions\" name=\"logout-sessions\" type=\"checkbox\"> {}</label>",
+        locale.messages.html("logoutOtherSessions", &[])
+    )
+}
+
+/// Shows TOTP setup with the key to enter, as the reference's manual setup
+/// mode words it, since this server draws no QR code.
 fn setup_page(
     s: &OidcState,
-    realm: &str,
-    request_id: &str,
-    csrf: &str,
+    request: StepRequest<'_>,
     locale: &PageLocale,
     secret: &str,
-    error: bool,
+    error: CodeError,
 ) -> Response {
+    let (realm, request_id) = (request.realm, request.request_id);
     let prefix = escape(&s.path_prefix);
+    let texts = &locale.messages;
     let uri = format!(
         "otpauth://totp/{realm}?secret={}&digits={}&algorithm=SHA1&issuer={realm}&period={}",
         totp::base32(secret.as_bytes()),
         totp::DIGITS,
         totp::PERIOD,
     );
-    let message = if error {
-        "<p role=\"alert\">Invalid authenticator code.</p>"
-    } else {
-        ""
+    let (message, code_error) = match error {
+        CodeError::None => (
+            notice_message("alert", &texts.html("configureTotpMessage", &[])),
+            String::new(),
+        ),
+        CodeError::Missing => (
+            String::new(),
+            field_error("otp-code", &texts.html("missingTotpMessage", &[])),
+        ),
+        CodeError::Invalid => (
+            String::new(),
+            field_error("otp-code", &texts.html("invalidTotpMessage", &[])),
+        ),
     };
+    let apps: String = [
+        "totpAppFreeOTPName",
+        "totpAppMicrosoftAuthenticatorName",
+        "totpAppGoogleName",
+    ]
+    .iter()
+    .map(|app| format!("<li>{}</li>", texts.html(app, &[])))
+    .collect();
     let body = format!(
-        "<h1>Set up an authenticator</h1>{message}<p>Add this key to your authenticator app: <code>{key}</code></p><p><code>{uri}</code></p><form id=\"kc-totp-settings-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/totp-setup/{request_id}\"><label>One-time code <input name=\"totp\" type=\"text\" autocomplete=\"one-time-code\" required></label><input type=\"hidden\" name=\"totpSecret\" value=\"{secret}\"><label>Device name <input name=\"userLabel\" type=\"text\"></label><label><input name=\"logout-sessions\" type=\"checkbox\"> Sign out other devices</label><button>Submit</button></form>",
+        "{message}<ol><li>{step1}<ul>{apps}</ul></li><li>{step2} <code>{key}</code></li><li>{step3}<ul><li>{type_label}: {type_value}</li><li>{algorithm}: SHA1</li><li>{digits}: {digit_count}</li><li>{interval}: {period}</li></ul><p><code>{uri}</code></p></li><li>{finish} {device}</li></ol><form id=\"kc-totp-settings-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/totp-setup/{request_id}\"><label for=\"totp\">{code_label}</label><input id=\"totp\" name=\"totp\" type=\"text\" autocomplete=\"one-time-code\" required>{code_error}<input type=\"hidden\" name=\"totpSecret\" value=\"{secret}\"><label for=\"userLabel\">{device_label}</label><input id=\"userLabel\" name=\"userLabel\" type=\"text\">{logout}<button id=\"saveTOTPBtn\">{submit}</button></form>",
+        step1 = texts.html("loginTotpStep1", &[]),
+        step2 = texts.html("loginTotpManualStep2", &[]),
         key = totp::base32(secret.as_bytes()),
+        step3 = texts.html("loginTotpManualStep3", &[]),
+        type_label = texts.html("loginTotpType", &[]),
+        type_value = texts.html("loginTotp.totp", &[]),
+        algorithm = texts.html("loginTotpAlgorithm", &[]),
+        digits = texts.html("loginTotpDigits", &[]),
+        digit_count = totp::DIGITS,
+        interval = texts.html("loginTotpInterval", &[]),
+        period = totp::PERIOD,
         uri = escape(&uri),
+        finish = texts.html("loginTotpStep3", &[]),
+        device = texts.html("loginTotpStep3DeviceName", &[]),
+        code_label = texts.html("authenticatorCode", &[]),
         secret = escape(secret),
+        device_label = texts.html("loginTotpDeviceName", &[]),
+        logout = logout_checkbox(locale),
+        submit = texts.html("doSubmit", &[]),
     );
-    step_page(
-        &s.path_prefix,
-        realm,
-        csrf,
-        locale,
-        "Set up an authenticator",
-        &body,
-    )
+    request.page(s, locale, "loginTotpTitle", &body)
 }
 
+/// Asks for the code of the user's authenticator, below the username they
+/// signed in with, as the reference's OTP form does.
 fn code_page(
     s: &OidcState,
-    realm: &str,
-    request_id: &str,
-    csrf: &str,
+    request: StepRequest<'_>,
     locale: &PageLocale,
     credential_id: &str,
+    username: &str,
     error: bool,
 ) -> Response {
+    let (realm, request_id) = (request.realm, request.request_id);
     let prefix = escape(&s.path_prefix);
-    let message = if error {
-        "<p role=\"alert\">Invalid authenticator code.</p>"
+    let texts = &locale.messages;
+    let code_error = if error {
+        field_error("otp", &texts.html("invalidTotpMessage", &[]))
     } else {
-        ""
+        String::new()
     };
     let body = format!(
-        "<h1>Enter your one-time code</h1>{message}<form id=\"kc-otp-login-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/otp/{request_id}\"><input type=\"hidden\" name=\"selectedCredentialId\" value=\"{credential}\"><label>One-time code <input name=\"otp\" type=\"text\" autocomplete=\"one-time-code\" required></label><button>Sign in</button></form>",
+        "<label for=\"username\">{username_label}</label><input id=\"username\" value=\"{username}\" readonly><form id=\"kc-otp-login-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/otp/{request_id}\"><input type=\"hidden\" name=\"selectedCredentialId\" value=\"{credential}\"><label for=\"otp\">{code_label}</label><input id=\"otp\" name=\"otp\" type=\"text\" autocomplete=\"one-time-code\" required>{code_error}<button id=\"kc-login\" name=\"login\">{submit}</button></form>",
+        username_label = texts.html(locale.username_key(), &[]),
+        username = escape(username),
         credential = escape(credential_id),
+        code_label = texts.html("loginOtpOneTime", &[]),
+        submit = texts.html("doLogIn", &[]),
     );
-    step_page(
-        &s.path_prefix,
-        realm,
-        csrf,
-        locale,
-        "Enter your one-time code",
-        &body,
-    )
+    request.page(s, locale, "doLogIn", &body)
 }
 
 /// Holds a password-authenticated request for its next step.
@@ -153,11 +229,10 @@ async fn hold(
         Ok(locale) => locale,
         Err(()) => return unavailable(),
     };
+    let request = StepRequest::new(realm, request_id, csrf);
     match step {
-        LoginStep::ConfigureTotp => {
-            setup_page(s, realm, request_id, csrf, &locale, &new_secret(), false)
-        }
-        LoginStep::UpdatePassword => password_page(s, realm, request_id, csrf, &locale, false),
+        LoginStep::ConfigureTotp => setup_page(s, request, &locale, &new_secret(), CodeError::None),
+        LoginStep::UpdatePassword => password_page(s, request, &locale, PasswordError::None),
         LoginStep::UpdateProfile { username, profile } => {
             let shown = Shown {
                 username,
@@ -165,18 +240,17 @@ async fn hold(
                 errors: &[],
             };
             match s.storage.user_settings(&held.realm_id).await {
-                Ok(settings) => {
-                    profile_page(s, realm, request_id, csrf, &locale, &settings, &shown)
-                }
+                Ok(settings) => profile_page(s, request, &locale, &settings, &shown),
                 Err(_) => unavailable(),
             }
         }
         LoginStep::VerifyEmail { user_id, email } => {
-            verify_email_page(s, realm, request_id, csrf, &locale, user_id, email).await
+            verify_email_page(s, request, &locale, user_id, email).await
         }
-        LoginStep::VerifyTotp(credential) => {
-            code_page(s, realm, request_id, csrf, &locale, &credential.id, false)
-        }
+        LoginStep::VerifyTotp {
+            credential,
+            username,
+        } => code_page(s, request, &locale, &credential.id, username, false),
         LoginStep::Complete => failure(),
     }
 }
@@ -281,8 +355,12 @@ async fn verify_code(
     headers: &HeaderMap,
     form: CodeForm,
 ) -> Response {
-    let credential = match s.storage.login_step(&held.realm_id, &held.session_id).await {
-        Ok(LoginStep::VerifyTotp(credential)) => credential,
+    let (credential, username) = match s.storage.login_step(&held.realm_id, &held.session_id).await
+    {
+        Ok(LoginStep::VerifyTotp {
+            credential,
+            username,
+        }) => (credential, username),
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
     };
@@ -318,11 +396,10 @@ async fn verify_code(
         Ok(false) => match shown_locale(s, held, request_id, headers).await {
             Ok(locale) => code_page(
                 s,
-                realm,
-                request_id,
-                &held.csrf,
+                StepRequest::new(realm, request_id, &held.csrf),
                 &locale,
                 &credential.id,
+                &username,
                 true,
             ),
             Err(()) => unavailable(),
@@ -390,8 +467,19 @@ async fn set_up_totp(
     let Some(step) = totp::verify(secret.as_bytes(), form.totp.trim(), now(), None)
         .and_then(|step| i64::try_from(step).ok())
     else {
+        let error = if form.totp.trim().is_empty() {
+            CodeError::Missing
+        } else {
+            CodeError::Invalid
+        };
         return match shown_locale(s, held, request_id, headers).await {
-            Ok(locale) => setup_page(s, realm, request_id, &held.csrf, &locale, &secret, true),
+            Ok(locale) => setup_page(
+                s,
+                StepRequest::new(realm, request_id, &held.csrf),
+                &locale,
+                &secret,
+                error,
+            ),
             Err(()) => unavailable(),
         };
     };
@@ -440,7 +528,8 @@ async fn set_up_totp(
 /// Applies the user's locale, then shows the session's next login step, or
 /// finishes the login when none is left. Every step handler continues
 /// through here, as the reference evaluates its locale required action
-/// whenever required actions are.
+/// whenever required actions are; the OTP code still belongs to the
+/// authentication before them, so its page leaves the locale alone.
 pub(super) async fn continue_login(
     s: &OidcState,
     realm: &str,
@@ -448,6 +537,13 @@ pub(super) async fn continue_login(
     held: &Held,
     headers: &HeaderMap,
 ) -> Response {
+    let step = match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(step) => step,
+        Err(_) => return unavailable(),
+    };
+    if matches!(step, LoginStep::VerifyTotp { .. }) {
+        return hold(s, realm, request_id, held, &step, headers).await;
+    }
     let cookie = match login_locale::adopt(
         s,
         realm,
@@ -461,39 +557,71 @@ pub(super) async fn continue_login(
         Ok(cookie) => cookie,
         Err(()) => return unavailable(),
     };
-    let response = match s.storage.login_step(&held.realm_id, &held.session_id).await {
-        Ok(LoginStep::Complete) => complete_login(s, realm, request_id, held, headers).await,
-        Ok(step) => hold(s, realm, request_id, held, &step, headers).await,
-        Err(_) => unavailable(),
+    let response = match step {
+        LoginStep::Complete => complete_login(s, realm, request_id, held, headers).await,
+        step => hold(s, realm, request_id, held, &step, headers).await,
     };
     login_locale::with_cookie(response, cookie)
 }
 
+/// Why a new password was refused.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PasswordError {
+    None,
+    /// The new password is empty.
+    Missing,
+    /// The new password is longer than this server accepts.
+    TooLong,
+    /// The confirmation differs.
+    Mismatch,
+}
+
 fn password_page(
     s: &OidcState,
-    realm: &str,
-    request_id: &str,
-    csrf: &str,
+    request: StepRequest<'_>,
     locale: &PageLocale,
-    error: bool,
+    error: PasswordError,
 ) -> Response {
+    let (realm, request_id) = (request.realm, request.request_id);
     let prefix = escape(&s.path_prefix);
-    let message = if error {
-        "<p role=\"alert\">Passwords must match and must not be empty.</p>"
-    } else {
-        ""
+    let texts = &locale.messages;
+    let longest = MAX_PASSWORD_BYTES.to_string();
+    let (message, new_error, confirm_error) = match error {
+        PasswordError::None => (
+            notice_message("alert", &texts.html("updatePasswordMessage", &[])),
+            String::new(),
+            String::new(),
+        ),
+        PasswordError::Missing => (
+            String::new(),
+            field_error("password-new", &texts.html("missingPasswordMessage", &[])),
+            String::new(),
+        ),
+        PasswordError::TooLong => (
+            String::new(),
+            field_error(
+                "password-new",
+                &texts.html("invalidPasswordMaxLengthMessage", &[&longest]),
+            ),
+            String::new(),
+        ),
+        PasswordError::Mismatch => (
+            String::new(),
+            String::new(),
+            field_error(
+                "password-confirm",
+                &texts.html("notMatchPasswordMessage", &[]),
+            ),
+        ),
     };
     let body = format!(
-        "<h1>Update your password</h1>{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-password/{request_id}\"><label>New password <input name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required></label><label>Confirm password <input name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required></label><label><input name=\"logout-sessions\" type=\"checkbox\"> Sign out other devices</label><button>Submit</button></form>"
+        "{message}<form id=\"kc-passwd-update-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-password/{request_id}\"><label for=\"password-new\">{new_label}</label><input id=\"password-new\" name=\"password-new\" type=\"password\" autocomplete=\"new-password\" required>{new_error}<label for=\"password-confirm\">{confirm_label}</label><input id=\"password-confirm\" name=\"password-confirm\" type=\"password\" autocomplete=\"new-password\" required>{confirm_error}{logout}<button id=\"kc-submit\" name=\"login\">{submit}</button></form>",
+        new_label = texts.html("passwordNew", &[]),
+        confirm_label = texts.html("passwordConfirm", &[]),
+        logout = logout_checkbox(locale),
+        submit = texts.html("doSubmit", &[]),
     );
-    step_page(
-        &s.path_prefix,
-        realm,
-        csrf,
-        locale,
-        "Update your password",
-        &body,
-    )
+    request.page(s, locale, "updatePasswordTitle", &body)
 }
 
 #[derive(Deserialize)]
@@ -541,9 +669,23 @@ async fn replace_password(
     }
     let password = Zeroizing::new(form.password_new);
     let confirm = Zeroizing::new(form.password_confirm);
-    if password.is_empty() || password.len() > MAX_PASSWORD_BYTES || *password != *confirm {
+    let error = if password.is_empty() {
+        PasswordError::Missing
+    } else if password.len() > MAX_PASSWORD_BYTES {
+        PasswordError::TooLong
+    } else if *password != *confirm {
+        PasswordError::Mismatch
+    } else {
+        PasswordError::None
+    };
+    if error != PasswordError::None {
         return match shown_locale(s, held, request_id, headers).await {
-            Ok(locale) => password_page(s, realm, request_id, &held.csrf, &locale, true),
+            Ok(locale) => password_page(
+                s,
+                StepRequest::new(realm, request_id, &held.csrf),
+                &locale,
+                error,
+            ),
             Err(()) => unavailable(),
         };
     }
@@ -590,13 +732,12 @@ const LOGIN_LINK_SECONDS: i32 = 300;
 /// waiting page with a resend link.
 async fn verify_email_page(
     s: &OidcState,
-    realm: &str,
-    request_id: &str,
-    csrf: &str,
+    request: StepRequest<'_>,
     locale: &PageLocale,
     user_id: &str,
     email: &str,
 ) -> Response {
+    let (realm, request_id) = (request.realm, request.request_id);
     let record = match s.storage.realm_by_name(realm).await {
         Ok(Some(record)) => record,
         Ok(None) => return failure(),
@@ -633,19 +774,17 @@ async fn verify_email_page(
             Err(_) => return unavailable(),
         }
     }
+    let texts = &locale.messages;
     let body = format!(
-        "<h1>Email verification</h1><p>You need to verify your email address to activate your account.</p><p>An email with instructions to verify your email address has been sent to your address {email}.</p><p>Haven't received a verification code in your email? <a href=\"{prefix}/realms/{realm}/login-actions/required-action?request={request_id}&amp;execution=VERIFY_EMAIL\">Click here</a> to re-send the email.</p>",
-        email = escape(email),
+        "{message}<p>{sent}</p><p>{missing} <a href=\"{prefix}/realms/{realm}/login-actions/required-action?request={request_id}&amp;execution=VERIFY_EMAIL\">{click}</a> {resend}</p>",
+        message = notice_message("alert", &texts.html("verifyEmailMessage", &[])),
+        sent = texts.html("emailVerifyInstruction1", &[email]),
+        missing = texts.html("emailVerifyInstruction2", &[]),
         prefix = escape(&s.path_prefix),
+        click = texts.html("doClickHere", &[]),
+        resend = texts.html("emailVerifyInstruction3", &[]),
     );
-    step_page(
-        &s.path_prefix,
-        realm,
-        csrf,
-        locale,
-        "Email verification",
-        &body,
-    )
+    request.page(s, locale, "emailVerifyTitle", &body)
 }
 
 /// Re-sends the verification email for a login waiting on it.
@@ -666,10 +805,8 @@ pub(super) async fn resend(
         Ok(LoginStep::VerifyEmail { user_id, email }) => {
             match shown_locale(&s, &held, request_id, &headers).await {
                 Ok(locale) => {
-                    verify_email_page(
-                        &s, &realm, request_id, &held.csrf, &locale, &user_id, &email,
-                    )
-                    .await
+                    let request = StepRequest::new(&realm, request_id, &held.csrf);
+                    verify_email_page(&s, request, &locale, &user_id, &email).await
                 }
                 Err(()) => unavailable(),
             }
@@ -692,7 +829,7 @@ fn email_shown(settings: &UserSettings) -> bool {
     !settings.registration_email_as_username || settings.edit_username_allowed
 }
 
-/// What the profile form shows: values, and each field's messages in
+/// What the profile form shows: values, and each field's message keys in
 /// order.
 struct Shown<'a> {
     username: &'a str,
@@ -701,71 +838,60 @@ struct Shown<'a> {
 }
 
 /// Shows the profile form with the realm's fields, the given values and
-/// any field messages.
+/// any field messages; without messages, the reference's reminder to
+/// update the profile.
 fn profile_page(
     s: &OidcState,
-    realm: &str,
-    request_id: &str,
-    csrf: &str,
+    request: StepRequest<'_>,
     locale: &PageLocale,
     settings: &UserSettings,
     shown: &Shown<'_>,
 ) -> Response {
-    let field = |name: &str, label: &str, value: Option<&str>, kind: &str| {
+    let (realm, request_id) = (request.realm, request.request_id);
+    let texts = &locale.messages;
+    let field = |name: &str, value: Option<&str>, kind: &str| {
         let messages: Vec<String> = shown
             .errors
             .iter()
             .filter(|(field, _)| *field == name)
-            .map(|(_, message)| escape(message))
+            .map(|(_, key)| texts.html(key, &[]))
             .collect();
         let error = if messages.is_empty() {
             String::new()
         } else {
-            format!(
-                "<span id=\"input-error-{name}\" role=\"alert\">{}</span>",
-                messages.join("<br>")
-            )
+            field_error(name, &messages.join(" "))
         };
+        // The profile names each field by the message of the same key.
         format!(
-            "<label>{label} <input name=\"{name}\" type=\"{kind}\" value=\"{}\" required></label>{error}",
+            "<label for=\"{name}\">{}</label><input name=\"{name}\" id=\"{name}\" type=\"{kind}\" value=\"{}\" required>{error}",
+            texts.html(name, &[]),
             escape(value.unwrap_or_default())
         )
     };
     let profile = shown.profile;
     let username = if username_shown(settings) {
-        field("username", "Username", Some(shown.username), "text")
+        field("username", Some(shown.username), "text")
     } else {
         String::new()
     };
     let email = if email_shown(settings) {
-        field("email", "Email", profile.email.as_deref(), "email")
+        field("email", profile.email.as_deref(), "email")
+    } else {
+        String::new()
+    };
+    let message = if shown.errors.is_empty() {
+        notice_message("alert", &texts.html("updateProfileMessage", &[]))
     } else {
         String::new()
     };
     let body = format!(
-        "<h1>Update account information</h1><form id=\"kc-update-profile-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-profile/{request_id}\">{username}{email}{first}{last}<button>Submit</button></form>",
+        "{message}<form id=\"kc-update-profile-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/update-profile/{request_id}\">{username}{email}{first}{last}<button id=\"kc-submit\" name=\"login\">{submit}</button></form>",
         prefix = escape(&s.path_prefix),
-        first = field(
-            "firstName",
-            "First name",
-            profile.first_name.as_deref(),
-            "text"
-        ),
-        last = field(
-            "lastName",
-            "Last name",
-            profile.last_name.as_deref(),
-            "text"
-        ),
+        first = field("firstName", profile.first_name.as_deref(), "text"),
+        last = field("lastName", profile.last_name.as_deref(), "text"),
+        submit = texts.html("doSubmit", &[]),
     );
-    step_page(
-        &s.path_prefix,
-        realm,
-        csrf,
-        locale,
-        "Update account information",
-        &body,
-    )
+    request.page(s, locale, "loginProfileTitle", &body)
 }
 
 #[derive(Deserialize)]
@@ -840,7 +966,7 @@ async fn save_profile(
         profile.email.clone().unwrap_or_default()
     } else if username_shown(&settings) {
         if submitted.is_empty() {
-            errors.push(("username", "Please specify username."));
+            errors.push(("username", "missingUsernameMessage"));
             current.clone()
         } else {
             submitted.to_owned()
@@ -852,19 +978,25 @@ async fn save_profile(
             .is_some_and(|username| username.trim().to_lowercase() != current);
         current.clone()
     };
-    if email_shown(&settings)
-        && profile
-            .email
-            .as_deref()
-            .is_none_or(|email| !crate::mail::valid_email(email))
-    {
-        errors.push(("email", "Invalid email address."));
+    // An empty email misses both its own check and the required one, as
+    // the reference reports.
+    if email_shown(&settings) {
+        match profile.email.as_deref() {
+            None => errors.extend([
+                ("email", "missingEmailMessage"),
+                ("email", "error-user-attribute-required"),
+            ]),
+            Some(email) if !crate::mail::valid_email(email) => {
+                errors.push(("email", "invalidEmailMessage"));
+            }
+            Some(_) => (),
+        }
     }
     if profile.first_name.is_none() {
-        errors.push(("firstName", "Please specify first name."));
+        errors.push(("firstName", "error-user-attribute-required"));
     }
     if profile.last_name.is_none() {
-        errors.push(("lastName", "Please specify last name."));
+        errors.push(("lastName", "error-user-attribute-required"));
     }
     let change = AccountChange {
         checked_username: &username,
@@ -888,16 +1020,13 @@ async fn save_profile(
     };
     // Each field lists its format error before its collisions.
     if conflicts.username_taken || conflicts.username_is_email {
-        errors.push(("username", "Username already exists."));
+        errors.push(("username", "usernameExistsMessage"));
     }
     if conflicts.email_taken || conflicts.email_is_username {
-        errors.push((
-            "email",
-            "This email is already associated with an existing account.",
-        ));
+        errors.push(("email", "emailExistsMessage"));
     }
     if conflicts.email_as_username {
-        errors.push(("email", "Username already exists."));
+        errors.push(("email", "usernameExistsMessage"));
     }
     let Ok(locale) = shown_locale(s, held, request_id, headers).await else {
         return unavailable();
@@ -911,5 +1040,11 @@ async fn save_profile(
         profile: &shown_email,
         errors: &errors,
     };
-    profile_page(s, realm, request_id, &held.csrf, &locale, &settings, &shown)
+    profile_page(
+        s,
+        StepRequest::new(realm, request_id, &held.csrf),
+        &locale,
+        &settings,
+        &shown,
+    )
 }

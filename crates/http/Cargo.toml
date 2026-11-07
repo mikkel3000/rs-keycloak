@@ -21,6 +21,8 @@ url.workspace = true
 uuid = { version = "=1.18.1", features = ["v4"] }
 zeroize = "=1.9.1"
 percent-encoding = "=2.3.2"
+icu_normalizer = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
+icu_properties = "=2.4.0"
 
 [dev-dependencies]
 tower = { version = "=0.5.3", features = ["util"] }

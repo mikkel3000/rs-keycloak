@@ -10,19 +10,20 @@ use axum::response::Response;
 use serde::Deserialize;
 
 use super::{
-    OidcState, authorization_response, csrf, digest, failure, random_token, step_page, unavailable,
-    valid_realm,
+    Frame, OidcState, authorization_response, csrf, digest, failure, random_token, reshow_url,
+    step_page, unavailable, valid_realm,
 };
 use crate::locale::PageLocale;
+pub(super) use crate::login_theme::escape;
 
-pub(super) fn escape(value: &str) -> String {
-    value
-        .replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#39;")
-}
+/// The consent texts of the scopes the consent page lists: every client's
+/// default scopes shown on the consent screen, which are profile, email and
+/// roles.
+const SCOPE_TEXTS: [&str; 3] = [
+    "profileScopeConsentText",
+    "emailScopeConsentText",
+    "rolesScopeConsentText",
+];
 
 /// Renders the consent form for a request whose CSRF cookie is `csrf`.
 pub(super) fn page(
@@ -30,17 +31,26 @@ pub(super) fn page(
     realm: &str,
     request_id: &str,
     client_identifier: &str,
-    scope: &str,
     csrf: &str,
     locale: &PageLocale,
 ) -> Response {
+    let texts = &locale.messages;
+    let scopes: String = SCOPE_TEXTS
+        .iter()
+        .map(|key| format!("<li>{}</li>", texts.html(key, &[])))
+        .collect();
     let body = format!(
-        "<h1>Grant access to {client}</h1><p>Requested scope: {scope}</p><form id=\"kc-oauth\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/consent/{request_id}\"><input type=\"submit\" name=\"accept\" value=\"Yes\"><input type=\"submit\" name=\"cancel\" value=\"No\"></form>",
-        client = escape(client_identifier),
-        scope = escape(scope),
+        "<h2>{request}</h2><ul>{scopes}</ul><form id=\"kc-oauth\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/consent/{request_id}\"><input type=\"submit\" name=\"accept\" id=\"kc-login\" value=\"{yes}\"><input type=\"submit\" name=\"cancel\" id=\"kc-cancel\" value=\"{no}\"></form>",
+        request = texts.html("oauthGrantRequest", &[]),
         prefix = escape(path_prefix),
+        yes = texts.html("doYes", &[]),
+        no = texts.html("doNo", &[]),
     );
-    step_page(path_prefix, realm, csrf, locale, "Grant access", &body)
+    let frame = Frame {
+        heading: texts.text("oauthGrantTitle", &[client_identifier]),
+        switch: reshow_url(path_prefix, realm, request_id),
+    };
+    step_page(path_prefix, realm, csrf, locale, &frame, &body)
 }
 
 /// The consent answer; exactly one of the two submit buttons is sent.

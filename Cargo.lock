@@ -1081,6 +1081,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "icu_normalizer",
+ "icu_properties",
  "percent-encoding",
  "rs-keycloak-authentication",
  "rs-keycloak-crypto",

@@ -18,6 +18,8 @@ pub struct LoginLocale {
     pub user: Option<String>,
     /// The client's space-separated `ui_locales`, as sent.
     pub client: Option<String>,
+    /// The realm's display name, else its name, as login pages name it.
+    pub realm_label: String,
 }
 
 /// A user's locale before and after a login applied the request's choice.
@@ -38,7 +40,7 @@ impl Storage {
         request_id: &str,
     ) -> Result<Option<LoginLocale>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT r.internationalization_enabled, r.supported_locales, r.default_locale, r.edit_username_allowed, r.registration_email_as_username, a.requested_locale, a.ui_locales, u.locale FROM authorization_requests a JOIN realms r ON r.id = a.realm_id LEFT JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.pending_session_id LEFT JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE a.realm_id = $1 AND a.id = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()")
+        let row = sqlx::query("SELECT r.internationalization_enabled, r.supported_locales, r.default_locale, r.edit_username_allowed, r.registration_email_as_username, COALESCE(NULLIF(r.display_name, ''), r.name) AS realm_label, a.requested_locale, a.ui_locales, u.locale FROM authorization_requests a JOIN realms r ON r.id = a.realm_id LEFT JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.pending_session_id LEFT JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE a.realm_id = $1 AND a.id = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()")
             .bind(realm_id)
             .bind(request_id)
             .fetch_optional(tx.connection())
@@ -50,6 +52,7 @@ impl Storage {
                 requested: row.try_get("requested_locale")?,
                 user: row.try_get("locale")?,
                 client: row.try_get("ui_locales")?,
+                realm_label: row.try_get("realm_label")?,
             })
         })
         .transpose()
@@ -76,6 +79,23 @@ impl Storage {
             .rows_affected();
         tx.commit().await?;
         Ok(changed == 1)
+    }
+
+    /// Forgets a request's `kc_locale` pick, as the reference's
+    /// forgot-password step does when it forks the authentication session.
+    pub async fn forget_request_locale(
+        &self,
+        realm_id: &str,
+        request_id: &str,
+    ) -> Result<(), StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        sqlx::query("UPDATE authorization_requests SET requested_locale = NULL WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id)
+            .bind(request_id)
+            .execute(tx.connection())
+            .await?;
+        tx.commit().await?;
+        Ok(())
     }
 
     /// Stores the locale the request picked as the session user's own, as

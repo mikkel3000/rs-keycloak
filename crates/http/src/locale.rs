@@ -15,18 +15,24 @@ use std::sync::LazyLock;
 use axum::http::{HeaderMap, header};
 use rs_keycloak_storage_postgres::{LoginLocale, UserSettings};
 
+use crate::login_theme::Messages;
+
 /// The name of the cookie that remembers a chosen locale.
 pub(crate) const COOKIE: &str = "KEYCLOAK_LOCALE";
 
-/// Each theme locale's display name in its own language, as the pinned
-/// themes generate them; the login and account themes list the same
-/// locales.
+/// For each theme locale, the label of every theme locale as the pinned
+/// themes generate it on a page in that locale: the JDK's name in the
+/// page's language, then its own name in parentheses unless it is the
+/// page's locale. The login and account themes list the same locales.
+static NAMES: LazyLock<HashMap<String, HashMap<String, String>>> = LazyLock::new(|| {
+    serde_json::from_str(include_str!("account_console/locale_names.json")).unwrap_or_default()
+});
+
+/// Each theme locale's display name in its own language.
 static OWN_NAMES: LazyLock<HashMap<String, String>> = LazyLock::new(|| {
-    let names: HashMap<String, HashMap<String, String>> =
-        serde_json::from_str(include_str!("account_console/locale_names.json")).unwrap_or_default();
-    names
-        .into_iter()
-        .filter_map(|(tag, mut names)| names.remove(&tag).map(|name| (tag, name)))
+    NAMES
+        .iter()
+        .filter_map(|(tag, names)| names.get(tag).map(|name| (tag.clone(), name.clone())))
         .collect()
 });
 
@@ -41,14 +47,26 @@ pub(crate) struct Choices<'a> {
     pub(crate) client: Option<&'a str>,
 }
 
-/// The `lang` and `dir` of a login page's `html` element.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a login page shows of its realm and locale: the `lang` and `dir`
+/// of its `html` element, its messages, the realm's name and its language
+/// choice.
+#[derive(Clone, Debug)]
 pub(crate) struct PageLocale {
     /// The page's language tag.
     pub(crate) lang: String,
     /// `rtl` or `ltr`; absent unless the realm is internationalized, as the
     /// reference's login template writes it.
     pub(crate) dir: Option<&'static str>,
+    /// The page's messages.
+    pub(crate) messages: Messages,
+    /// The realm's display name, else its name; empty outside a realm.
+    pub(crate) realm_label: String,
+    /// Whether the realm's username is the email, which names the
+    /// username field.
+    pub(crate) email_as_username: bool,
+    /// The realm's locales and their labels, in display order; empty unless
+    /// the realm is internationalized with more than one locale.
+    pub(crate) languages: Vec<(String, String)>,
 }
 
 impl PageLocale {
@@ -57,6 +75,10 @@ impl PageLocale {
         Self {
             lang: "en".to_owned(),
             dir: None,
+            messages: Messages::english(),
+            realm_label: String::new(),
+            email_as_username: false,
+            languages: Vec::new(),
         }
     }
 
@@ -67,14 +89,41 @@ impl PageLocale {
             user: state.user.as_deref(),
             client: state.client.as_deref(),
         };
-        let lang = resolve(&state.settings, choices, headers);
-        let dir = state.settings.internationalization_enabled.then(|| {
-            // `LocaleBean` names the locale by the theme's label, else the
-            // tag itself, and checks that name's direction.
-            let name = OWN_NAMES.get(&lang).map_or(lang.as_str(), String::as_str);
-            if is_right_to_left(name) { "rtl" } else { "ltr" }
+        let settings = &state.settings;
+        let lang = resolve(settings, choices, headers);
+        let messages = Messages::new(&lang, settings);
+        // `LocaleBean` checks the direction of the locale's label.
+        let dir = settings.internationalization_enabled.then(|| {
+            if is_right_to_left(&messages.language_label(&lang)) {
+                "rtl"
+            } else {
+                "ltr"
+            }
         });
-        Self { lang, dir }
+        let languages =
+            if settings.internationalization_enabled && settings.supported_locales.len() > 1 {
+                messages.languages(&settings.supported_locales)
+            } else {
+                Vec::new()
+            };
+        Self {
+            lang,
+            dir,
+            messages,
+            realm_label: state.realm_label.clone(),
+            email_as_username: settings.registration_email_as_username,
+            languages,
+        }
+    }
+
+    /// The message key that labels the username field, as the reference's
+    /// login template picks it with email login allowed.
+    pub(crate) fn username_key(&self) -> &'static str {
+        if self.email_as_username {
+            "email"
+        } else {
+            "usernameOrEmail"
+        }
     }
 
     /// The `html` element's attributes, starting with a space.
@@ -265,6 +314,71 @@ pub(crate) fn resolve(
         .unwrap_or_else(|| "en".to_owned())
 }
 
+/// The locale whose messages fill in what a locale's bundles lack, as
+/// `LocaleUtil.getParentLocale`: a tag with a region falls back to its
+/// language, a language to the realm's default locale (English when the
+/// default has the same language or is unset), and English to nothing.
+pub(crate) fn parent(tag: &str, settings: &UserSettings) -> Option<String> {
+    if tag == "en" {
+        return None;
+    }
+    let parsed = Tag::parse(tag);
+    if !parsed.region.is_empty() {
+        return Some(Tag::parse(&parsed.language).canonical());
+    }
+    let default = settings
+        .default_locale
+        .as_deref()
+        .filter(|_| settings.internationalization_enabled)
+        .map(Tag::parse);
+    Some(match default {
+        Some(default) if default.language != parsed.language => default.canonical(),
+        _ => "en".to_owned(),
+    })
+}
+
+/// The bundle names that hold a locale's own messages, later ones winning:
+/// the JDK's `ResourceBundle` name, then for Chinese with a region the
+/// script bundle the pinned theme maps it to.
+pub(crate) fn bundle_names(tag: &str) -> Vec<String> {
+    let parsed = Tag::parse(tag);
+    if parsed.language.is_empty() {
+        return Vec::new();
+    }
+    let name = [&parsed.language, &parsed.script, &parsed.region]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join("_");
+    let mut names = vec![name];
+    let script = match (parsed.language.as_str(), parsed.region.as_str()) {
+        ("zh", "TW") => Some("zh_Hant"),
+        ("zh", "CN") => Some("zh_Hans"),
+        _ => None,
+    };
+    names.extend(script.map(str::to_owned));
+    names
+}
+
+/// The label a page in locale `page` generates for the theme locale
+/// `listed`, as `DefaultThemeManager.addlocaleTranslations`; `None` when
+/// the locale is not the theme's or no name table covers the page's
+/// language. A page locale outside the theme uses its language's names.
+pub(crate) fn generated_label(page: &str, listed: &str) -> Option<String> {
+    if let Some(names) = NAMES.get(page) {
+        return names.get(listed).cloned();
+    }
+    let language = Tag::parse(page).language;
+    let name = NAMES.get(&language)?.get(listed)?;
+    // The language's own table names it without the suffix.
+    if listed == language {
+        Some(format!("{name} ({})", OWN_NAMES.get(listed)?))
+    } else {
+        Some(name.clone())
+    }
+}
+
 /// Whether a locale's display name is written right to left, as Java's
 /// `Bidi` decides: any strong right-to-left character makes it so.
 pub(crate) fn is_right_to_left(label: &str) -> bool {
@@ -394,6 +508,47 @@ mod tests {
         // The theme does not name he, so its tag decides.
         assert_eq!(page(true, "he").attributes(), " lang=\"he\" dir=\"ltr\"");
         assert_eq!(page(false, "ar").attributes(), " lang=\"en\"");
+    }
+
+    #[test]
+    fn parents_end_in_the_realm_default_then_english() {
+        let realm = settings(&["de", "fr"], Some("fr"));
+        let chain = |tag: &str| {
+            let mut chain = vec![tag.to_owned()];
+            while let Some(next) = parent(chain.last().map_or("", String::as_str), &realm) {
+                chain.push(next);
+            }
+            chain
+        };
+        assert_eq!(chain("de-CH"), ["de-CH", "de", "fr", "en"]);
+        assert_eq!(chain("fr"), ["fr", "en"]);
+        assert_eq!(chain("zh-CN"), ["zh-CN", "zh", "fr", "en"]);
+        let mut off = realm.clone();
+        off.internationalization_enabled = false;
+        assert_eq!(parent("de", &off).as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn chinese_regions_also_read_their_script_bundle() {
+        assert_eq!(bundle_names("pt-BR"), ["pt_BR"]);
+        assert_eq!(bundle_names("zh-CN"), ["zh_CN", "zh_Hans"]);
+        assert_eq!(bundle_names("zh-Hant"), ["zh_Hant"]);
+        assert!(bundle_names("").is_empty());
+    }
+
+    #[test]
+    fn regional_pages_name_their_language_with_its_own_name() {
+        assert_eq!(generated_label("de", "de").as_deref(), Some("Deutsch"));
+        assert_eq!(
+            generated_label("de-CH", "de").as_deref(),
+            Some("Deutsch (Deutsch)")
+        );
+        assert_eq!(
+            generated_label("de-CH", "fr").as_deref(),
+            Some("Französisch (Français)")
+        );
+        assert_eq!(generated_label("de", "de-CH"), None);
+        assert_eq!(generated_label("eo", "de"), None);
     }
 
     #[test]
