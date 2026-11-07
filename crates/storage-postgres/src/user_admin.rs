@@ -45,6 +45,8 @@ pub struct UserRecord {
     pub required_actions: Vec<String>,
     /// Whether the user has an OTP credential.
     pub totp: bool,
+    /// The locale the user chose, if any.
+    pub locale: Option<String>,
 }
 
 /// A password to store with a new user.
@@ -102,7 +104,7 @@ pub struct UserQuery<'a> {
 /// service accounts are never listed.
 const USER_QUERY_CONDITIONS: &str = "realm_id = $1 AND service_account_client_id IS NULL AND ($2::text IS NULL OR username_normalized LIKE $2 ESCAPE '\\' OR email_normalized LIKE $2 ESCAPE '\\' OR lower(first_name) LIKE $2 ESCAPE '\\' OR lower(last_name) LIKE $2 ESCAPE '\\') AND ($3::text IS NULL OR username_normalized LIKE $3 ESCAPE '\\') AND ($4::text IS NULL OR email_normalized LIKE $4 ESCAPE '\\') AND ($5::text IS NULL OR lower(first_name) LIKE $5 ESCAPE '\\') AND ($6::text IS NULL OR lower(last_name) LIKE $6 ESCAPE '\\') AND ($7::boolean IS NULL OR enabled = $7) AND ($8::boolean IS NULL OR email_verified = $8)";
 
-pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp";
+pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp, locale";
 
 pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
     Ok(UserRecord {
@@ -116,6 +118,7 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
         created_timestamp: row.try_get("created_timestamp")?,
         required_actions: row.try_get("required_actions")?,
         totp: row.try_get("totp")?,
+        locale: row.try_get("locale")?,
     })
 }
 

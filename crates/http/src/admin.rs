@@ -15,7 +15,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
     AccessTokenStatus, Actor, MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion,
-    RealmRecord, RealmSettings, RealmSmtp, StorageError,
+    RealmRecord, RealmSettings, RealmSmtp, StorageError, UserSettingChanges, UserSettings,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -393,27 +393,118 @@ fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, Adm
     }
 }
 
+/// Realm fields this server stores besides the name.
+const REALM_FIELDS: [&str; 12] = [
+    "enabled",
+    "smtpServer",
+    "resetPasswordAllowed",
+    "verifyEmail",
+    "displayName",
+    "accessTokenLifespan",
+    "internationalizationEnabled",
+    "supportedLocales",
+    "defaultLocale",
+    "editUsernameAllowed",
+    "registrationEmailAsUsername",
+    "realm",
+];
+
+/// The locale and username settings a realm representation carries;
+/// absent and null fields are `None`.
+#[derive(Default)]
+struct UserSettingFields {
+    internationalization_enabled: Option<bool>,
+    supported_locales: Option<Vec<String>>,
+    default_locale: Option<String>,
+    edit_username_allowed: Option<bool>,
+    registration_email_as_username: Option<bool>,
+}
+
+impl UserSettingFields {
+    /// Reads the fields; a value of the wrong JSON type fails as the
+    /// reference's JSON reader does. Locales are stored sorted, without
+    /// repeats.
+    fn parse(fields: &Map<String, Value>) -> Result<Self, AdminError> {
+        let unparsable = || {
+            AdminError::OAuth(
+                StatusCode::BAD_REQUEST,
+                "unknown_error",
+                "Cannot parse the JSON",
+            )
+        };
+        let flag = |name: &str| match fields.get(name) {
+            None | Some(Value::Null) => Ok(None),
+            Some(Value::Bool(value)) => Ok(Some(*value)),
+            Some(_) => Err(unparsable()),
+        };
+        let locale = |value: &Value| match value {
+            Value::String(tag) if tag.len() <= 255 => Ok(tag.clone()),
+            Value::String(_) => Err(AdminError::bad_request("Invalid locale")),
+            _ => Err(unparsable()),
+        };
+        let supported_locales = match fields.get("supportedLocales") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(tags)) if tags.len() <= 200 => {
+                let mut tags = tags.iter().map(locale).collect::<Result<Vec<_>, _>>()?;
+                tags.sort();
+                tags.dedup();
+                Some(tags)
+            }
+            Some(Value::Array(_)) => return Err(AdminError::bad_request("Too many locales")),
+            Some(_) => return Err(unparsable()),
+        };
+        let default_locale = match fields.get("defaultLocale") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(locale(value)?),
+        };
+        Ok(Self {
+            internationalization_enabled: flag("internationalizationEnabled")?,
+            supported_locales,
+            default_locale,
+            edit_username_allowed: flag("editUsernameAllowed")?,
+            registration_email_as_username: flag("registrationEmailAsUsername")?,
+        })
+    }
+
+    fn changes(&self) -> UserSettingChanges<'_> {
+        UserSettingChanges {
+            internationalization_enabled: self.internationalization_enabled,
+            supported_locales: self.supported_locales.as_deref(),
+            default_locale: self.default_locale.as_deref(),
+            edit_username_allowed: self.edit_username_allowed,
+            registration_email_as_username: self.registration_email_as_username,
+        }
+    }
+
+    fn settings(self) -> UserSettings {
+        UserSettings {
+            internationalization_enabled: self.internationalization_enabled.unwrap_or(false),
+            supported_locales: self.supported_locales.unwrap_or_default(),
+            default_locale: self.default_locale,
+            edit_username_allowed: self.edit_username_allowed.unwrap_or(false),
+            registration_email_as_username: self.registration_email_as_username.unwrap_or(false),
+        }
+    }
+}
+
+fn unsupported_realm_field(fields: &Map<String, Value>) -> Result<(), AdminError> {
+    match fields
+        .keys()
+        .find(|key| !REALM_FIELDS.contains(&key.as_str()))
+    {
+        Some(field) => Err(AdminError::bad_request(format!(
+            "Unsupported realm field: {field}"
+        ))),
+        None => Ok(()),
+    }
+}
+
 fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
     let unreadable = || AdminError::bad_request("unable to read contents from stream");
     let Ok(Value::Object(fields)) = serde_json::from_slice::<Value>(body) else {
         return Err(unreadable());
     };
-    if let Some(field) = fields.keys().find(|key| {
-        !matches!(
-            key.as_str(),
-            "realm"
-                | "enabled"
-                | "smtpServer"
-                | "resetPasswordAllowed"
-                | "verifyEmail"
-                | "displayName"
-                | "accessTokenLifespan"
-        )
-    }) {
-        return Err(AdminError::bad_request(format!(
-            "Unsupported realm field: {field}"
-        )));
-    }
+    unsupported_realm_field(&fields)?;
     let name = match fields.get("realm") {
         None | Some(Value::Null) => "",
         Some(Value::String(name)) => name.as_str(),
@@ -448,6 +539,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             smtp,
             display_name: display_name(&fields)?.flatten(),
             access_token_lifespan: access_token_lifespan(&fields)?.unwrap_or(300),
+            user_settings: UserSettingFields::parse(&fields)?.settings(),
         },
     })
 }
@@ -506,10 +598,11 @@ async fn read_realm(
             "realm": realm.name,
             "bruteForceProtected": false,
             "organizationsEnabled": false,
-            "supportedLocales": [],
+            "supportedLocales": realm.user_settings.supported_locales,
         });
         if grants.allows(Access::ViewUsers) {
-            brief["registrationEmailAsUsername"] = json!(false);
+            brief["registrationEmailAsUsername"] =
+                json!(realm.user_settings.registration_email_as_username);
         }
         if let Some(display_name) = &realm.display_name {
             brief["displayName"] = json!(display_name);
@@ -527,6 +620,16 @@ fn realm_representation(realm: &RealmRecord) -> Value {
     if let Some(smtp) = &realm.smtp {
         representation["smtpServer"] = smtp_representation(smtp);
     }
+    let users = &realm.user_settings;
+    representation["internationalizationEnabled"] = json!(users.internationalization_enabled);
+    if !users.supported_locales.is_empty() {
+        representation["supportedLocales"] = json!(users.supported_locales);
+    }
+    if let Some(locale) = &users.default_locale {
+        representation["defaultLocale"] = json!(locale);
+    }
+    representation["editUsernameAllowed"] = json!(users.edit_username_allowed);
+    representation["registrationEmailAsUsername"] = json!(users.registration_email_as_username);
     representation
 }
 
@@ -615,22 +718,7 @@ async fn update_realm(
             "unable to read contents from stream",
         ));
     };
-    if let Some(field) = fields.keys().find(|key| {
-        !matches!(
-            key.as_str(),
-            "realm"
-                | "enabled"
-                | "smtpServer"
-                | "resetPasswordAllowed"
-                | "verifyEmail"
-                | "displayName"
-                | "accessTokenLifespan"
-        )
-    }) {
-        return Err(AdminError::bad_request(format!(
-            "Unsupported realm field: {field}"
-        )));
-    }
+    unsupported_realm_field(&fields)?;
     if fields
         .get("realm")
         .is_some_and(|realm| realm != &json!(name))
@@ -655,6 +743,7 @@ async fn update_realm(
         )),
     };
     let display_name = display_name(&fields)?;
+    let user_settings = UserSettingFields::parse(&fields)?;
     let changes = RealmChanges {
         enabled,
         reset_password_allowed: optional_flag("resetPasswordAllowed")?,
@@ -662,6 +751,7 @@ async fn update_realm(
         smtp: smtp.as_ref().map(Option::as_ref),
         display_name: display_name.as_ref().map(Option::as_deref),
         access_token_lifespan: access_token_lifespan(&fields)?,
+        user_settings: user_settings.changes(),
     };
     if state.storage.update_realm(&name, &changes, &actor).await? {
         Ok(StatusCode::NO_CONTENT)

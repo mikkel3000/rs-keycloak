@@ -42,6 +42,10 @@ pub struct NewClient<'a> {
     pub root_url: Option<&'a str>,
     /// The client's home page, possibly relative to the root URL.
     pub base_url: Option<&'a str>,
+    /// Name shown to users, if set; may be empty.
+    pub name: Option<&'a str>,
+    /// Description shown to users, if set; may be empty.
+    pub description: Option<&'a str>,
 }
 
 /// A stored client with the fields of the admin representation.
@@ -74,6 +78,10 @@ pub struct ClientRecord {
     pub root_url: Option<String>,
     /// The client's home page, possibly relative to the root URL.
     pub base_url: Option<String>,
+    /// Name shown to users, if set; may be empty.
+    pub name: Option<String>,
+    /// Description shown to users, if set; may be empty.
+    pub description: Option<String>,
     /// Recoverable secret, if the client has one; hashed secrets are absent.
     pub secret: Option<SealedSecret>,
 }
@@ -106,7 +114,7 @@ pub enum ClientUpdate {
     Exists,
 }
 
-const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.bearer_only, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id ORDER BY p.redirect_uri) AS post_logout_redirect_uris, c.post_logout_uses_redirect_uris, c.root_url, c.base_url";
+const CLIENT_COLUMNS: &str = "c.id, c.client_id, c.enabled, c.public_client, c.standard_flow_enabled, c.service_accounts_enabled, c.bearer_only, c.consent_required, c.secret_sealed, c.secret_key_id, ARRAY(SELECT d.redirect_uri FROM client_redirect_uris d WHERE d.realm_id = c.realm_id AND d.client_id = c.id ORDER BY d.redirect_uri) AS redirect_uris, ARRAY(SELECT o.origin FROM client_web_origins o WHERE o.realm_id = c.realm_id AND o.client_id = c.id ORDER BY o.origin) AS web_origins, ARRAY(SELECT p.redirect_uri FROM client_post_logout_redirect_uris p WHERE p.realm_id = c.realm_id AND p.client_id = c.id ORDER BY p.redirect_uri) AS post_logout_redirect_uris, c.post_logout_uses_redirect_uris, c.root_url, c.base_url, c.name, c.description";
 
 fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
     let sealed: Option<Vec<u8>> = row.try_get("secret_sealed")?;
@@ -126,6 +134,8 @@ fn client_row(row: &PgRow) -> Result<ClientRecord, StorageError> {
         post_logout_uses_redirect_uris: row.try_get("post_logout_uses_redirect_uris")?,
         root_url: row.try_get("root_url")?,
         base_url: row.try_get("base_url")?,
+        name: row.try_get("name")?,
+        description: row.try_get("description")?,
         secret: sealed
             .zip(key_id)
             .map(|(sealed, key_id)| SealedSecret { sealed, key_id }),
@@ -150,7 +160,7 @@ impl Storage {
         }
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id, post_logout_uses_redirect_uris, consent_required, bearer_only, root_url, base_url) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO clients (realm_id, id, client_id, enabled, public_client, standard_flow_enabled, service_accounts_enabled, secret_sealed, secret_key_id, post_logout_uses_redirect_uris, consent_required, bearer_only, root_url, base_url, name, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(id).bind(client.client_identifier).bind(client.enabled).bind(client.public)
             .bind(client.standard_flow).bind(client.service_accounts)
             .bind(secret.map(|secret| secret.sealed.as_slice())).bind(secret.map(|secret| secret.key_id.as_str()))
@@ -159,6 +169,8 @@ impl Storage {
             .bind(client.bearer_only)
             .bind(client.root_url)
             .bind(client.base_url)
+            .bind(client.name)
+            .bind(client.description)
             .fetch_optional(&mut *conn).await?;
         if created.is_none() {
             tx.commit().await?;
@@ -245,12 +257,12 @@ impl Storage {
             SecretChange::Replace(sealed) => (true, Some(sealed)),
             SecretChange::Remove => (true, None),
         };
-        sqlx::query("UPDATE clients SET client_id = $3, enabled = $4, public_client = $5, standard_flow_enabled = $6, service_accounts_enabled = $7, consent_required = $8, bearer_only = $9, post_logout_uses_redirect_uris = $10, secret_phc = CASE WHEN $11 THEN NULL ELSE secret_phc END, secret_sealed = CASE WHEN $11 THEN $12 ELSE secret_sealed END, secret_key_id = CASE WHEN $11 THEN $13 ELSE secret_key_id END, root_url = $14, base_url = $15 WHERE realm_id = $1 AND id = $2")
+        sqlx::query("UPDATE clients SET client_id = $3, enabled = $4, public_client = $5, standard_flow_enabled = $6, service_accounts_enabled = $7, consent_required = $8, bearer_only = $9, post_logout_uses_redirect_uris = $10, secret_phc = CASE WHEN $11 THEN NULL ELSE secret_phc END, secret_sealed = CASE WHEN $11 THEN $12 ELSE secret_sealed END, secret_key_id = CASE WHEN $11 THEN $13 ELSE secret_key_id END, root_url = $14, base_url = $15, name = $16, description = $17 WHERE realm_id = $1 AND id = $2")
             .bind(realm_id).bind(id).bind(client.client_identifier).bind(client.enabled).bind(client.public)
             .bind(client.standard_flow).bind(client.service_accounts).bind(client.consent_required)
             .bind(client.bearer_only).bind(client.post_logout_uses_redirect_uris).bind(change_secret)
             .bind(sealed.map(|secret| secret.sealed.as_slice())).bind(sealed.map(|secret| secret.key_id.as_str()))
-            .bind(client.root_url).bind(client.base_url)
+            .bind(client.root_url).bind(client.base_url).bind(client.name).bind(client.description)
             .execute(&mut *conn).await?;
         for table in [
             "client_redirect_uris",

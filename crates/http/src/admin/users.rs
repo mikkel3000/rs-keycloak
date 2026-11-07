@@ -297,7 +297,19 @@ pub(super) async fn create_from(
     actor: &Actor,
 ) -> Result<String, AdminError> {
     let settings = UserSettings::defaults().apply(fields, &["credentials"])?;
-    let username = text(fields, "username")?
+    // A realm that uses the email as username takes the email when given.
+    let email_as_username = state
+        .storage
+        .user_settings(realm_id)
+        .await?
+        .registration_email_as_username;
+    let email = if email_as_username {
+        text(fields, "email")?
+    } else {
+        None
+    };
+    let username = email
+        .or(text(fields, "username")?)
         .ok_or_else(|| AdminError::bad_request("User name is missing"))?
         .to_lowercase();
     let password = match initial_password(fields)? {

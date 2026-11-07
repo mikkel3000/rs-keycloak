@@ -199,12 +199,41 @@ pub(super) fn representation(client: &ClientRecord, secret: Option<String>) -> V
     if let Some(base_url) = &client.base_url {
         fields["baseUrl"] = json!(base_url);
     }
+    if let Some(name) = &client.name {
+        fields["name"] = json!(name);
+    }
+    if let Some(description) = &client.description {
+        fields["description"] = json!(description);
+    }
     fields
+}
+
+/// Reads `name` or `description`: absent and null keep the value, and
+/// numbers and booleans become text, as the reference's JSON reader does.
+fn text_field(fields: &Map<String, Value>, name: &str) -> Result<Option<String>, AdminError> {
+    let text = match fields.get(name) {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(text)) => text.clone(),
+        Some(value @ (Value::Number(_) | Value::Bool(_))) => value.to_string(),
+        Some(_) => {
+            return Err(AdminError::OAuth(
+                StatusCode::BAD_REQUEST,
+                "unknown_error",
+                "Cannot parse the JSON",
+            ));
+        }
+    };
+    if text.len() > 255 {
+        return Err(AdminError::bad_request(format!("Invalid {name}")));
+    }
+    Ok(Some(text))
 }
 
 /// Request fields a client representation may carry here; the rest are
 /// refused rather than ignored.
-const SUPPORTED: [&str; 17] = [
+const SUPPORTED: [&str; 19] = [
+    "name",
+    "description",
     "rootUrl",
     "baseUrl",
     "consentRequired",
@@ -239,6 +268,8 @@ struct Settings {
     post_logout_uses_redirect_uris: bool,
     root_url: Option<String>,
     base_url: Option<String>,
+    name: Option<String>,
+    description: Option<String>,
 }
 
 impl Settings {
@@ -257,6 +288,8 @@ impl Settings {
             post_logout_uses_redirect_uris: false,
             root_url: None,
             base_url: None,
+            name: None,
+            description: None,
         }
     }
 
@@ -274,6 +307,8 @@ impl Settings {
             post_logout_uses_redirect_uris: client.post_logout_uses_redirect_uris,
             root_url: client.root_url.clone(),
             base_url: client.base_url.clone(),
+            name: client.name.clone(),
+            description: client.description.clone(),
         }
     }
 
@@ -316,6 +351,12 @@ impl Settings {
                 Some(Value::String(url)) if url.len() <= 2048 => *value = Some(url.clone()),
                 Some(_) => return Err(AdminError::bad_request(format!("Invalid {name}"))),
             }
+        }
+        if let Some(name) = text_field(fields, "name")? {
+            self.name = Some(name);
+        }
+        if let Some(description) = text_field(fields, "description")? {
+            self.description = Some(description);
         }
         if let Some(root_url) = &self.root_url {
             validate_root_url(root_url, false).map_err(AdminError::bad_request)?;
@@ -364,6 +405,8 @@ impl Settings {
             consent_required: self.consent_required,
             root_url: self.root_url.as_deref(),
             base_url: self.base_url.as_deref(),
+            name: self.name.as_deref(),
+            description: self.description.as_deref(),
         }
     }
 }

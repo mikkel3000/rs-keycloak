@@ -555,8 +555,9 @@ client created with redirect URIs and no web origins now gets their
 origins, as in the reference. `tests/public/admin_client_update_contract.py`
 checks 3 groups, the slowest in 263 ms.
 
-Remaining differences: unmodelled fields such as `description`, `name`,
-`rootUrl` and `baseUrl` are refused rather than stored; a client changed to
+Remaining differences (`rootUrl`, `baseUrl`, `name` and `description` came
+later, see "Realm and client settings in the account console"): other
+unmodelled fields are refused rather than stored; a client changed to
 confidential that has a hashed secret from the CLI keeps it.
 
 ## Realm-scoped admin access
@@ -898,9 +899,10 @@ offline tokens included. `tests/public/account_console_api_contract.py`
 checks 3 groups.
 
 Remaining differences: user agents and addresses are not recorded, so all
-sessions belong to one unknown device without `ipAddress` or browser, and
-`clientName` repeats the client id. The console itself is described in
-"Account console" below.
+sessions belong to one unknown device without `ipAddress` or browser.
+`clientName` and `description` now come from the client (see "Realm and
+client settings in the account console"). The console itself is described
+in "Account console" below.
 
 ## Realm partial export
 
@@ -1011,15 +1013,61 @@ and refuses to start if the directory is unusable. Everything follows
   module); other routes are unchanged.
 
 `tests/public/account_console_contract.py` checks 13 groups, the slowest in
-268 ms; console cases skip unless `RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR` is set.
-Without the setting, console routes answer 404 and account routes stay
+268 ms; console cases fail unless `RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR` is set,
+and `tests/public/database.sh` refuses to start without it. Without the
+setting, the server's console routes answer 404 and account routes stay
 JSON only.
 
-Remaining differences: clients have no display name, so the referrer name
-is the client ID; realms have no internationalization, `editUsernameAllowed`
-or `registrationEmailAsUsername` settings, so the page is always English
-with those features off and `supportedLocales` is empty; the signed-in page
-does not re-issue the SSO cookies; `/account/groups` has only the brief
+Remaining differences: the signed-in page does not re-issue the SSO cookies; `/account/groups` has only the brief
 form; login, admin and email theme resources and messages are not served;
 names and scopes are JSON-escaped in the page, where the reference inserts
 them as they are; the token response still has no `session_state`.
+
+## Realm and client settings in the account console
+
+Clients now store `name` and `description`, and realms store
+`internationalizationEnabled`, `supportedLocales`, `defaultLocale`,
+`editUsernameAllowed` and `registrationEmailAsUsername` (migration 33).
+Everything follows `tests/reference/account-settings-observations.json`:
+
+- The admin API accepts and returns them as recorded: absent and null keep
+  a value, an empty name, description or default locale is stored as
+  given, numbers become text in names, empty locale lists are left out of
+  the representation, and values of the wrong JSON type answer "Cannot
+  parse the JSON". Built-in clients are named `${client_<clientId>}`.
+  Partial import leaves the realm settings alone, as for the others.
+- The console's referrer name and `/account/applications` use the client
+  name, with the client ID when it is blank, and the description.
+- The page locale follows the `locale` module, a port of the pinned
+  `DefaultLocaleSelectorProvider`: English unless internationalization is
+  on, else the user's locale, the `KEYCLOAK_LOCALE` cookie, then
+  `Accept-Language` by quality, each matched by language and region, then
+  the default locale, then English. `dir` is `rtl` when the locale's display
+  name in the theme has right-to-left characters, as the reference's
+  `Bidi` check decides, so `ar` and `fa` are `rtl` and `he`, which the theme
+  does not name, is `ltr`. The page features show the three realm flags.
+- `/account/supportedLocales` lists the stored locales, also while
+  internationalization is off.
+- The account profile follows the realm's username rules: the username is
+  writable only with `editUsernameAllowed` and without
+  `registrationEmailAsUsername`, required unless the email is the username,
+  and the email is read-only when it is the username and usernames may not
+  change; a read-only email keeps its value. Updates report the
+  reference's error lists, including read-only, missing and taken
+  usernames, emails taken as emails or usernames, with 409 when anything
+  collides. With internationalization on, the profile carries the `locale`
+  attribute and its metadata, and updates store or remove it. Admin user
+  creation takes the email as username when the realm says so.
+
+`tests/public/account_settings_contract.py` checks 46 groups, the slowest
+in 189 ms.
+
+Remaining differences: supported locales are stored and listed sorted,
+where the reference lists them in its Java hash set's order, and among
+several locales that match a request equally the first sorted one wins;
+`Accept-Language` entries with quality zero are left out, which was not
+recorded; an update that leaves out `attributes` removes the user's locale,
+which was not recorded either; the admin user representation does not show
+the locale attribute; admin user updates and the login flow's profile
+update do not apply the username rules yet; the theme's own page texts
+stay English, as in the reference.

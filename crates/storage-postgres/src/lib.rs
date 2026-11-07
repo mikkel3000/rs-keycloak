@@ -15,7 +15,7 @@ mod session_admin;
 mod sso;
 mod user_admin;
 
-pub use account::{AccountApplication, AccountSession};
+pub use account::{AccountApplication, AccountChange, AccountConflicts, AccountSession};
 pub use action_tokens::{ActionToken, RedeemedToken, VerifyLink};
 pub use client_admin::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
@@ -28,7 +28,8 @@ pub use login_steps::{
 };
 pub use logout::RefreshLogout;
 pub use realm_admin::{
-    MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion, RealmRecord, RealmSettings, RealmSmtp,
+    MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion, RealmRecord, RealmSettings,
+    RealmSmtp, UserSettingChanges, UserSettings,
 };
 pub use role_admin::{
     CompositeChange, NewRole, RoleCreation, RoleDeletion, RoleHolder, RoleMappingChange, RoleNames,
@@ -82,6 +83,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0030_realm_token_settings.sql"),
     include_str!("../../../migrations/0031_required_action_settings.sql"),
     include_str!("../../../migrations/0032_offline_sessions.sql"),
+    include_str!("../../../migrations/0033_account_settings.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

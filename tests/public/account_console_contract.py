@@ -2,13 +2,12 @@
 
 Expected cases come from tests/reference/account-console-observations.json.
 The console cases need RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR naming a directory
-filled by compatibility/extract_account_console.py, and are skipped without
-it; the server inherits the setting from this environment.
+filled by compatibility/extract_account_console.py, and fail without it;
+the server inherits the setting from this environment. Realm and client
+settings are checked by account_settings_contract.py.
 
-Known differences, listed in IMPLEMENTATION.md: clients have no display
-name, so the referrer name is the client ID; realms have no
-internationalization, username or email settings, so the page is always in
-English with those features off; group listings have only the brief form.
+Known differences, listed in IMPLEMENTATION.md: group listings have only
+the brief form.
 """
 
 import base64
@@ -21,7 +20,7 @@ import secrets
 import unittest
 import urllib.parse
 
-from fixture import ISSUER_BASE, AdminCase
+from fixture import ISSUER_BASE, AdminCase, requires_setting
 
 
 REFERENCE = json.loads(
@@ -31,7 +30,7 @@ CONSOLE = os.environ.get("RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR")
 SKIPPED = {"date", "content-length", "set-cookie", "connection", "keep-alive", "transfer-encoding"}
 ENTRY = "assets/main-YR-28UU6.js"
 CALLBACK = "https://app.example.test/callback"
-needs_console = unittest.skipUnless(CONSOLE, "RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR is not set")
+needs_console = requires_setting("RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR")
 
 
 class ConsoleCase(AdminCase):
@@ -86,15 +85,11 @@ class AccountConsolePage(ConsoleCase):
             self.assertEqual({"status": status, "content_type": headers.get("content-type"), "location": headers.get("location"), "same_body": other == body, "json_body": json.loads(other) if headers.get("content-type") == "application/json" else None}, REFERENCE[label], label)
 
     def test_referrer_and_scope(self):
-        self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "plain-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
+        self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "plain-app", "name": "Plain App", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
         for label, query in [("page/referrer", {"referrer": "plain-app", "referrer_uri": CALLBACK}), ("page/referrer-foreign-uri", {"referrer": "plain-app", "referrer_uri": "https://elsewhere.example.invalid/"}), ("page/referrer-unknown", {"referrer": "missing-app"}), ("page/scope", {"scope": "offline_access"})]:
             status, _, body = self.page("?" + urllib.parse.urlencode(query))
             env = self.environment(body)
             expected = dict(REFERENCE[label])
-            # The reference shows the client's display name, which clients
-            # here lack; the identifier stands in.
-            if expected["referrerName"]:
-                expected["referrerName"] = "plain-app"
             # The reference's callback is on its own base; here it is CALLBACK.
             expected["referrerUrl"] = expected["referrerUrl"].replace("{base}/callback", CALLBACK)
             self.assertEqual({"status": status, "referrerName": env["referrerName"], "referrerUrl": env["referrerUrl"], "scope": env["scope"]}, expected, label)
@@ -194,8 +189,8 @@ class AccountConsoleIframes(ConsoleCase):
         self.check("iframe/login-status-other-version", endpoints + "login-status-iframe.html?version=abcde")
         self.check("iframe/login-status-unknown-realm", "/realms/missing-realm/protocol/openid-connect/login-status-iframe.html")
 
-    @needs_console
     def test_iframe_with_resource_version(self):
+        self.assertTrue(CONSOLE, "RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR must be set")
         self.page()
         self.check("iframe/3p-version", f"/realms/{self.realm}/protocol/openid-connect/3p-cookies/step1.html?version={self.version}")
 

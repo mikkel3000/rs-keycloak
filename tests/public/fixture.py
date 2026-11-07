@@ -26,6 +26,25 @@ ISSUER = ISSUER_BASE + "/realms/master"
 ENDPOINT = "/realms/master/protocol/openid-connect"
 
 
+def requires_setting(name):
+    """Class decorator: the class fails, rather than skips, without `name` set."""
+    def wrap(cls):
+        original = cls.__dict__.get("setUpClass")
+
+        @classmethod
+        def setUpClass(klass):
+            if not os.environ.get(name):
+                raise AssertionError(f"{name} must be set for {klass.__name__}")
+            if original is not None:
+                original.__func__(klass)
+            else:
+                super(cls, klass).setUpClass()
+
+        cls.setUpClass = setUpClass
+        return cls
+    return wrap
+
+
 def b64(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 

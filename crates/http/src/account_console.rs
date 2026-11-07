@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use crate::locale;
 use crate::oidc::{OidcState, digest};
 use crate::security_headers::{self, Framing};
 
@@ -192,6 +193,16 @@ impl AccountConsole {
             })
             .map_or("en", String::as_str);
         &self.bundles[tag]
+    }
+
+    /// A locale's display name in its own bundle, if the theme has one.
+    pub(crate) fn locale_label(&self, tag: &str) -> Option<&str> {
+        let key = format!("locale_{tag}");
+        let pairs = &self.bundle(tag).pairs;
+        pairs
+            .binary_search_by(|(name, _)| name.as_str().cmp(&key))
+            .ok()
+            .map(|index| pairs[index].1.as_str())
     }
 }
 
@@ -363,12 +374,14 @@ fn unavailable() -> Response {
         .into_response()
 }
 
-/// What the signed-in visitor may see; all false for anonymous visitors.
+/// What the signed-in visitor may see, all false for anonymous visitors,
+/// and the locale they chose.
 #[derive(Default)]
 struct Features {
     applications: bool,
     groups: bool,
     delete_account: bool,
+    locale: Option<String>,
 }
 
 async fn features(
@@ -410,10 +423,16 @@ async fn features(
         .await?
         .iter()
         .any(|setting| setting.alias == "delete_account" && setting.enabled);
+    let locale = state
+        .storage
+        .user(realm_id, &session.user_id)
+        .await?
+        .and_then(|user| user.locale);
     Ok(Features {
         applications: manage,
         groups,
         delete_account: manage && delete_action,
+        locale,
     })
 }
 
@@ -452,8 +471,12 @@ async fn referrer(
             .as_deref()
             .and_then(|base| resolve_redirect(base, root, server)),
     };
-    // Clients have no display name here, so the identifier stands in.
-    Ok(url.map(|url| (client.client_identifier, url)))
+    // A blank name falls back to the identifier, as in the reference.
+    let name = client
+        .name
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or(client.client_identifier);
+    Ok(url.map(|url| (name, url)))
 }
 
 /// Renders the console page for a realm.
@@ -475,9 +498,10 @@ pub(crate) async fn page(
         url::form_urlencoded::parse(query.unwrap_or_default().as_bytes())
             .into_owned()
             .collect();
-    let (features, referrer) = match tokio::try_join!(
+    let (features, referrer, settings) = match tokio::try_join!(
         features(state, &realm_id, headers),
-        referrer(state, &realm_id, &query)
+        referrer(state, &realm_id, &query),
+        state.storage.user_settings(&realm_id)
     ) {
         Ok(found) => found,
         Err(_) => return unavailable(),
@@ -490,6 +514,15 @@ pub(crate) async fn page(
     );
     let common_url = format!("{prefix}/resources/{}/common/keycloak", resource_version());
     let (referrer_name, referrer_url) = referrer.unwrap_or_default();
+    let locale = locale::resolve(&settings, features.locale.as_deref(), headers);
+    let direction = if console
+        .locale_label(&locale)
+        .is_some_and(locale::is_right_to_left)
+    {
+        "rtl"
+    } else {
+        "ltr"
+    };
     let flag = |enabled: bool| Cow::Borrowed(if enabled { "true" } else { "false" });
     let body = render(
         &render(PAGE, |name| match name {
@@ -498,8 +531,8 @@ pub(crate) async fn page(
         }),
         |name| {
             Some(match name {
-                "locale" => Cow::Borrowed("en"),
-                "localeDir" => Cow::Borrowed("ltr"),
+                "locale" => json_text(&locale),
+                "localeDir" => Cow::Borrowed(direction),
                 "resourceUrl" => Cow::Borrowed(resource_url.as_str()),
                 "resourceCommonUrl" => Cow::Borrowed(common_url.as_str()),
                 "serverBaseUrl" => json_text(server),
@@ -509,6 +542,9 @@ pub(crate) async fn page(
                 "referrerName" => json_text(&referrer_name),
                 "referrerUrl" => json_text(&referrer_url),
                 "scope" => json_text(query.get("scope").map_or("", String::as_str)),
+                "isRegistrationEmailAsUsername" => flag(settings.registration_email_as_username),
+                "isEditUserNameAllowed" => flag(settings.edit_username_allowed),
+                "isInternationalizationEnabled" => flag(settings.internationalization_enabled),
                 "isLinkedAccountsEnabled" => flag(false),
                 "deleteAccountAllowed" => flag(features.delete_account),
                 "isViewApplicationsEnabled" => flag(features.applications),

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Run against an isolated, disposable PostgreSQL 18 container.
 set -euo pipefail
+: "${RS_KEYCLOAK_ACCOUNT_CONSOLE_DIR:?must name a directory filled by compatibility/extract_account_console.py}"
 cd "$(dirname "$0")/../.."
 container="rs-keycloak-db-test-$$"
 cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
@@ -107,3 +108,4 @@ python3 tests/public/partial_import_groups_contract.py "$bin"
 python3 tests/public/export_import_contract.py "$bin"
 python3 tests/public/user_credentials_create_contract.py "$bin"
 python3 tests/public/account_console_contract.py "$bin"
+python3 tests/public/account_settings_contract.py "$bin"

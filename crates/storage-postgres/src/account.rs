@@ -31,6 +31,52 @@ pub struct AccountApplication {
     pub in_use: bool,
     /// Whether the user has a live offline token for the client.
     pub offline: bool,
+    /// Name shown to users, if set.
+    pub name: Option<String>,
+    /// Description shown to users, if set.
+    pub description: Option<String>,
+}
+
+/// A change to the user's own account.
+pub struct AccountChange<'a> {
+    /// The username uniqueness is checked for: the requested one, even
+    /// when it may not be changed, as the reference validates it.
+    pub checked_username: &'a str,
+    /// The username stored.
+    pub saved_username: &'a str,
+    /// Name and email to store.
+    pub profile: Profile,
+    /// The chosen locale: `None` keeps it, `Some(None)` removes it.
+    pub locale: Option<Option<&'a str>>,
+    /// Whether the realm uses the email as username, which adds a check
+    /// that no other user has the email.
+    pub email_as_username: bool,
+}
+
+/// What an account change collides with; each is the reference's error.
+#[derive(Debug, Default)]
+pub struct AccountConflicts {
+    /// Another user has the username.
+    pub username_taken: bool,
+    /// The username looks like an email that another user has.
+    pub username_is_email: bool,
+    /// The email changed and another user has it.
+    pub email_taken: bool,
+    /// The email changed and is another user's username.
+    pub email_is_username: bool,
+    /// The realm uses the email as username and another user has it.
+    pub email_as_username: bool,
+}
+
+impl AccountConflicts {
+    /// Whether anything collides.
+    pub fn any(&self) -> bool {
+        self.username_taken
+            || self.username_is_email
+            || self.email_taken
+            || self.email_is_username
+            || self.email_as_username
+    }
 }
 
 impl Storage {
@@ -43,7 +89,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<Vec<AccountApplication>, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let rows = sqlx::query("SELECT * FROM (SELECT c.client_id, c.consent_required, c.root_url, c.base_url, EXISTS (SELECT 1 FROM client_sessions cs WHERE cs.realm_id = c.realm_id AND cs.client_id = c.id AND cs.user_session_id = $3) AS in_use, EXISTS (SELECT 1 FROM refresh_families f JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id WHERE f.realm_id = c.realm_id AND f.client_id = c.id AND us.user_id = $2 AND f.offline AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp()) AS offline, EXISTS (SELECT 1 FROM user_consents uc WHERE uc.realm_id = c.realm_id AND uc.client_id = c.id AND uc.user_id = $2) AS consented FROM clients c WHERE c.realm_id = $1 AND c.enabled) apps WHERE in_use OR offline OR consented ORDER BY client_id")
+        let rows = sqlx::query("SELECT * FROM (SELECT c.client_id, c.consent_required, c.root_url, c.base_url, c.name, c.description, EXISTS (SELECT 1 FROM client_sessions cs WHERE cs.realm_id = c.realm_id AND cs.client_id = c.id AND cs.user_session_id = $3) AS in_use, EXISTS (SELECT 1 FROM refresh_families f JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id WHERE f.realm_id = c.realm_id AND f.client_id = c.id AND us.user_id = $2 AND f.offline AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp()) AS offline, EXISTS (SELECT 1 FROM user_consents uc WHERE uc.realm_id = c.realm_id AND uc.client_id = c.id AND uc.user_id = $2) AS consented FROM clients c WHERE c.realm_id = $1 AND c.enabled) apps WHERE in_use OR offline OR consented ORDER BY client_id")
             .bind(realm_id).bind(user_id).bind(session_id).fetch_all(tx.connection()).await?;
         tx.commit().await?;
         rows.iter()
@@ -55,22 +101,55 @@ impl Storage {
                     base_url: row.try_get("base_url")?,
                     in_use: row.try_get("in_use")?,
                     offline: row.try_get("offline")?,
+                    name: row.try_get("name")?,
+                    description: row.try_get("description")?,
                 })
             })
             .collect()
     }
 
-    /// Saves the user's own name and email; false if the email is taken.
-    pub async fn update_account_profile(
+    /// Checks the user's own username and email against other users, and
+    /// saves the change only if nothing collides and `apply` is set.
+    pub async fn update_account(
         &self,
         realm_id: &str,
         user_id: &str,
-        profile: &Profile,
-    ) -> Result<bool, StorageError> {
+        change: &AccountChange<'_>,
+        apply: bool,
+    ) -> Result<AccountConflicts, StorageError> {
+        let username = change.checked_username.to_lowercase();
+        let email = change.profile.email.as_deref().map(str::to_lowercase);
         let mut tx = self.begin_request(false).await?;
-        let saved = save_profile(tx.connection(), realm_id, user_id, profile, false).await?;
+        let conn = tx.connection();
+        let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $3) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3) AS username_is_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $4) AS email_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $4) AS email_is_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept")
+            .bind(realm_id).bind(user_id).bind(&username).bind(&email).fetch_one(&mut *conn).await?;
+        let username_taken: bool = row.try_get("username_taken")?;
+        let email_kept: bool = row.try_get("email_kept")?;
+        let email_taken = row.try_get::<bool, _>("email_taken")?;
+        let conflicts = AccountConflicts {
+            username_taken,
+            username_is_email: !username_taken
+                && username.find('@').is_some_and(|at| at > 0)
+                && row.try_get::<bool, _>("username_is_email")?,
+            email_taken: !email_kept && email_taken,
+            email_is_username: !email_kept
+                && !email_taken
+                && row.try_get::<bool, _>("email_is_username")?,
+            email_as_username: change.email_as_username && email_taken,
+        };
+        if !apply || conflicts.any() {
+            tx.commit().await?;
+            return Ok(conflicts);
+        }
+        sqlx::query("UPDATE users SET username = $3, username_normalized = $3, locale = CASE WHEN $4 THEN $5 ELSE locale END WHERE realm_id = $1 AND id = $2")
+            .bind(realm_id).bind(user_id).bind(change.saved_username.to_lowercase())
+            .bind(change.locale.is_some()).bind(change.locale.flatten())
+            .execute(&mut *conn).await?;
+        if !save_profile(conn, realm_id, user_id, &change.profile, false).await? {
+            return Err(StorageError::InvalidInput);
+        }
         tx.commit().await?;
-        Ok(saved)
+        Ok(conflicts)
     }
 
     /// Lists the user's active, fully authenticated sessions, newest first.
