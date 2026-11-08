@@ -33,5 +33,6 @@ goal+=" Also write the next goal's text, without the /goal prefix, into $dir/NEX
 echo $$ > "$dir/RUNNING"
 trap 'rm -f "$dir/RUNNING"' EXIT
 cd "$workspace"
-claude -p --dangerously-skip-permissions --output-format stream-json --verbose "${resume[@]}" "/goal $goal" > "$log" 2>> "$run/stderr.txt"
+# No MCP servers: their tool lists cost tokens on every turn and goals don't use them.
+claude -p --dangerously-skip-permissions --strict-mcp-config --output-format stream-json --verbose "${resume[@]}" "/goal $goal" > "$log" 2>> "$run/stderr.txt"
 echo "run finished: $run"
