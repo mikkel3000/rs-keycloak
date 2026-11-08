@@ -28,6 +28,8 @@ Follow googles rust styleguide: https://google.github.io/styleguide/rustguide.ht
 
 Always use versionedcommits: https://github.com/mikkel3000/versionedcommits
 
+Every commit body holds its decisions in a "Decision:" paragraph: what was chosen, why, and the reference evidence. Only commits that change the server's behaviour for its users carry a `@major`, `@minor` or `@patch` hint; commits to agent setup, CLAUDE.md, AGENTS/ or the goal loop carry no hint.
+
 ## Keycloak compatibility work
 
 Read Keycloak's source at the revision pinned in compatibility/reference.lock before recording or implementing a rule; decompile jars only if the source can't be fetched, and say so. Recordings check those rules and set the expected values.
