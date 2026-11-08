@@ -11,8 +11,7 @@ they name, since this server re-shows every step through
 login-actions/authenticate; a page in a locale outside the theme whose
 language the theme lacks (eo) labels languages from its fallback locale,
 where the reference asks the JDK, so only selection and locales are
-compared there; the TOTP setup page shows the manual-entry steps without a
-QR code, so its list items and links are not compared; locale cookies of
+compared there; locale cookies of
 an exchange are compared as sets, since the reference sets them on each
 redirect hop.
 """
@@ -61,9 +60,6 @@ def comparable(label, observation):
         if label in JDK_LABELS:
             options = sorted([None, selected, locale] for _, selected, locale in options)
         observation["languages"]["options"] = options
-    if "configure-totp" in label:
-        observation.pop("items", None)
-        observation.pop("links", None)
     return observation
 
 

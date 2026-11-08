@@ -13,6 +13,7 @@ mod logout;
 mod notice;
 mod reset_credentials;
 mod revocation;
+mod totp_qr;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

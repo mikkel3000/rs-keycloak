@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use rs_keycloak_protocols::totp;
 use rs_keycloak_storage_postgres::{
     AccountChange, LoginStep, Profile, ProfileUpdate, UserSettings,
@@ -22,6 +24,7 @@ use zeroize::Zeroizing;
 
 use super::consent::escape;
 use super::login_locale::{self, LocaleQuery};
+use super::totp_qr;
 use super::{
     Frame, OidcState, Rejection, complete_login, csrf, digest, failure, field_error,
     notice_message, reshow_url, step_page, unavailable, valid_realm,
@@ -155,24 +158,109 @@ fn logout_checkbox(locale: &PageLocale) -> String {
     )
 }
 
-/// Shows TOTP setup with the key to enter, as the reference's manual setup
-/// mode words it, since this server draws no QR code.
+/// How the TOTP setup page offers the key, chosen through its links and
+/// kept by its form, as the reference's `mode` parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SetupMode {
+    /// The key in groups of four and the policy.
+    Manual,
+    /// The QR code, asked for again from the manual mode.
+    Qr,
+}
+
+impl SetupMode {
+    /// The mode a `mode` value names; others show the QR code without one.
+    fn parse(value: Option<&str>) -> Option<Self> {
+        match value {
+            Some("manual") => Some(Self::Manual),
+            Some("qr") => Some(Self::Qr),
+            _ => None,
+        }
+    }
+
+    fn value(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Qr => "qr",
+        }
+    }
+}
+
+/// The key as `TotpUtils.encode` shows it: base32 in groups of four.
+fn grouped_key(secret: &str) -> String {
+    let encoded = totp::base32(secret.as_bytes());
+    let groups: Vec<&str> = encoded
+        .as_bytes()
+        .chunks(4)
+        .filter_map(|group| std::str::from_utf8(group).ok())
+        .collect();
+    groups.join(" ")
+}
+
+/// What the TOTP setup page shows of the secret and the user.
+struct Setup<'a> {
+    secret: &'a str,
+    username: &'a str,
+    mode: Option<SetupMode>,
+}
+
+/// Shows TOTP setup as `login-config-totp.ftl` does: the QR code of the key
+/// URI with a link to the manual mode, or in manual mode the grouped key,
+/// the policy and a link back; the form keeps a chosen mode.
 fn setup_page(
     s: &OidcState,
     request: StepRequest<'_>,
     locale: &PageLocale,
-    secret: &str,
+    setup: &Setup<'_>,
     error: CodeError,
 ) -> Response {
     let (realm, request_id) = (request.realm, request.request_id);
     let prefix = escape(&s.path_prefix);
     let texts = &locale.messages;
-    let uri = format!(
-        "otpauth://totp/{realm}?secret={}&digits={}&algorithm=SHA1&issuer={realm}&period={}",
-        totp::base32(secret.as_bytes()),
-        totp::DIGITS,
-        totp::PERIOD,
-    );
+    let secret = setup.secret;
+    let mode_link = |mode: SetupMode, id: &str, key: &str| {
+        format!(
+            "<a href=\"{prefix}/realms/{realm}/login-actions/required-action?request={request_id}&amp;execution=CONFIGURE_TOTP&amp;mode={mode}\" id=\"{id}\">{text}</a>",
+            mode = mode.value(),
+            text = texts.html(key, &[]),
+        )
+    };
+    let key_step = if setup.mode == Some(SetupMode::Manual) {
+        format!(
+            "<li><p>{step2}</p> <p><span id=\"kc-totp-secret-key\">{key}</span></p> <p>{link}</p></li> <li><p>{step3}</p> <ul><li id=\"kc-totp-type\">{type_label}: {type_value}</li> <li id=\"kc-totp-algorithm\">{algorithm}: SHA1</li> <li id=\"kc-totp-digits\">{digits}: {digit_count}</li> <li id=\"kc-totp-period\">{interval}: {period}</li></ul></li>",
+            step2 = texts.html("loginTotpManualStep2", &[]),
+            key = grouped_key(secret),
+            link = mode_link(SetupMode::Qr, "mode-barcode", "loginTotpScanBarcode"),
+            step3 = texts.html("loginTotpManualStep3", &[]),
+            type_label = texts.html("loginTotpType", &[]),
+            type_value = texts.html("loginTotp.totp", &[]),
+            algorithm = texts.html("loginTotpAlgorithm", &[]),
+            digits = texts.html("loginTotpDigits", &[]),
+            digit_count = totp::DIGITS,
+            interval = texts.html("loginTotpInterval", &[]),
+            period = totp::PERIOD,
+        )
+    } else {
+        // The issuer is the display name with `${key}` resolved in the
+        // page's messages, as `TotpUtils.getIssuerName` resolves it.
+        let issuer = texts.resolve(&locale.realm_label);
+        let uri = totp_qr::key_uri(&issuer, setup.username, secret.as_bytes());
+        let Some(image) = totp_qr::png(&uri) else {
+            return unavailable();
+        };
+        format!(
+            "<li><p>{step2}</p> <div><img id=\"kc-totp-secret-qr-code\" src=\"data:image/png;base64, {image}\" alt=\"{step2}\"> {link}</div></li>",
+            step2 = texts.html("loginTotpStep2", &[]),
+            image = STANDARD.encode(image),
+            link = mode_link(SetupMode::Manual, "mode-manual", "loginTotpUnableToScan"),
+        )
+    };
+    let mode_field = setup.mode.map_or_else(String::new, |mode| {
+        format!(
+            "<input type=\"hidden\" id=\"mode\" name=\"mode\" value=\"{}\">",
+            mode.value()
+        )
+    });
     let (message, code_error) = match error {
         CodeError::None => (
             notice_message("alert", &texts.html("configureTotpMessage", &[])),
@@ -196,19 +284,8 @@ fn setup_page(
     .map(|app| format!("<li>{}</li>", texts.html(app, &[])))
     .collect();
     let body = format!(
-        "{message}<ol><li>{step1}<ul>{apps}</ul></li><li>{step2} <code>{key}</code></li><li>{step3}<ul><li>{type_label}: {type_value}</li><li>{algorithm}: SHA1</li><li>{digits}: {digit_count}</li><li>{interval}: {period}</li></ul><p><code>{uri}</code></p></li><li>{finish} {device}</li></ol><form id=\"kc-totp-settings-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/totp-setup/{request_id}\"><label for=\"totp\">{code_label}</label><input id=\"totp\" name=\"totp\" type=\"text\" autocomplete=\"one-time-code\" required>{code_error}<input type=\"hidden\" name=\"totpSecret\" value=\"{secret}\"><label for=\"userLabel\">{device_label}</label><input id=\"userLabel\" name=\"userLabel\" type=\"text\">{logout}<button id=\"saveTOTPBtn\">{submit}</button></form>",
+        "{message}<ol id=\"kc-totp-settings\"><li><p>{step1}</p> <ul id=\"kc-totp-supported-apps\">{apps}</ul></li> {key_step} <li><p>{finish}</p> <p>{device}</p></li></ol><form id=\"kc-totp-settings-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/totp-setup/{request_id}\"><label for=\"totp\">{code_label}</label><input id=\"totp\" name=\"totp\" type=\"text\" autocomplete=\"one-time-code\" required>{code_error}<input type=\"hidden\" name=\"totpSecret\" value=\"{secret}\">{mode_field}<label for=\"userLabel\">{device_label}</label><input id=\"userLabel\" name=\"userLabel\" type=\"text\">{logout}<button id=\"saveTOTPBtn\">{submit}</button></form>",
         step1 = texts.html("loginTotpStep1", &[]),
-        step2 = texts.html("loginTotpManualStep2", &[]),
-        key = totp::base32(secret.as_bytes()),
-        step3 = texts.html("loginTotpManualStep3", &[]),
-        type_label = texts.html("loginTotpType", &[]),
-        type_value = texts.html("loginTotp.totp", &[]),
-        algorithm = texts.html("loginTotpAlgorithm", &[]),
-        digits = texts.html("loginTotpDigits", &[]),
-        digit_count = totp::DIGITS,
-        interval = texts.html("loginTotpInterval", &[]),
-        period = totp::PERIOD,
-        uri = escape(&uri),
         finish = texts.html("loginTotpStep3", &[]),
         device = texts.html("loginTotpStep3DeviceName", &[]),
         code_label = texts.html("authenticatorCode", &[]),
@@ -275,10 +352,19 @@ async fn hold(
     };
     let request = StepRequest::new(realm, request_id, csrf);
     match step {
-        LoginStep::ConfigureTotp => match setup_secret(s, &held.realm_id, request_id).await {
-            Ok(secret) => setup_page(s, request, &locale, &secret, CodeError::None),
-            Err(()) => unavailable(),
-        },
+        LoginStep::ConfigureTotp { username } => {
+            match setup_secret(s, &held.realm_id, request_id).await {
+                Ok(secret) => {
+                    let setup = Setup {
+                        secret: &secret,
+                        username,
+                        mode: None,
+                    };
+                    setup_page(s, request, &locale, &setup, CodeError::None)
+                }
+                Err(()) => unavailable(),
+            }
+        }
         LoginStep::UpdatePassword => password_page(s, request, &locale, PasswordError::None),
         LoginStep::UpdateProfile { username, profile } => {
             let shown = Shown {
@@ -465,6 +551,8 @@ pub(super) struct SetupForm {
     user_label: Option<String>,
     #[serde(rename = "logout-sessions")]
     logout_sessions: Option<String>,
+    /// The setup mode the page was shown in, if one was chosen.
+    mode: Option<String>,
 }
 
 /// Ends the user's other sessions when the form's checkbox was set.
@@ -502,11 +590,11 @@ async fn set_up_totp(
     headers: &HeaderMap,
     form: SetupForm,
 ) -> Response {
-    match s.storage.login_step(&held.realm_id, &held.session_id).await {
-        Ok(LoginStep::ConfigureTotp) => (),
+    let username = match s.storage.login_step(&held.realm_id, &held.session_id).await {
+        Ok(LoginStep::ConfigureTotp { username }) => username,
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
-    }
+    };
     let secret = Zeroizing::new(form.totp_secret);
     if secret.len() != SECRET_LENGTH || !secret.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return failure();
@@ -519,12 +607,17 @@ async fn set_up_totp(
         } else {
             CodeError::Invalid
         };
+        let setup = Setup {
+            secret: &secret,
+            username: &username,
+            mode: SetupMode::parse(form.mode.as_deref()),
+        };
         return match shown_locale(s, held, request_id, headers).await {
             Ok(locale) => setup_page(
                 s,
                 StepRequest::new(realm, request_id, &held.csrf),
                 &locale,
-                &secret,
+                &setup,
                 error,
             ),
             Err(()) => unavailable(),
@@ -876,6 +969,28 @@ pub(super) async fn resend(
                 Ok(locale) => {
                     let request = StepRequest::new(&realm, request_id, &held.csrf);
                     verify_email_page(&s, request, &locale, &user_id, &email).await
+                }
+                Err(()) => unavailable(),
+            }
+        }
+        // The TOTP setup page's mode links, as `TotpBean`'s manual and QR
+        // URLs re-show the required action.
+        Ok(LoginStep::ConfigureTotp { username })
+            if params.get("execution").map(String::as_str) == Some("CONFIGURE_TOTP") =>
+        {
+            let secret = match setup_secret(&s, &held.realm_id, request_id).await {
+                Ok(secret) => secret,
+                Err(()) => return unavailable(),
+            };
+            let setup = Setup {
+                secret: &secret,
+                username: &username,
+                mode: SetupMode::parse(params.get("mode").map(String::as_str)),
+            };
+            match shown_locale(&s, &held, request_id, &headers).await {
+                Ok(locale) => {
+                    let request = StepRequest::new(&realm, request_id, &held.csrf);
+                    setup_page(&s, request, &locale, &setup, CodeError::None)
                 }
                 Err(()) => unavailable(),
             }

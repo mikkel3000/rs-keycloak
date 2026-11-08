@@ -19,7 +19,10 @@ pub enum LoginStep {
         username: String,
     },
     /// The user must set up TOTP.
-    ConfigureTotp,
+    ConfigureTotp {
+        /// The signed-in user's username, which the key URI names.
+        username: String,
+    },
     /// The user must choose a new password.
     UpdatePassword,
     /// The user must review their profile; carries the current values.
@@ -243,7 +246,9 @@ impl Storage {
             });
         }
         if configure {
-            return Ok(LoginStep::ConfigureTotp);
+            return Ok(LoginStep::ConfigureTotp {
+                username: row.try_get("username")?,
+            });
         }
         if row.try_get::<bool, _>("update_password")? {
             return Ok(LoginStep::UpdatePassword);

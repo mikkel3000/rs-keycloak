@@ -1174,10 +1174,10 @@ reference names each step's login-actions path, so links are compared by
 label, selection and locale; a page in a locale outside the theme whose
 language the theme lacks (such as `eo`) takes its language labels from its
 fallback locale, where the reference asks the JDK, and the order can
-differ for scripts the JDK's collator orders otherwise; TOTP setup shows
-the manual-entry steps without a QR code; the `loginWithEmailAllowed`
-setting and themes other than the pinned default are not implemented
-(realm localization texts came later, see "Realm localization texts"); a
+differ for scripts the JDK's collator orders otherwise; themes other than
+the pinned default are not implemented (realm localization texts, email
+login and the TOTP QR code came later, see "Realm localization texts",
+"Email login and duplicate emails" and "TOTP setup QR code"); a
 login continued from the page after a sent email
 keeps the pick, where the reference's fork has none. Info, error and
 logout pages are in "Info and error pages".
@@ -1346,3 +1346,41 @@ replayed; a forgot-password request naming a shared email sends no mail,
 where the reference's lookup fails; the reference turns an email made
 unique again (after duplicates end) back into a constraint on lookup,
 which this server does not.
+
+## TOTP setup QR code
+
+The CONFIGURE_TOTP page shows the reference's QR code and manual mode, as
+recorded in `tests/reference/totp-qr-observations.json` and read from the
+pinned source (`TotpUtils`, `QRCodeUtils`, `OTPPolicy.getKeyURI`,
+`TotpBean`, `login-config-totp.ftl` and `qr-code.ftl` of keycloak.v2):
+
+- The code holds the key URI
+  `otpauth://totp/<issuer>:<account>?secret=…&digits=6&algorithm=SHA1&issuer=<issuer>&period=30`.
+  The issuer is the display name with `${key}` resolved in the page's
+  messages, so realm texts in the user's locale name it, else the realm
+  name; ':' becomes a space, and both parts are encoded as Java's
+  `URLEncoder` does, the issuer with `%20` for spaces.
+- The code is drawn as zxing's `QRCodeWriter` draws it: error correction
+  level L without raising it, one segment, a four-module quiet zone,
+  scaled by a whole number into 246 pixels and centered, written as a
+  one-bit grayscale PNG in a `data:` URL. It uses the pinned `qrcodegen`
+  1.8.0 (MIT) and `png` 0.18.1 (MIT or Apache-2.0) crates.
+- "Unable to scan?" opens the manual mode through
+  `login-actions/required-action?execution=CONFIGURE_TOTP&mode=manual`,
+  which shows the key in groups of four with the policy, and "Scan
+  barcode?" returns with `mode=qr`. The form keeps a chosen mode in a
+  hidden `mode` field, so a failed code re-shows the same mode; the key
+  stays the same throughout, as before. The page no longer shows the key
+  URI as text.
+- `tests/qr_code.py` reads a code from its PNG with the standard library
+  and checks its Reed-Solomon bytes, so the recorder and contract compare
+  codes by content, size, quiet zone, version and level; it was checked
+  against the pinned distribution's zxing 3.4.0 jars.
+
+`tests/public/totp_qr_contract.py` checks 5 groups, each under 150 ms, and
+`tests/public/login_messages_contract.py` now compares the TOTP page's
+list items and links too.
+
+Remaining differences: the QR code's mask can differ from zxing's, which
+the comparison by content does not see; HOTP policies and other OTP
+policy settings are not implemented, so the policy shown is the default.

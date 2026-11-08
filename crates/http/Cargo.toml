@@ -23,6 +23,8 @@ zeroize = "=1.9.1"
 percent-encoding = "=2.3.2"
 icu_normalizer = { version = "=2.4.0", default-features = false, features = ["compiled_data"] }
 icu_properties = "=2.4.0"
+qrcodegen = "=1.8.0"
+png = "=0.18.1"
 
 [dev-dependencies]
 tower = { version = "=0.5.3", features = ["util"] }
