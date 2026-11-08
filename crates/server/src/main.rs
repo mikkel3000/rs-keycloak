@@ -290,10 +290,15 @@ async fn run() -> Result<(), &'static str> {
                 let (stop, signal) = tokio::sync::watch::channel(false);
                 let mut public_signal = signal.clone();
                 let mut management_signal = signal;
-                let public = axum::serve(http_listener, rs_keycloak_http::oidc::router(state))
-                    .with_graceful_shutdown(async move {
-                        let _ = public_signal.changed().await;
-                    });
+                // The peer address reaches handlers for brute-force detection.
+                let public = axum::serve(
+                    http_listener,
+                    rs_keycloak_http::oidc::router(state)
+                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                )
+                .with_graceful_shutdown(async move {
+                    let _ = public_signal.changed().await;
+                });
                 let management = axum::serve(listener, rs_keycloak_http::management_router())
                     .with_graceful_shutdown(async move {
                         let _ = management_signal.changed().await;

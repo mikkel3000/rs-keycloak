@@ -145,6 +145,11 @@ pub(super) fn representation(user: UserRecord) -> Value {
     );
     fields.insert("requiredActions".into(), json!(user.required_actions));
     fields.insert("notBefore".into(), json!(0));
+    // Permanent lockout's reason is the one attribute kept, as the
+    // reference's disabledReason.
+    if let Some(reason) = user.disabled_reason {
+        fields.insert("attributes".into(), json!({ "disabledReason": [reason] }));
+    }
     Value::Object(fields)
 }
 

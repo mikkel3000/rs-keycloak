@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 
+mod attack_detection;
 mod authentication;
 mod client_scopes;
 mod clients;
@@ -37,6 +38,7 @@ mod users;
 /// Admin routes, mounted with the public routes below the issuer path.
 pub(crate) fn routes() -> Router<OidcState> {
     Router::new()
+        .merge(attack_detection::routes())
         .merge(authentication::routes())
         .merge(client_scopes::routes())
         .merge(clients::routes())
@@ -562,9 +564,10 @@ impl UserSettingFields {
 }
 
 fn unsupported_realm_field(fields: &Map<String, Value>) -> Result<(), AdminError> {
-    match fields.keys().find(|key| {
-        !REALM_FIELDS.contains(&key.as_str()) && !login_settings::FIELDS.contains(&key.as_str())
-    }) {
+    match fields
+        .keys()
+        .find(|key| !REALM_FIELDS.contains(&key.as_str()) && !login_settings::reads(key))
+    {
         Some(field) => Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
         ))),
@@ -671,7 +674,7 @@ async fn read_realm(
         // recorded, and these values are the defaults this server has.
         let mut brief = json!({
             "realm": realm.name,
-            "bruteForceProtected": false,
+            "bruteForceProtected": realm.login.brute_force.protected,
             "organizationsEnabled": false,
             "supportedLocales": realm.user_settings.supported_locales,
         });

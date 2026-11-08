@@ -3,14 +3,41 @@
 //! realm creation and update and shown in the representation.
 
 use axum::http::StatusCode;
-use rs_keycloak_storage_postgres::{LoginSettingChanges, LoginSettings, OtpPolicy};
+use rs_keycloak_storage_postgres::{
+    BruteForceChanges, LoginSettingChanges, LoginSettings, OtpPolicy,
+};
 use serde_json::{Map, Value, json};
 
 use super::AdminError;
 use crate::oidc::{SSO_SESSION_IDLE_TIMEOUT, SSO_SESSION_MAX_LIFESPAN};
 
-/// The realm fields this module reads.
-pub(super) const FIELDS: [&str; 12] = [
+/// The brute-force detection fields, read and shown alike.
+const BRUTE_FORCE_FIELDS: [&str; 10] = [
+    "bruteForceProtected",
+    "permanentLockout",
+    "maxTemporaryLockouts",
+    "bruteForceStrategy",
+    "maxFailureWaitSeconds",
+    "minimumQuickLoginWaitSeconds",
+    "waitIncrementSeconds",
+    "quickLoginCheckMilliSeconds",
+    "maxDeltaTimeSeconds",
+    "failureFactor",
+];
+
+/// Whether this module reads a realm field.
+pub(super) fn reads(field: &str) -> bool {
+    FIELDS.contains(&field) || BRUTE_FORCE_FIELDS.contains(&field)
+}
+
+/// Whether [`represent`] adds a realm field, which partial import then
+/// leaves alone.
+pub(super) fn represented(field: &str) -> bool {
+    REPRESENTED.contains(&field) || BRUTE_FORCE_FIELDS.contains(&field)
+}
+
+/// The realm fields this module reads besides brute-force detection.
+const FIELDS: [&str; 12] = [
     "rememberMe",
     "ssoSessionIdleTimeoutRememberMe",
     "ssoSessionMaxLifespanRememberMe",
@@ -25,8 +52,8 @@ pub(super) const FIELDS: [&str; 12] = [
     "otpSupportedApplications",
 ];
 
-/// The realm fields [`represent`] adds, which partial import leaves alone.
-pub(super) const REPRESENTED: [&str; 14] = [
+/// The realm fields [`represent`] adds besides brute-force detection.
+const REPRESENTED: [&str; 14] = [
     "otpPolicyType",
     "otpPolicyAlgorithm",
     "otpPolicyInitialCounter",
@@ -115,6 +142,36 @@ pub(super) fn parse(fields: &Map<String, Value>) -> Result<LoginSettingChanges, 
         sso_session_max_lifespan_remember_me: number(fields, "ssoSessionMaxLifespanRememberMe")?,
         registration_allowed: flag(fields, "registrationAllowed")?,
         otp_policy: otp_policy(fields)?,
+        brute_force: brute_force(fields)?,
+    })
+}
+
+/// The brute-force settings a representation gives; the strategy must be
+/// one of the reference's enum values.
+fn brute_force(fields: &Map<String, Value>) -> Result<BruteForceChanges, AdminError> {
+    let strategy = text(fields, "bruteForceStrategy")?;
+    if strategy
+        .as_deref()
+        .is_some_and(|strategy| !matches!(strategy, "MULTIPLE" | "LINEAR"))
+    {
+        return Err(unparsable());
+    }
+    let quick = match fields.get("quickLoginCheckMilliSeconds") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(value)) => Some(value.as_i64().ok_or_else(unparsable)?),
+        Some(_) => return Err(unparsable()),
+    };
+    Ok(BruteForceChanges {
+        protected: flag(fields, "bruteForceProtected")?,
+        permanent_lockout: flag(fields, "permanentLockout")?,
+        max_temporary_lockouts: number(fields, "maxTemporaryLockouts")?,
+        strategy,
+        max_failure_wait_seconds: number(fields, "maxFailureWaitSeconds")?,
+        minimum_quick_login_wait_seconds: number(fields, "minimumQuickLoginWaitSeconds")?,
+        wait_increment_seconds: number(fields, "waitIncrementSeconds")?,
+        quick_login_check_milli_seconds: quick,
+        max_delta_time_seconds: number(fields, "maxDeltaTimeSeconds")?,
+        failure_factor: number(fields, "failureFactor")?,
     })
 }
 
@@ -139,4 +196,15 @@ pub(super) fn represent(settings: &LoginSettings, representation: &mut Value) {
     representation["otpPolicyCodeReusable"] = json!(otp.code_reusable);
     representation["otpSupportedApplications"] =
         json!(crate::otp_policy::supported_applications(otp));
+    let brute = &settings.brute_force;
+    representation["bruteForceProtected"] = json!(brute.protected);
+    representation["permanentLockout"] = json!(brute.permanent_lockout);
+    representation["maxTemporaryLockouts"] = json!(brute.max_temporary_lockouts);
+    representation["bruteForceStrategy"] = json!(brute.strategy);
+    representation["maxFailureWaitSeconds"] = json!(brute.max_failure_wait_seconds);
+    representation["minimumQuickLoginWaitSeconds"] = json!(brute.minimum_quick_login_wait_seconds);
+    representation["waitIncrementSeconds"] = json!(brute.wait_increment_seconds);
+    representation["quickLoginCheckMilliSeconds"] = json!(brute.quick_login_check_milli_seconds);
+    representation["maxDeltaTimeSeconds"] = json!(brute.max_delta_time_seconds);
+    representation["failureFactor"] = json!(brute.failure_factor);
 }

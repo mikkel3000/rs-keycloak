@@ -17,6 +17,7 @@ mod revocation;
 mod totp_qr;
 
 use std::collections::BTreeMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,15 +28,15 @@ use crate::client_auth::{
 use crate::locale::PageLocale;
 use crate::login_theme::escape;
 use axum::extract::rejection::FormRejection;
-use axum::extract::{DefaultBodyLimit, Form, Path, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Form, Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use login_locale::LocaleQuery;
-use rs_keycloak_authentication::{LoginResult, LoginService, PasswordWorkError};
+use rs_keycloak_authentication::{LoginAttempt, LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
     IdTokenClaims, RealmAccess, SigningKey, TokenClaims, UserClaims, VerifiedToken,
@@ -777,9 +778,12 @@ async fn authenticate(
     State(s): State<OidcState>,
     Path((realm, request_id)): Path<(String, String)>,
     Query(locale_query): Query<LocaleQuery>,
+    connection: Option<Extension<ConnectInfo<SocketAddr>>>,
     headers: HeaderMap,
     Form(form): Form<LoginForm>,
 ) -> Response {
+    // Brute-force detection records where a failure came from.
+    let address = connection.map(|Extension(ConnectInfo(peer))| peer.ip().to_string());
     if !valid_realm(&realm)
         || request_id.len() != 64
         || form.username.len() > 255
@@ -822,11 +826,14 @@ async fn authenticate(
     let result = s
         .login
         .authenticate(
-            &realm_id,
-            &client_id,
-            &form.username.to_lowercase(),
+            &LoginAttempt {
+                realm_id: &realm_id,
+                client_id: &client_id,
+                username_normalized: &form.username.to_lowercase(),
+                remember_me,
+                address: address.as_deref(),
+            },
             password,
-            remember_me,
         )
         .await;
     // A refused form keeps the username, as the reference's LoginBean.

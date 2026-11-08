@@ -1529,3 +1529,49 @@ tests.
 Remaining differences: digits outside 1 to 10, an unknown algorithm or
 type, or a period under 1 make every code fail, where the reference
 fails with an error; reuse is tracked by step rather than by code text.
+
+## Brute-force detection
+
+Realms keep the reference's brute-force settings, and the login form
+counts failures and locks users as recorded in
+`tests/reference/brute-force-observations.json` and read from the pinned
+source (`RealmManager`, `DefaultBruteForceProtector`,
+`AbstractUsernameFormAuthenticator.isDisabledByBruteForce`,
+`AttackDetectionResource` and `UserResource`):
+
+- Migration 43 adds `bruteForceProtected` (off), `permanentLockout`,
+  `maxTemporaryLockouts`, `bruteForceStrategy`, `maxFailureWaitSeconds`,
+  `minimumQuickLoginWaitSeconds`, `waitIncrementSeconds`,
+  `quickLoginCheckMilliSeconds`, `maxDeltaTimeSeconds` and
+  `failureFactor` with the reference's defaults. It drops the fixed
+  lockout of migration 3 (five failures, 60 seconds in every realm), so a
+  realm without detection never locks, as in the reference.
+- In a protected realm each wrong password of a known user counts in the
+  same transaction as the check: failures further apart than
+  `maxDeltaTimeSeconds` start a new count, the wait grows by
+  `waitIncrementSeconds` per `failureFactor` failures (or linearly), two
+  failures closer than `quickLoginCheckMilliSeconds` lock for
+  `minimumQuickLoginWaitSeconds`, and waits stop at
+  `maxFailureWaitSeconds`. With `permanentLockout` the user is disabled
+  with the `disabledReason` attribute `permanentLockout` after
+  `maxTemporaryLockouts` lockouts, or at `failureFactor` failures when
+  that is 0. The client's address is kept as `lastIPFailure`.
+- A locked user's password is not checked and the form shows the same
+  "Invalid username or password." as a wrong one; a success clears the
+  count.
+- `GET attack-detection/brute-force/users/{id}` shows the state, the
+  defaults for unprotected realms and unknown users, with
+  `failedLoginNotBefore` the lock's end or `Long.MAX_VALUE` when
+  disabled permanently. `DELETE` on it, or on
+  `attack-detection/brute-force/users` for every user, clears failures.
+  An admin update that leaves the user enabled clears failures and the
+  disabled reason.
+
+`tests/public/brute_force_contract.py` replays every recorded case in 6
+tests.
+
+Remaining differences: OTP failures are not counted
+(`accountTemporarilyDisabledMessageTotp`, `maxSecondaryAuthFailures`);
+the lockout events are not written; any admin update of an enabled user
+clears failures, where the reference does so only when `enabled` is sent
+true.

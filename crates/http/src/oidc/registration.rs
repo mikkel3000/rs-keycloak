@@ -10,7 +10,7 @@ use axum::Form;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use rs_keycloak_authentication::LoginResult;
+use rs_keycloak_authentication::{LoginAttempt, LoginResult};
 use rs_keycloak_storage_postgres::{Actor, Collision, NewPassword, NewUser, UserCreation};
 use serde::Deserialize;
 use uuid::Uuid;
@@ -434,11 +434,14 @@ pub(super) async fn submit(
     match s
         .login
         .authenticate(
-            &bound.realm_id,
-            &bound.client_id,
-            &username,
+            &LoginAttempt {
+                realm_id: &bound.realm_id,
+                client_id: &bound.client_id,
+                username_normalized: &username,
+                remember_me: false,
+                address: None,
+            },
             password,
-            false,
         )
         .await
     {

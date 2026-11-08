@@ -47,6 +47,8 @@ pub struct UserRecord {
     pub totp: bool,
     /// The locale the user chose, if any.
     pub locale: Option<String>,
+    /// Why the user was disabled, such as `permanentLockout`.
+    pub disabled_reason: Option<String>,
 }
 
 /// A password to store with a new user.
@@ -166,7 +168,7 @@ pub struct UserQuery<'a> {
 /// service accounts are never listed.
 const USER_QUERY_CONDITIONS: &str = "realm_id = $1 AND service_account_client_id IS NULL AND ($2::text IS NULL OR username_normalized LIKE $2 ESCAPE '\\' OR email_normalized LIKE $2 ESCAPE '\\' OR lower(first_name) LIKE $2 ESCAPE '\\' OR lower(last_name) LIKE $2 ESCAPE '\\') AND ($3::text IS NULL OR username_normalized LIKE $3 ESCAPE '\\') AND ($4::text IS NULL OR email_normalized LIKE $4 ESCAPE '\\') AND ($5::text IS NULL OR lower(first_name) LIKE $5 ESCAPE '\\') AND ($6::text IS NULL OR lower(last_name) LIKE $6 ESCAPE '\\') AND ($7::boolean IS NULL OR enabled = $7) AND ($8::boolean IS NULL OR email_verified = $8)";
 
-pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp, locale";
+pub(crate) const USER_COLUMNS: &str = "id, username, email, email_verified, first_name, last_name, enabled, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created_timestamp, required_actions, EXISTS (SELECT 1 FROM credentials c WHERE c.realm_id = users.realm_id AND c.user_id = users.id AND c.credential_type = 'otp') AS totp, locale, disabled_reason";
 
 pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
     Ok(UserRecord {
@@ -181,6 +183,7 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
         required_actions: row.try_get("required_actions")?,
         totp: row.try_get("totp")?,
         locale: row.try_get("locale")?,
+        disabled_reason: row.try_get("disabled_reason")?,
     })
 }
 
@@ -278,11 +281,16 @@ impl Storage {
         }
         // A kept email keeps its uniqueness; a new one is unique unless the
         // realm allows duplicates, as the reference's EMAIL_CONSTRAINT.
-        sqlx::query("UPDATE users u SET username = $9, username_normalized = $9, email_unique = CASE WHEN u.email_normalized IS NOT DISTINCT FROM $3 THEN u.email_unique ELSE NOT r.duplicate_emails_allowed END, email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
+        sqlx::query("UPDATE users u SET username = $9, username_normalized = $9, email_unique = CASE WHEN u.email_normalized IS NOT DISTINCT FROM $3 THEN u.email_unique ELSE NOT r.duplicate_emails_allowed END, email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8, disabled_reason = CASE WHEN $7 THEN NULL ELSE u.disabled_reason END FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
             .bind(realm_id).bind(user_id).bind(user.email).bind(user.email_verified)
             .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions)
             .bind(&username)
             .execute(&mut *conn).await?;
+        // An enabled user starts without failures, as UserResource clears
+        // them and any permanent lockout.
+        if user.enabled {
+            crate::brute_force::clear(&mut *conn, realm_id, user_id).await?;
+        }
         audit(conn, actor, "user_updated").await?;
         tx.commit().await?;
         Ok(UserUpdate::Updated)

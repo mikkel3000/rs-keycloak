@@ -5,8 +5,8 @@ use sqlx::postgres::PgRow;
 
 use crate::localization::{LocalizationTexts, merge_texts};
 use crate::login_settings::{
-    LOGIN_SETTING_COLUMNS, LoginSettingChanges, LoginSettings, change_login_settings,
-    login_settings_row,
+    BRUTE_FORCE_COLUMNS, LOGIN_SETTING_COLUMNS, LoginSettingChanges, LoginSettings,
+    change_login_settings, login_settings_row,
 };
 use crate::{Actor, Storage, StorageError, audit};
 
@@ -279,7 +279,7 @@ impl Storage {
     pub async fn realm_by_name(&self, name: &str) -> Result<Option<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let row = sqlx::query(&format!(
-            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS} FROM realms WHERE name = $1"
+            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS}, {BRUTE_FORCE_COLUMNS} FROM realms WHERE name = $1"
         ))
         .bind(name)
         .fetch_optional(tx.connection())
@@ -315,7 +315,7 @@ impl Storage {
     pub async fn realms(&self) -> Result<Vec<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let rows = sqlx::query(&format!(
-            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS} FROM realms ORDER BY name"
+            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS}, {BRUTE_FORCE_COLUMNS} FROM realms ORDER BY name"
         ))
         .fetch_all(tx.connection())
         .await?;

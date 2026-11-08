@@ -2,6 +2,7 @@
 
 mod account;
 mod action_tokens;
+mod brute_force;
 mod client_admin;
 mod consent;
 mod cors;
@@ -20,6 +21,7 @@ mod user_admin;
 
 pub use account::{AccountApplication, AccountChange, AccountConflicts, AccountSession};
 pub use action_tokens::{ActionToken, LinkUser, RedeemedToken, TokenLookup, VerifyLink};
+pub use brute_force::BruteForceStatus;
 pub use client_admin::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
 };
@@ -28,7 +30,9 @@ pub use cors::WebOriginCheck;
 pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
 pub use localization::LocalizationTexts;
 pub use login_locale::{LoginLocale, UserLocaleUpdate};
-pub use login_settings::{LoginSettingChanges, LoginSettings, OtpPolicy};
+pub use login_settings::{
+    BruteForce, BruteForceChanges, LoginSettingChanges, LoginSettings, OtpPolicy,
+};
 pub use login_steps::{
     CredentialRecord, LoginStep, OtpCredential, OtpData, OtpUse, Profile, ProfileUpdate,
     RequiredActionSetting,
@@ -102,6 +106,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0040_remember_me.sql"),
     include_str!("../../../migrations/0041_registration.sql"),
     include_str!("../../../migrations/0042_otp_policy.sql"),
+    include_str!("../../../migrations/0043_brute_force.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -697,15 +702,9 @@ impl Storage {
             return Ok(None);
         };
         let user_id: String = row.try_get("user_id")?;
-        sqlx::query(
-            "INSERT INTO login_lockouts (realm_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        )
-        .bind(realm_id)
-        .bind(&user_id)
-        .execute(&mut *conn)
-        .await?;
-        let locked: bool = sqlx::query_scalar("SELECT COALESCE(locked_until > clock_timestamp(), false) FROM login_lockouts WHERE realm_id = $1 AND user_id = $2 FOR UPDATE").bind(realm_id).bind(&user_id).fetch_one(&mut *conn).await?;
-        if locked {
+        // A locked user's password is not checked, as the reference's
+        // isDisabledByBruteForce comes first.
+        if brute_force::locked(&mut *conn, realm_id, &user_id).await? {
             return Ok(None);
         }
         let pending: i64 = sqlx::query_scalar("SELECT count(*) FROM login_challenges WHERE realm_id = $1 AND user_id = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp()")
@@ -736,6 +735,7 @@ impl Storage {
         session_id: &str,
         session_ttl_seconds: i32,
         remember_me: bool,
+        address: Option<&str>,
     ) -> Result<LoginOutcome, StorageError> {
         if !(1..=86400).contains(&session_ttl_seconds) {
             return Err(StorageError::InvalidInput);
@@ -757,7 +757,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(LoginOutcome::Denied);
         };
-        let locked: bool = sqlx::query_scalar("SELECT COALESCE(locked_until > clock_timestamp(), false) FROM login_lockouts WHERE realm_id = $1 AND user_id = $2 FOR UPDATE").bind(&realm).bind(&user).fetch_one(&mut *conn).await?;
+        let locked = brute_force::locked(&mut *conn, &realm, &user).await?;
         let current = challenge.try_get::<i64, _>("user_revision")? == user_revision
             && challenge.try_get::<i64, _>("credential_revision")? == credential_revision
             && row.try_get::<bool, _>("enabled")?
@@ -768,12 +768,11 @@ impl Storage {
             return Ok(LoginOutcome::Denied);
         }
         if !password_valid {
-            sqlx::query("UPDATE login_lockouts l SET failures = CASE WHEN l.locked_until <= CURRENT_TIMESTAMP THEN 1 ELSE l.failures + 1 END, locked_until = CASE WHEN (CASE WHEN l.locked_until <= CURRENT_TIMESTAMP THEN 1 ELSE l.failures + 1 END) >= COALESCE(p.max_failures, 5) THEN CURRENT_TIMESTAMP + make_interval(secs => COALESCE(p.lock_seconds, 60)) ELSE NULL END FROM realms r LEFT JOIN login_policy p ON p.realm_id = r.id WHERE l.realm_id = r.id AND l.realm_id = $1 AND l.user_id = $2")
-                .bind(&realm).bind(&user).execute(&mut *conn).await?;
+            brute_force::record_failure(&mut *conn, &realm, &user, address).await?;
             tx.commit().await?;
             return Ok(LoginOutcome::Denied);
         }
-        sqlx::query("UPDATE login_lockouts SET failures = 0, locked_until = NULL WHERE realm_id = $1 AND user_id = $2").bind(&realm).bind(&user).execute(&mut *conn).await?;
+        brute_force::clear(&mut *conn, &realm, &user).await?;
         // A remembered session lives for the larger of the idle timeout and
         // its remember-me value, as the reference's RealmExpiration.
         sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending, remember_me) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => CASE WHEN $5 AND r.remember_me THEN GREATEST($4, r.sso_session_idle_timeout_remember_me) ELSE $4 END), rs_prepare_login_steps($1, $3), $5 AND r.remember_me FROM users u JOIN realms r ON r.id = u.realm_id WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).bind(remember_me).execute(&mut *conn).await?;

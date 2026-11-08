@@ -79,6 +79,21 @@ pub enum LoginResult {
     SharedEmail,
 }
 
+/// One password sign-in's context.
+#[derive(Clone, Copy)]
+pub struct LoginAttempt<'a> {
+    /// The validated realm.
+    pub realm_id: &'a str,
+    /// The validated client.
+    pub client_id: &'a str,
+    /// The lowercased username or email entered.
+    pub username_normalized: &'a str,
+    /// Whether the user asked to be remembered.
+    pub remember_me: bool,
+    /// The client address, which brute-force detection records.
+    pub address: Option<&'a str>,
+}
+
 /// Coordinates password work with guarded database state transitions.
 pub struct LoginService {
     storage: Arc<rs_keycloak_storage_postgres::Storage>,
@@ -100,12 +115,16 @@ impl LoginService {
     /// establish protocol, redirect, CSRF, and client bindings before use.
     pub async fn authenticate(
         &self,
-        realm_id: &str,
-        client_id: &str,
-        username_normalized: &str,
+        attempt: &LoginAttempt<'_>,
         password: Zeroizing<Vec<u8>>,
-        remember_me: bool,
     ) -> Result<LoginResult, PasswordWorkError> {
+        let LoginAttempt {
+            realm_id,
+            client_id,
+            username_normalized,
+            remember_me,
+            address,
+        } = *attempt;
         if password.len() > 1024 {
             return Err(PasswordWorkError);
         }
@@ -153,6 +172,7 @@ impl LoginService {
                 &session_id,
                 1800,
                 remember_me,
+                address,
             )
             .await
             .map_err(|_| PasswordWorkError)?
