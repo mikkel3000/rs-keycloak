@@ -1382,3 +1382,33 @@ list items and links too.
 Remaining differences: the QR code's mask can differ from zxing's, which
 the comparison by content does not see; HOTP policies and other OTP
 policy settings are not implemented, so the policy shown is the default.
+
+## Profile verification at login
+
+VERIFY_PROFILE stops a login whose user misses a field the default user
+profile requires, as recorded in
+`tests/reference/verify-profile-observations.json` and read from the
+pinned source (`VerifyUserProfile`, `UpdateProfile.processAction`,
+`DefaultRequiredActions` and the default user-profile configuration):
+
+- The action is listed and on by default at priority 100 (migration 39
+  allows its setting). While it is on, a user without a first name, last
+  name or email gets the profile form after every other step, as its
+  priority puts it last; it is never added to the user's required
+  actions, so `rs_verify_profile_due` decides it from the stored profile
+  each time a session's steps are counted.
+- The form is UPDATE_PROFILE's, showing each missing field's
+  `error-user-attribute-required` instead of the reminder; submissions
+  follow UPDATE_PROFILE's checks and messages, and a passing one saves the
+  profile and continues the login. A user with UPDATE_PROFILE as well
+  sees one form, with the reminder.
+- A realm that turns the action off signs such users in without it.
+
+`tests/public/verify_profile_contract.py` replays every recorded case in
+7 tests. Contracts whose users sign in now give them a name and email, as
+the reference fixtures did.
+
+Remaining differences: only missing values count, since admin creation
+already refuses the formats the profile checks; VERIFY_PROFILE cannot be
+a default action, since it is never assigned; the reference's
+`VERIFY_PROFILE` event is not written.

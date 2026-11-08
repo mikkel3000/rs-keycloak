@@ -26,7 +26,7 @@ class AccountConsoleApiContract(AdminCase):
         base = f"/admin/realms/{self.realm}"
         for name in ("plain-app", "unused-app"):
             self.assertEqual(self.call("POST", base + "/clients", {"clientId": name, "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        user = self.call("POST", base + "/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        user = self.call("POST", base + "/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         password = secrets.token_urlsafe(30)
         self.call("PUT", f"{base}/users/{user}/reset-password", {"type": "password", "value": password})
         self.account = self.browser_login(self.realm, "account-console", f"{ISSUER_BASE}/realms/{self.realm}/account/", "reference-user", password)

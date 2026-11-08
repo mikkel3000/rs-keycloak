@@ -377,6 +377,29 @@ async fn hold(
                 Err(_) => unavailable(),
             }
         }
+        LoginStep::VerifyProfile { username, profile } => {
+            // As VerifyUserProfile's challenge: the form shows the stored
+            // profile's errors instead of the reminder.
+            let missing = [
+                ("email", profile.email.is_none()),
+                ("firstName", profile.first_name.is_none()),
+                ("lastName", profile.last_name.is_none()),
+            ];
+            let errors: Vec<(&str, &str)> = missing
+                .into_iter()
+                .filter(|(_, missing)| *missing)
+                .map(|(field, _)| (field, "error-user-attribute-required"))
+                .collect();
+            let shown = Shown {
+                username,
+                profile,
+                errors: &errors,
+            };
+            match s.storage.user_settings(&held.realm_id).await {
+                Ok(settings) => profile_page(s, request, &locale, &settings, &shown),
+                Err(_) => unavailable(),
+            }
+        }
         LoginStep::VerifyEmail { user_id, email } => {
             verify_email_page(s, request, &locale, user_id, email).await
         }
@@ -1119,7 +1142,10 @@ async fn save_profile(
     form: ProfileForm,
 ) -> Response {
     let (current, stored) = match s.storage.login_step(&held.realm_id, &held.session_id).await {
-        Ok(LoginStep::UpdateProfile { username, profile }) => (username, profile),
+        Ok(
+            LoginStep::UpdateProfile { username, profile }
+            | LoginStep::VerifyProfile { username, profile },
+        ) => (username, profile),
         Ok(_) => return failure(),
         Err(_) => return unavailable(),
     };

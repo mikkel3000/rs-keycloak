@@ -68,7 +68,7 @@ class RedirectMatchingContract(AdminCase):
 
     def test_account_console_signs_in(self):
         password = secrets.token_urlsafe(30)
-        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "console-user", "enabled": True})[1]["location"]
+        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "console-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "console-user@example.invalid"})[1]["location"]
         self.call("PUT", location.split(ISSUER_BASE, 1)[1] + "/reset-password", {"type": "password", "value": password})
         # Any path below the account page matches the console's wildcard.
         redirect = f"{ISSUER_BASE}/realms/{self.realm}/account/personal-info"

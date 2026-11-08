@@ -26,7 +26,7 @@ class AdminSessionsContract(AdminCase):
         for name in ("first-app", "second-app"):
             self.assertEqual(self.call("POST", self.base + "/clients", {"clientId": name, "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
         self.ids = {item["clientId"]: item["id"] for item in json.loads(self.call("GET", self.base + "/clients")[2])}
-        self.user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        self.user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(30)
         self.call("PUT", f"{self.base}/users/{self.user}/reset-password", {"type": "password", "value": self.password})
 

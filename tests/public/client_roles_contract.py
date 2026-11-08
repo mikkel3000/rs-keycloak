@@ -26,7 +26,7 @@ class ClientRolesContract(AdminCase):
         clients = json.loads(self.call("GET", base + "/clients")[2])
         self.ids = {client["clientId"]: client["id"] for client in clients}
         self.app = self.ids["roles-app"]
-        location = self.call("POST", base + "/users", {"username": "reference-user", "enabled": True})[1]["location"]
+        location = self.call("POST", base + "/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"]
         self.user = location.rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(30)
         self.call("PUT", f"{base}/users/{self.user}/reset-password", {"type": "password", "value": self.password})

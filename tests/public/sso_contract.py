@@ -53,7 +53,7 @@ class SsoContract(AdminCase):
         clients = f"/admin/realms/{self.realm}/clients"
         for name in ("sso-app", "sso-other"):
             self.assertEqual(self.call("POST", clients, {"clientId": name, "publicClient": True, "redirectUris": [CALLBACK], "attributes": {"post.logout.redirect.uris": "+"}})[0], 201)
-        user = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        user = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(32)
         self.call("PUT", f"/admin/realms/{self.realm}/users/{user}/reset-password", {"type": "password", "value": self.password})
         self.endpoint = f"/realms/{self.realm}/protocol/openid-connect"

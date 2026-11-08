@@ -45,7 +45,7 @@ class ResetCase(AdminCase):
         smtp = {"host": "127.0.0.1", "port": str(self.sink.port), "from": "noreply@example.invalid", "fromDisplayName": "Reference Realm"}
         self.assertEqual(self.call("PUT", f"/admin/realms/{self.realm}", {"smtpServer": smtp, "resetPasswordAllowed": True})[0], 204)
         self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "reset-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "email": "reference@example.invalid"})
+        self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference@example.invalid"})
         self.sink.received.clear()
 
     def login_page(self, realm=None):

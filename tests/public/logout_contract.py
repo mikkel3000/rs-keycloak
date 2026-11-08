@@ -25,7 +25,7 @@ class LogoutContract(AdminCase):
         clients = f"/admin/realms/{self.realm}/clients"
         self.assertEqual(self.call("POST", clients, {"clientId": "logout-app", "publicClient": True, "redirectUris": [CALLBACK], "attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": CALLBACK + "/logged-out"}})[0], 201)
         self.assertEqual(self.call("POST", clients, {"clientId": "other-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        user = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        user = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(32)
         self.call("PUT", f"/admin/realms/{self.realm}/users/{user}/reset-password", {"type": "password", "value": self.password})
 

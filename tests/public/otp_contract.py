@@ -41,7 +41,7 @@ class OtpContract(AdminCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "otp-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "requiredActions": ["CONFIGURE_TOTP"]})[1]["location"]
+        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid", "requiredActions": ["CONFIGURE_TOTP"]})[1]["location"]
         self.user = location.rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(32)
         self.call("PUT", f"/admin/realms/{self.realm}/users/{self.user}/reset-password", {"type": "password", "value": self.password})

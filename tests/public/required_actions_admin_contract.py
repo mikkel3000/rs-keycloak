@@ -17,7 +17,7 @@ REFERENCE = json.loads(
     (pathlib.Path(__file__).resolve().parents[1] / "reference/required-action-admin-observations.json").read_text()
 )["observations"]
 CALLBACK = "https://app.example.test/callback"
-MODELLED = {"CONFIGURE_TOTP", "UPDATE_PASSWORD", "UPDATE_PROFILE", "VERIFY_EMAIL"}
+MODELLED = {"CONFIGURE_TOTP", "UPDATE_PASSWORD", "UPDATE_PROFILE", "VERIFY_EMAIL", "VERIFY_PROFILE"}
 
 
 class RequiredActionsAdminContract(AdminCase):
@@ -40,7 +40,7 @@ class RequiredActionsAdminContract(AdminCase):
 
     def test_disabled_action_is_skipped_at_login(self):
         self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "user-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "requiredActions": ["UPDATE_PASSWORD"]})[1]["location"]
+        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid", "requiredActions": ["UPDATE_PASSWORD"]})[1]["location"]
         user = location.split("login.example.test", 1)[1]
         password = secrets.token_urlsafe(30)
         self.call("PUT", user + "/reset-password", {"type": "password", "value": password, "temporary": False})

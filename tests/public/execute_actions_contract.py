@@ -41,7 +41,7 @@ class ExecuteActionsContract(AdminCase):
         self.assertEqual(self.call("PUT", f"/admin/realms/{self.realm}", {"smtpServer": smtp})[0], 204)
         self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "mail-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
         users = f"/admin/realms/{self.realm}/users"
-        self.user = self.call("POST", users, {"username": "reference-user", "enabled": True, "email": "reference@example.invalid"})[1]["location"].rsplit("/", 1)[1]
+        self.user = self.call("POST", users, {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.no_email = self.call("POST", users, {"username": "no-email", "enabled": True})[1]["location"].rsplit("/", 1)[1]
         self.sink.received.clear()
 
@@ -57,7 +57,7 @@ class ExecuteActionsContract(AdminCase):
         bare = "bare-" + secrets.token_hex(4)
         self.assertEqual(self.call("POST", "/admin/realms", {"realm": bare, "enabled": True})[0], 201)
         try:
-            user = self.call("POST", f"/admin/realms/{bare}/users", {"username": "u", "enabled": True, "email": "u@example.invalid"})[1]["location"].rsplit("/", 1)[1]
+            user = self.call("POST", f"/admin/realms/{bare}/users", {"username": "u", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "u@example.invalid"})[1]["location"].rsplit("/", 1)[1]
             self.assertEqual(self.execute(user, ["UPDATE_PASSWORD"], bare), REFERENCE["send/no-smtp"])
         finally:
             self.call("DELETE", f"/admin/realms/{bare}")

@@ -48,7 +48,7 @@ class UpdatePasswordContract(PasswordSteps, AdminCase):
     def setUp(self):
         super().setUp()
         self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "pw-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True})[1]["location"]
+        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"]
         self.users = f"/admin/realms/{self.realm}/users/{location.rsplit('/', 1)[1]}"
 
     def required_actions(self):
@@ -81,7 +81,7 @@ class UpdatePasswordContract(PasswordSteps, AdminCase):
         self.assertNotIn("KEYCLOAK_IDENTITY", headers.get("set-cookie", ""))
 
     def test_totp_setup_comes_before_the_password_update(self):
-        created = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "both-steps", "enabled": True, "requiredActions": ["CONFIGURE_TOTP"]})
+        created = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "both-steps", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "both-steps@example.invalid", "requiredActions": ["CONFIGURE_TOTP"]})
         user = created[1]["location"].rsplit("/", 1)[1]
         self.call("PUT", f"/admin/realms/{self.realm}/users/{user}/reset-password", {"type": "password", "value": "temporary-password-value", "temporary": True})
         query = urllib.parse.urlencode({"client_id": "pw-app", "redirect_uri": CALLBACK, "response_type": "code", "scope": "openid", "state": "s", "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "code_challenge_method": "S256"})
@@ -115,7 +115,7 @@ class OtherSessionsContract(PasswordSteps, AdminCase):
         cls.held = {}
         for username in ("checkbox-user", "kept-user"):
             first = secrets.token_urlsafe(30)
-            user = {"username": username, "enabled": True, "credentials": [{"type": "password", "value": first, "temporary": False}]}
+            user = {"username": username, "enabled": True, "firstName": "Reference", "lastName": "User", "email": username + "@example.invalid", "credentials": [{"type": "password", "value": first, "temporary": False}]}
             location = cls.request("POST", f"/admin/realms/{cls.realm}/users", headers, body=json.dumps(user))[1]["location"]
             cls.held[username] = (f"/admin/realms/{cls.realm}/users/{location.rsplit('/', 1)[1]}", cls.code_tokens(username, first))
 

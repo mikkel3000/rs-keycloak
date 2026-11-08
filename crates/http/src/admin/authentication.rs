@@ -1,7 +1,7 @@
 //! Admin REST routes for the realm's required actions.
 //!
 //! Follows `tests/reference/required-action-admin-observations.json`. Only
-//! the four actions this server performs are listed; each can be disabled,
+//! the five actions this server performs are listed; each can be disabled,
 //! which stops it at login while users keep it assigned, or made a default
 //! for new users. Priorities are fixed.
 
@@ -20,11 +20,12 @@ use crate::oidc::OidcState;
 
 /// The modelled actions in the reference's priority order, with their names
 /// and priorities.
-const ACTIONS: [(&str, &str, i64); 4] = [
+const ACTIONS: [(&str, &str, i64); 5] = [
     ("UPDATE_PROFILE", "Update Profile", 40),
     ("VERIFY_EMAIL", "Verify Email", 50),
     ("CONFIGURE_TOTP", "Configure OTP", 54),
     ("UPDATE_PASSWORD", "Update Password", 57),
+    ("VERIFY_PROFILE", "Verify Profile", 100),
 ];
 
 pub(super) fn routes() -> Router<OidcState> {
@@ -166,6 +167,13 @@ async fn update_action(
         enabled: flag("enabled")?.unwrap_or(stored("enabled")),
         default_action: flag("defaultAction")?.unwrap_or(stored("defaultAction")),
     };
+    // VERIFY_PROFILE runs from the profile's state and is never assigned,
+    // so it cannot be given to new users.
+    if alias == "VERIFY_PROFILE" && setting.default_action {
+        return Err(AdminError::bad_request(
+            "Unsupported required action setting: defaultAction",
+        ));
+    }
     state
         .storage
         .save_required_action(&realm_id, &setting, &actor)

@@ -95,6 +95,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0036_totp_setup_secret.sql"),
     include_str!("../../../migrations/0037_realm_localizations.sql"),
     include_str!("../../../migrations/0038_email_login.sql"),
+    include_str!("../../../migrations/0039_verify_profile.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

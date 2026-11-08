@@ -32,6 +32,14 @@ pub enum LoginStep {
         /// The stored name and email.
         profile: Profile,
     },
+    /// The user's profile misses a required field; carries the current
+    /// values. Unlike UPDATE_PROFILE, nothing is assigned to the user.
+    VerifyProfile {
+        /// The stored username.
+        username: String,
+        /// The stored name and email.
+        profile: Profile,
+    },
     /// The user must verify their email address.
     VerifyEmail {
         /// User whose address is unverified.
@@ -93,7 +101,7 @@ async fn settle_session(
     realm_id: &str,
     session_id: &str,
 ) -> Result<(), StorageError> {
-    sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(rs_active_required_actions(u.realm_id, u.required_actions)) > 0 FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2")
+    sqlx::query("UPDATE user_sessions us SET steps_pending = cardinality(rs_active_required_actions(u.realm_id, u.required_actions)) > 0 OR rs_verify_profile_due(u.realm_id, u.id) FROM users u WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND us.realm_id = $1 AND us.id = $2")
         .bind(realm_id)
         .bind(session_id)
         .execute(connection)
@@ -216,7 +224,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, u.id AS user_id, u.username, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
+        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, rs_verify_profile_due(u.realm_id, u.id) AS verify_profile, u.id AS user_id, u.username, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
             configure = assigned("CONFIGURE_TOTP", "configure"),
             update_password = assigned("UPDATE_PASSWORD", "update_password"),
             verify_email = assigned("VERIFY_EMAIL", "verify_email"),
@@ -269,6 +277,17 @@ impl Storage {
             return Ok(LoginStep::VerifyEmail {
                 user_id: row.try_get("user_id")?,
                 email,
+            });
+        }
+        // VERIFY_PROFILE has the highest priority number, so it comes last.
+        if row.try_get::<bool, _>("verify_profile")? {
+            return Ok(LoginStep::VerifyProfile {
+                username: row.try_get("username")?,
+                profile: Profile {
+                    first_name: row.try_get("first_name")?,
+                    last_name: row.try_get("last_name")?,
+                    email: row.try_get("email")?,
+                },
             });
         }
         // Nothing is left: clear the flag so the session can receive a code.

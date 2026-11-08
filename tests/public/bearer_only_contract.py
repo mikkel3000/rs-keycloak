@@ -85,7 +85,7 @@ class BearerOnlyContract(AdminCase):
         self.assertNotIn("location", headers)
         self.assert_oauth(self.request("POST", self.endpoint + "/token", form={"grant_type": "client_credentials", "client_id": "api", "client_secret": self.secret}), "token/client-credentials")
         password = secrets.token_urlsafe(30)
-        location = self.call("POST", f"{self.base}/users", {"username": "reference-user", "enabled": True})[1]["location"]
+        location = self.call("POST", f"{self.base}/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"]
         self.call("PUT", location.split("login.example.test", 1)[1] + "/reset-password", {"type": "password", "value": password})
         tokens = self.browser_login(self.realm, "user-app", CALLBACK, "reference-user", password)
         basic = lambda secret: {"Authorization": "Basic " + base64.b64encode(f"api:{secret}".encode()).decode()}

@@ -35,7 +35,7 @@ class OfflineAccessContract(AdminCase):
         self.base = f"/admin/realms/{self.realm}"
         self.endpoint = f"/realms/{self.realm}/protocol/openid-connect"
         self.client = self.call("POST", self.base + "/clients", {"clientId": "user-app", "publicClient": True, "redirectUris": [CALLBACK]})[1]["location"].rsplit("/", 1)[1]
-        self.user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        self.user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.password = secrets.token_urlsafe(30)
         self.call("PUT", f"{self.base}/users/{self.user}/reset-password", {"type": "password", "value": self.password})
 

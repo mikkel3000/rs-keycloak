@@ -47,7 +47,7 @@ class RealmSettingsContract(AdminCase):
     def code_lifetimes(self):
         self.assertEqual(self.call("POST", self.base + "/clients", {"clientId": "user-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
         password = secrets.token_urlsafe(30)
-        user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+        user = self.call("POST", self.base + "/users", {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"})[1]["location"].rsplit("/", 1)[1]
         self.call("PUT", f"{self.base}/users/{user}/reset-password", {"type": "password", "value": password})
         tokens = self.browser_login(self.realm, "user-app", CALLBACK, "reference-user", password)
         access = self.verify(tokens["access_token"])
