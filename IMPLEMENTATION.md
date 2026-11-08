@@ -1337,12 +1337,10 @@ source (`KeycloakModelUtils.findUserByNameOrEmail`,
   409 `User exists with same username or email`. UPDATE_PROFILE and the
   account console follow the same email rules.
 
-`tests/public/login_email_contract.py` checks 15 groups, each under
-250 ms.
+`tests/public/login_email_contract.py` replays every recorded case in 15
+groups, each under 250 ms.
 
-Remaining differences: users without a name or email are not sent to
-VERIFY_PROFILE, so the two recorded sign-ins that end there are not
-replayed; a forgot-password request naming a shared email sends no mail,
+Remaining differences: a forgot-password request naming a shared email sends no mail,
 where the reference's lookup fails; the reference turns an email made
 unique again (after duplicates end) back into a constraint on lookup,
 which this server does not.

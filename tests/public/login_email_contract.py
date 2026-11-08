@@ -7,12 +7,8 @@ with a username or an email, several users sharing an email, the
 uniqueness checks of admin user creation and update and UPDATE_PROFILE, and
 how realm updates tie loginWithEmailAllowed, duplicateEmailsAllowed and
 registrationEmailAsUsername. Realms are made once per class, and each test
-replays its part of the recording in order.
-
-Known difference, listed in IMPLEMENTATION.md: the recorded sign-ins of
-users without a name (sign-in/noemail/username-with-at and
-sign-in/dupes/second-username) end on the reference's VERIFY_PROFILE page,
-which this server does not show yet, so they are not replayed.
+replays its part of the recording in order. Every recorded case is
+replayed.
 """
 
 import hashlib
@@ -229,22 +225,10 @@ class CollisionContract(LoginEmailCase):
     def test_username_that_is_another_email(self):
         for key in ("default", "noemail"):
             self.new_user(key, "owner-" + key, "shared-name@example.invalid")
-            status, body = self.admin("POST", f"/admin/realms/{self.names[key]}/users", {"username": "shared-name@example.invalid", "enabled": True, "credentials": [{"type": "password", "value": self.password, "temporary": False}]})
+            status, body = self.admin("POST", f"/admin/realms/{self.names[key]}/users", {"username": "shared-name@example.invalid", "enabled": True, "firstName": "Reference", "lastName": "User", "email": f"at-user-{key}@example.invalid", "credentials": [{"type": "password", "value": self.password, "temporary": False}]})
             self.check(f"create/username-is-other-email/{key}", {"status": status, "body": {field: body[field] for field in ("errorMessage", "field", "params") if body and field in body}})
-
-    def test_shared_emails(self):
-        for key in ("default", "dupes", "dupes-noemail"):
-            self.new_user(key, "first-" + key, "twice@example.invalid")
-            self.check(f"create/duplicate-email/{key}", self.admin_result(key, "/users", "POST", {"username": "second-" + key, "email": "TWICE@example.invalid", "enabled": True}))
-            self.check(f"create/email-is-other-username/{key}", self.admin_result(key, "/users", "POST", {"username": "third-" + key, "email": "first-" + key, "enabled": True}))
-        self.check("sign-in/dupes/shared-email", self.sign_in("dupes", "twice@example.invalid"))
-        self.check("sign-in/dupes-noemail/shared-email", self.sign_in("dupes-noemail", "twice@example.invalid"))
-        other = self.new_user("dupes", "other-dupes", "other@example.invalid")
-        self.check("update/to-shared-email/dupes", self.admin_result("dupes", f"/users/{other}", "PUT", {"email": "twice@example.invalid"}))
-        other = self.new_user("default", "other-default", "other@example.invalid")
-        self.check("update/to-shared-email/default", self.admin_result("default", f"/users/{other}", "PUT", {"email": "twice@example.invalid"}))
-        _, found = self.admin("GET", f"/admin/realms/{self.names['dupes']}/users?email=twice@example.invalid&exact=true")
-        self.assertEqual(sorted(user["username"] for user in found), REFERENCE["search/shared-email/dupes"])
+        # Without email login the username names its own user.
+        self.check("sign-in/noemail/username-with-at", self.sign_in("noemail", "shared-name@example.invalid"))
 
     def test_update_profile_to_another_email(self):
         for key in ("default", "dupes"):
@@ -253,6 +237,36 @@ class CollisionContract(LoginEmailCase):
             browser = Browser(self, key)
             page = browser.submit(browser.authorize(), {"username": "profile-" + key, "password": self.password})
             self.check(f"update-profile/to-shared-email/{key}", self.shown(browser.submit(page, {"firstName": "Reference", "lastName": "User", "email": "taken@example.invalid"})))
+
+
+class SharedEmailContract(LoginEmailCase):
+    """Several users with one email: setUpClass makes them, recording the
+    creation answers, and the tests check them and use the users."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.created = {}
+        for key in ("default", "dupes", "dupes-noemail"):
+            cls.new_user(key, "first-" + key, "twice@example.invalid")
+            cls.created[f"create/duplicate-email/{key}"] = cls.admin_result(key, "/users", "POST", {"username": "second-" + key, "email": "TWICE@example.invalid", "enabled": True, "firstName": "Reference", "lastName": "User", "credentials": [{"type": "password", "value": cls.password, "temporary": False}]})
+            cls.created[f"create/email-is-other-username/{key}"] = cls.admin_result(key, "/users", "POST", {"username": "third-" + key, "email": "first-" + key, "enabled": True})
+        cls.others = {key: cls.new_user(key, "other-" + key, "other@example.invalid") for key in ("default", "dupes")}
+
+    def test_creation(self):
+        for label, observed in self.created.items():
+            self.check(label, observed)
+
+    def test_sign_in(self):
+        self.check("sign-in/dupes/shared-email", self.sign_in("dupes", "twice@example.invalid"))
+        self.check("sign-in/dupes/second-username", self.sign_in("dupes", "second-dupes"))
+        self.check("sign-in/dupes-noemail/shared-email", self.sign_in("dupes-noemail", "twice@example.invalid"))
+
+    def test_update_and_search(self):
+        for key in ("dupes", "default"):
+            self.check(f"update/to-shared-email/{key}", self.admin_result(key, f"/users/{self.others[key]}", "PUT", {"email": "twice@example.invalid"}))
+        _, found = self.admin("GET", f"/admin/realms/{self.names['dupes']}/users?email=twice@example.invalid&exact=true")
+        self.assertEqual(sorted(user["username"] for user in found), REFERENCE["search/shared-email/dupes"])
 
 
 class LaterContract(LoginEmailCase):

@@ -163,14 +163,14 @@ def run(base, bootstrap_secret, record=False):
             # A username with '@' that is another user's email.
             for key in ('default', 'noemail'):
                 new_user(key, 'owner-' + key, 'shared-name@example.invalid')
-                status, body = admin_call(key, '/users', 'POST', {'username': 'shared-name@example.invalid', 'enabled': True, 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]})
+                status, body = admin_call(key, '/users', 'POST', {'username': 'shared-name@example.invalid', 'enabled': True, 'firstName': 'Reference', 'lastName': 'User', 'email': 'at-user-' + key + '@example.invalid', 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]})
                 observations[f'create/username-is-other-email/{key}'] = {'status': status, 'body': {field: body[field] for field in ('errorMessage', 'field', 'params') if body and field in body}}
             observations['sign-in/noemail/username-with-at'] = sign_in('noemail', 'shared-name@example.invalid')
 
             # Several users with one email.
             for key in ('default', 'dupes', 'dupes-noemail'):
                 new_user(key, 'first-' + key, 'twice@example.invalid')
-                observations[f'create/duplicate-email/{key}'] = admin_result(key, '/users', 'POST', {'username': 'second-' + key, 'email': 'TWICE@example.invalid', 'enabled': True, 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]})
+                observations[f'create/duplicate-email/{key}'] = admin_result(key, '/users', 'POST', {'username': 'second-' + key, 'email': 'TWICE@example.invalid', 'enabled': True, 'firstName': 'Reference', 'lastName': 'User', 'credentials': [{'type': 'password', 'value': password, 'temporary': False}]})
                 observations[f'create/email-is-other-username/{key}'] = admin_result(key, '/users', 'POST', {'username': 'third-' + key, 'email': 'first-' + key, 'enabled': True})
             observations['sign-in/dupes/shared-email'] = sign_in('dupes', 'twice@example.invalid')
             observations['sign-in/dupes/second-username'] = sign_in('dupes', 'second-dupes')

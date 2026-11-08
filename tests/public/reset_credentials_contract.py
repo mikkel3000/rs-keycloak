@@ -26,7 +26,10 @@ REFERENCE = json.loads(
 CALLBACK = "https://app.example.test/callback"
 
 
-class ResetCredentialsContract(AdminCase):
+class ResetCase(AdminCase):
+    """A realm with SMTP, forgot-password and a user with an email, made
+    for each test, and the helpers of the reset flow."""
+
     @classmethod
     def setUpClass(cls):
         cls.sink = SmtpSink().__enter__()
@@ -76,6 +79,8 @@ class ResetCredentialsContract(AdminCase):
         observed_after["sent_text"] = "you should receive an email" in response[2].decode().lower()
         return observed, observed_after
 
+
+class ResetCredentialsContract(ResetCase):
     def test_link_only_when_allowed(self):
         self.assertEqual({"link": self.reset_link(self.login_page()) is not None}, {"link": REFERENCE["open/login-has-link"]["link"]})
         self.assertEqual(urllib.parse.urlsplit(self.reset_link(self.login_page())).path.replace(self.realm, "{realm}"), REFERENCE["open/login-has-link"]["path"])
@@ -87,6 +92,30 @@ class ResetCredentialsContract(AdminCase):
         self.assertEqual(form, REFERENCE["request/form"])
         self.assertEqual(after, REFERENCE["request/unknown-user"])
         self.assertEqual({"count": len(self.sink.received)}, REFERENCE["mail/after-unknown"])
+
+
+class KnownUserContract(ResetCase):
+    """The realm is made once in setUpClass, so the test times only the
+    reset and the sign-in with the new password."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        case = cls("test_known_user_resets_and_continues_the_login")
+        ResetCase.setUp(case)
+        cls.token, cls.realm = case.token, case.realm
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "realm"):
+            cls.request("DELETE", "/admin/realms/" + cls.realm, {"Authorization": "Bearer " + cls.token})
+        super().tearDownClass()
+
+    def setUp(self):
+        self.sink.received.clear()
+
+    def tearDown(self):
+        """The class's realm is removed with the class."""
 
     def test_known_user_resets_and_continues_the_login(self):
         _, after = self.request_reset("reference-user")

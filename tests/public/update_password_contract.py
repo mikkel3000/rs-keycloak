@@ -3,6 +3,7 @@
 Expected cases come from tests/reference/update-password-observations.json.
 """
 
+import hashlib
 import json
 import pathlib
 import re
@@ -11,7 +12,7 @@ import time
 import unittest
 import urllib.parse
 
-from fixture import AdminCase
+from fixture import ENDPOINT, AdminCase, b64
 from otp_contract import totp
 
 
@@ -21,19 +22,15 @@ REFERENCE = json.loads(
 CALLBACK = "https://app.example.test/callback"
 
 
-class UpdatePasswordContract(AdminCase):
-    def setUp(self):
-        super().setUp()
-        self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "pw-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True})[1]["location"]
-        self.users = f"/admin/realms/{self.realm}/users/{location.rsplit('/', 1)[1]}"
+class PasswordSteps:
+    """Login and form steps shared by the contracts below."""
 
-    def password_step(self, password):
+    def password_step(self, password, username="reference-user"):
         query = urllib.parse.urlencode({"client_id": "pw-app", "redirect_uri": CALLBACK, "response_type": "code", "scope": "openid", "state": "s", "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "code_challenge_method": "S256"})
         status, headers, body = self.request("GET", f"/realms/{self.realm}/protocol/openid-connect/auth?{query}")
         self.cookie = headers["set-cookie"].split(";", 1)[0]
         action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
-        return self.request("POST", action, {"Cookie": self.cookie}, {"username": "reference-user", "password": password})
+        return self.request("POST", action, {"Cookie": self.cookie}, {"username": username, "password": password})
 
     def page(self, response):
         status, headers, body = response
@@ -45,6 +42,14 @@ class UpdatePasswordContract(AdminCase):
 
     def submit(self, action, form):
         return self.request("POST", action, {"Cookie": self.cookie}, form)
+
+
+class UpdatePasswordContract(PasswordSteps, AdminCase):
+    def setUp(self):
+        super().setUp()
+        self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "pw-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
+        location = self.call("POST", f"/admin/realms/{self.realm}/users", {"username": "reference-user", "enabled": True})[1]["location"]
+        self.users = f"/admin/realms/{self.realm}/users/{location.rsplit('/', 1)[1]}"
 
     def required_actions(self):
         return {"requiredActions": json.loads(self.call("GET", self.users)[2])["requiredActions"]}
@@ -93,12 +98,57 @@ class UpdatePasswordContract(AdminCase):
         observed, _ = self.page(self.submit(action, {"password-new": chosen, "password-confirm": chosen}))
         self.assertEqual(observed["status"], 302)
 
-    def other_session_survives(self, checkbox):
-        first = secrets.token_urlsafe(30)
-        self.call("PUT", self.users + "/reset-password", {"type": "password", "value": first})
-        earlier = self.browser_login(self.realm, "pw-app", CALLBACK, "reference-user", first)
+class OtherSessionsContract(PasswordSteps, AdminCase):
+    """One realm for the class, with a user per test who already holds an
+    earlier session, so each test hashes only the new passwords."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        status, _, body = cls.request("POST", ENDPOINT + "/token", form={"grant_type": "client_credentials", "client_id": cls.ADMIN, "client_secret": cls.ADMIN_SECRET})
+        assert status == 200, "admin token"
+        cls.token = json.loads(body)["access_token"]
+        cls.realm = "contract-" + secrets.token_hex(6)
+        headers = {"Authorization": "Bearer " + cls.token, "Content-Type": "application/json"}
+        assert cls.request("POST", "/admin/realms", headers, body=json.dumps({"realm": cls.realm, "enabled": True}))[0] == 201
+        assert cls.request("POST", f"/admin/realms/{cls.realm}/clients", headers, body=json.dumps({"clientId": "pw-app", "publicClient": True, "redirectUris": [CALLBACK]}))[0] == 201
+        cls.held = {}
+        for username in ("checkbox-user", "kept-user"):
+            first = secrets.token_urlsafe(30)
+            user = {"username": username, "enabled": True, "credentials": [{"type": "password", "value": first, "temporary": False}]}
+            location = cls.request("POST", f"/admin/realms/{cls.realm}/users", headers, body=json.dumps(user))[1]["location"]
+            cls.held[username] = (f"/admin/realms/{cls.realm}/users/{location.rsplit('/', 1)[1]}", cls.code_tokens(username, first))
+
+    @classmethod
+    def code_tokens(cls, username, password):
+        """Signs in through the login form with PKCE; returns the tokens."""
+        verifier = secrets.token_urlsafe(48)
+        challenge = b64(hashlib.sha256(verifier.encode()).digest())
+        query = urllib.parse.urlencode({"client_id": "pw-app", "redirect_uri": CALLBACK, "response_type": "code", "scope": "openid", "state": "s", "code_challenge": challenge, "code_challenge_method": "S256"})
+        _, headers, body = cls.request("GET", f"/realms/{cls.realm}/protocol/openid-connect/auth?{query}")
+        action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
+        _, headers, _ = cls.request("POST", action, {"Cookie": headers["set-cookie"].split(";", 1)[0]}, {"username": username, "password": password})
+        code = urllib.parse.parse_qs(urllib.parse.urlsplit(headers["location"]).query)["code"][0]
+        status, _, body = cls.request("POST", f"/realms/{cls.realm}/protocol/openid-connect/token", form={"grant_type": "authorization_code", "code": code, "client_id": "pw-app", "redirect_uri": CALLBACK, "code_verifier": verifier})
+        assert status == 200, "code exchange"
+        return json.loads(body)
+
+    @classmethod
+    def tearDownClass(cls):
+        if hasattr(cls, "realm"):
+            cls.request("DELETE", "/admin/realms/" + cls.realm, {"Authorization": "Bearer " + cls.token})
+        super().tearDownClass()
+
+    def setUp(self):
+        """The class's realm replaces the per-test realm."""
+
+    def tearDown(self):
+        """The class's realm is removed with the class."""
+
+    def other_session_survives(self, username, checkbox):
+        self.users, earlier = self.held[username]
         self.call("PUT", self.users + "/reset-password", {"type": "password", "value": "temporary-password-value", "temporary": True})
-        _, action = self.page(self.password_step("temporary-password-value"))
+        _, action = self.page(self.password_step("temporary-password-value", username))
         chosen = secrets.token_urlsafe(30)
         form = {"password-new": chosen, "password-confirm": chosen}
         if checkbox:
@@ -108,12 +158,12 @@ class UpdatePasswordContract(AdminCase):
         return status == 200, json.loads(body)
 
     def test_logout_sessions_checkbox_ends_other_sessions(self):
-        survived, body = self.other_session_survives(checkbox=True)
+        survived, body = self.other_session_survives("checkbox-user", checkbox=True)
         self.assertFalse(survived)
         self.assertEqual(body, {"error": "invalid_grant", "error_description": "Session not active"})
 
     def test_other_sessions_survive_without_the_checkbox(self):
-        self.assertTrue(self.other_session_survives(checkbox=False)[0])
+        self.assertTrue(self.other_session_survives("kept-user", checkbox=False)[0])
 
 
 if __name__ == "__main__":
