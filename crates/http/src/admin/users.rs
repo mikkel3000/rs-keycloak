@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use rs_keycloak_integrations::mail::{Mail, send};
 use rs_keycloak_storage_postgres::{
-    Actor, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
+    Actor, Collision, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -281,6 +281,14 @@ fn email_exists() -> AdminError {
     AdminError::Message(StatusCode::CONFLICT, "User exists with same email".into())
 }
 
+/// The reference's answer when its email lookup finds several users.
+fn shared_email() -> AdminError {
+    AdminError::Message(
+        StatusCode::CONFLICT,
+        "User exists with same username or email".into(),
+    )
+}
+
 async fn create_user(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
@@ -307,9 +315,6 @@ pub(super) async fn create_from(
     actor: &Actor,
 ) -> Result<String, AdminError> {
     let settings = UserSettings::defaults().apply(fields, &["credentials"])?;
-    if let Some(error) = settings.email_error(fields) {
-        return Err(error);
-    }
     // A realm that uses the email as username takes the email when given.
     let email_as_username = state
         .storage
@@ -325,6 +330,26 @@ pub(super) async fn create_from(
         .or(text(fields, "username")?)
         .ok_or_else(|| AdminError::bad_request("User name is missing"))?
         .to_lowercase();
+    // As in the reference, a missing username, then a taken username or
+    // email answers before the field errors.
+    match state
+        .storage
+        .new_user_collision(realm_id, &username, settings.email.as_deref())
+        .await?
+    {
+        Collision::None => (),
+        Collision::Username => {
+            return Err(AdminError::Message(
+                StatusCode::CONFLICT,
+                "User exists with same username".into(),
+            ));
+        }
+        Collision::Email => return Err(email_exists()),
+        Collision::SharedEmail => return Err(shared_email()),
+    }
+    if let Some(error) = settings.email_error(fields) {
+        return Err(error);
+    }
     let password = match initial_password(fields)? {
         Some(credential) => Some(hashed_password(state, credential).await?),
         None => None,
@@ -439,6 +464,7 @@ pub(super) async fn update_from(
             "User exists with same username".into(),
         )),
         UserUpdate::EmailExists => Err(email_exists()),
+        UserUpdate::SharedEmail => Err(shared_email()),
         UserUpdate::Checked => Err(AdminError::Fields(errors)),
     }
 }

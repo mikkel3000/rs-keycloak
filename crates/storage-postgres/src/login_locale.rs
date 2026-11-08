@@ -44,7 +44,7 @@ impl Storage {
         request_id: &str,
     ) -> Result<Option<LoginLocale>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT r.internationalization_enabled, r.supported_locales, r.default_locale, r.edit_username_allowed, r.registration_email_as_username, COALESCE(NULLIF(r.display_name, ''), r.name) AS realm_label, a.requested_locale, a.ui_locales, u.locale FROM authorization_requests a JOIN realms r ON r.id = a.realm_id LEFT JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.pending_session_id LEFT JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE a.realm_id = $1 AND a.id = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()")
+        let row = sqlx::query("SELECT r.internationalization_enabled, r.supported_locales, r.default_locale, r.edit_username_allowed, r.registration_email_as_username, r.login_with_email_allowed, r.duplicate_emails_allowed, COALESCE(NULLIF(r.display_name, ''), r.name) AS realm_label, a.requested_locale, a.ui_locales, u.locale FROM authorization_requests a JOIN realms r ON r.id = a.realm_id LEFT JOIN user_sessions us ON us.realm_id = a.realm_id AND us.id = a.pending_session_id LEFT JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE a.realm_id = $1 AND a.id = $2 AND a.consumed_at IS NULL AND a.expires_at > clock_timestamp()")
             .bind(realm_id)
             .bind(request_id)
             .fetch_optional(tx.connection())
@@ -92,7 +92,7 @@ impl Storage {
     /// request: the realm's settings and label alone.
     pub async fn realm_locale(&self, realm_id: &str) -> Result<LoginLocale, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query("SELECT internationalization_enabled, supported_locales, default_locale, edit_username_allowed, registration_email_as_username, COALESCE(NULLIF(display_name, ''), name) AS realm_label FROM realms WHERE id = $1")
+        let row = sqlx::query("SELECT internationalization_enabled, supported_locales, default_locale, edit_username_allowed, registration_email_as_username, login_with_email_allowed, duplicate_emails_allowed, COALESCE(NULLIF(display_name, ''), name) AS realm_label FROM realms WHERE id = $1")
             .bind(realm_id)
             .fetch_one(tx.connection())
             .await?;

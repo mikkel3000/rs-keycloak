@@ -517,6 +517,8 @@ enum LoginNotice {
     Failed,
     /// A forgot-password request was accepted.
     EmailSent,
+    /// The login was an email several users share.
+    SharedEmail,
 }
 
 /// Renders the password form, with a forgot-password link when the realm
@@ -561,6 +563,10 @@ async fn login_page(
         ),
         LoginNotice::EmailSent => (
             notice_message("status", &texts.html("emailSentMessage", &[])),
+            String::new(),
+        ),
+        LoginNotice::SharedEmail => (
+            notice_message("alert", &texts.html("usernameExistsMessage", &[])),
             String::new(),
         ),
     };
@@ -710,6 +716,17 @@ async fn authenticate(
         }
         Ok(LoginResult::Denied) => {
             login_page(&s, &realm, &request_id, csrf, LoginNotice::Failed, &headers).await
+        }
+        Ok(LoginResult::SharedEmail) => {
+            login_page(
+                &s,
+                &realm,
+                &request_id,
+                csrf,
+                LoginNotice::SharedEmail,
+                &headers,
+            )
+            .await
         }
         Err(_) => return unavailable(),
     };

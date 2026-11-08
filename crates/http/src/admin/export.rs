@@ -667,7 +667,9 @@ async fn user_links(
 
 /// Realm fields an export carries that import leaves alone, as the
 /// reference's partial import does.
-const REALM_FIELDS: [&str; 17] = [
+const REALM_FIELDS: [&str; 19] = [
+    "loginWithEmailAllowed",
+    "duplicateEmailsAllowed",
     "id",
     "localizationTexts",
     "realm",

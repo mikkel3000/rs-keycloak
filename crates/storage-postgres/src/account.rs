@@ -89,18 +89,25 @@ pub(crate) async fn account_conflicts(
 ) -> Result<AccountConflicts, StorageError> {
     let username = change.checked_username.to_lowercase();
     let email = change.profile.email.as_deref().map(str::to_lowercase);
-    let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $3) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3) AS username_is_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $4) AS email_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $4) AS email_is_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept")
+    let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $3) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3) AS username_is_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $4) AS email_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND username_normalized = $4) AS email_is_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept, r.login_with_email_allowed, r.duplicate_emails_allowed FROM realms r WHERE r.id = $1")
         .bind(realm_id).bind(user_id).bind(&username).bind(&email).fetch_one(connection).await?;
     let username_taken: bool = row.try_get("username_taken")?;
     let email_kept: bool = row.try_get("email_kept")?;
-    let email_taken = row.try_get::<bool, _>("email_taken")?;
+    // Email checks run without duplicate emails, and the checks across
+    // usernames and emails with email login, as the validators do.
+    let email_login: bool = row.try_get("login_with_email_allowed")?;
+    let unique: bool = !row.try_get::<bool, _>("duplicate_emails_allowed")?;
+    let email_taken = unique && row.try_get::<bool, _>("email_taken")?;
     Ok(AccountConflicts {
         username_taken,
         username_is_email: !username_taken
+            && email_login
             && username.find('@').is_some_and(|at| at > 0)
             && row.try_get::<bool, _>("username_is_email")?,
         email_taken: !email_kept && email_taken,
         email_is_username: !email_kept
+            && unique
+            && email_login
             && !email_taken
             && row.try_get::<bool, _>("email_is_username")?,
         email_as_username: change.email_as_username && email_taken,

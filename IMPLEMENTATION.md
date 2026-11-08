@@ -1299,3 +1299,50 @@ Remaining differences: `rememberMe` is not implemented, so the login
 page's "Remember me" label is not compared; email templates do not read
 realm texts yet; texts are read from the database for each page, where the
 reference caches the realm.
+
+## Email login and duplicate emails
+
+Realms keep `loginWithEmailAllowed` (on by default) and
+`duplicateEmailsAllowed` (off), as recorded in
+`tests/reference/login-email-observations.json` and read from the pinned
+source (`KeycloakModelUtils.findUserByNameOrEmail`,
+`AbstractUsernameFormAuthenticator`, `ResetCredentialChooseUser`,
+`DuplicateUsernameValidator`, `DuplicateEmailValidator`,
+`UserResource.validateUserProfile` and the JPA `RealmAdapter` and
+`JpaUserProvider`):
+
+- Migration 38 adds both settings. The realm representation shows them,
+  and creation and updates apply them as the reference's setters do, in
+  its order: email as username, then email login, which turns duplicates
+  off, then duplicates, which turn email login and email as username off.
+- The login, OTP and forgot-password forms label the field `username`
+  without email login, else `email` with email as username, else
+  `usernameOrEmail`.
+- Sign-in with an input holding '@' looks the email up first while email
+  login is allowed, then the username. An email several users share shows
+  `usernameExistsMessage` on the login form, as the reference's lookup
+  refuses it. Forgot-password looks up the username first, then such an
+  email.
+- Users keep an `email_unique` flag, as the reference keeps
+  `EMAIL_CONSTRAINT`: an email set while the realm allows duplicates is
+  not unique, others are, and the unique index covers only unique ones.
+  Users made while duplicates were allowed keep their shared email after
+  they are turned off.
+- Admin user creation now checks a missing username, then a taken
+  username, then a taken email before the field errors, as the reference
+  does. A username with '@' after its first character that is another
+  user's email is taken while email login is allowed; a changed email is
+  checked only without duplicates, against other users' emails and, with
+  email login, usernames; an email lookup that finds several users answers
+  409 `User exists with same username or email`. UPDATE_PROFILE and the
+  account console follow the same email rules.
+
+`tests/public/login_email_contract.py` checks 15 groups, each under
+250 ms.
+
+Remaining differences: users without a name or email are not sent to
+VERIFY_PROFILE, so the two recorded sign-ins that end there are not
+replayed; a forgot-password request naming a shared email sends no mail,
+where the reference's lookup fails; the reference turns an email made
+unique again (after duplicates end) back into a constraint on lookup,
+which this server does not.

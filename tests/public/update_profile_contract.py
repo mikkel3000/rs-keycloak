@@ -40,12 +40,18 @@ class UpdateProfileContract(AdminCase):
         errors = sorted(set(re.findall(r'id="input-error-([a-zA-Z-]+)"', text)))
         return {"status": status, "form": form.group(1), "fields": sorted(inputs), "errors": errors}, form.group(2).replace("&amp;", "&"), inputs
 
-    def test_profile_is_reviewed_validated_and_saved(self):
+    def profile_page(self):
+        """Signs in and returns the profile page, its form action and the
+        browser's cookie."""
         query = urllib.parse.urlencode({"client_id": "profile-app", "redirect_uri": CALLBACK, "response_type": "code", "scope": "openid", "state": "s", "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM", "code_challenge_method": "S256"})
         status, headers, body = self.request("GET", f"/realms/{self.realm}/protocol/openid-connect/auth?{query}")
         cookie = {"Cookie": headers["set-cookie"].split(";", 1)[0]}
         action = re.search(r'action="([^"]+)"', body.decode()).group(1).replace("&amp;", "&")
         observed, action, inputs = self.page(self.request("POST", action, cookie, {"username": "reference-user", "password": self.password}))
+        return observed, action, inputs, cookie
+
+    def test_profile_is_reviewed_and_validated(self):
+        observed, action, inputs, cookie = self.profile_page()
         expected = REFERENCE["login/profile-page"]
         self.assertEqual((observed["status"], observed["form"], observed["fields"]), (expected["status"], expected["form"], expected["fields"]))
         self.assertEqual(sorted(name for name, value in inputs.items() if value), expected["prefilled"])
@@ -56,6 +62,9 @@ class UpdateProfileContract(AdminCase):
         ):
             observed, action, _ = self.page(self.request("POST", action, cookie, form))
             self.assertEqual(observed, REFERENCE[label], label)
+
+    def test_profile_is_saved(self):
+        _, action, _, cookie = self.profile_page()
         observed, _, _ = self.page(self.request("POST", action, cookie, {"firstName": "Changed", "lastName": "Person", "email": "Changed@Example.invalid"}))
         self.assertEqual(observed, REFERENCE["update/success"])
         rep = json.loads(self.call("GET", f"{self.users}/{self.user}")[2])

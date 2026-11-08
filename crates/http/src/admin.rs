@@ -454,7 +454,9 @@ fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, Adm
 }
 
 /// Realm fields this server stores besides the name.
-const REALM_FIELDS: [&str; 13] = [
+const REALM_FIELDS: [&str; 15] = [
+    "loginWithEmailAllowed",
+    "duplicateEmailsAllowed",
     "localizationTexts",
     "enabled",
     "smtpServer",
@@ -479,6 +481,8 @@ struct UserSettingFields {
     default_locale: Option<String>,
     edit_username_allowed: Option<bool>,
     registration_email_as_username: Option<bool>,
+    login_with_email_allowed: Option<bool>,
+    duplicate_emails_allowed: Option<bool>,
 }
 
 impl UserSettingFields {
@@ -524,6 +528,8 @@ impl UserSettingFields {
             default_locale,
             edit_username_allowed: flag("editUsernameAllowed")?,
             registration_email_as_username: flag("registrationEmailAsUsername")?,
+            login_with_email_allowed: flag("loginWithEmailAllowed")?,
+            duplicate_emails_allowed: flag("duplicateEmailsAllowed")?,
         })
     }
 
@@ -534,17 +540,23 @@ impl UserSettingFields {
             default_locale: self.default_locale.as_deref(),
             edit_username_allowed: self.edit_username_allowed,
             registration_email_as_username: self.registration_email_as_username,
+            login_with_email_allowed: self.login_with_email_allowed,
+            duplicate_emails_allowed: self.duplicate_emails_allowed,
         }
     }
 
+    /// A new realm's settings: the defaults with the given fields applied,
+    /// as the reference's importer calls the realm's setters.
     fn settings(self) -> UserSettings {
-        UserSettings {
+        let mut settings = UserSettings {
             internationalization_enabled: self.internationalization_enabled.unwrap_or(false),
-            supported_locales: self.supported_locales.unwrap_or_default(),
-            default_locale: self.default_locale,
+            supported_locales: self.supported_locales.clone().unwrap_or_default(),
+            default_locale: self.default_locale.clone(),
             edit_username_allowed: self.edit_username_allowed.unwrap_or(false),
-            registration_email_as_username: self.registration_email_as_username.unwrap_or(false),
-        }
+            ..UserSettings::default()
+        };
+        settings.apply_email_rules(&self.changes());
+        settings
     }
 }
 
@@ -692,6 +704,8 @@ fn realm_representation(realm: &RealmRecord) -> Value {
     }
     representation["editUsernameAllowed"] = json!(users.edit_username_allowed);
     representation["registrationEmailAsUsername"] = json!(users.registration_email_as_username);
+    representation["loginWithEmailAllowed"] = json!(users.login_with_email_allowed);
+    representation["duplicateEmailsAllowed"] = json!(users.duplicate_emails_allowed);
     representation
 }
 

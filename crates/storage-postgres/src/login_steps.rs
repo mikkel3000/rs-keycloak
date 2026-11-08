@@ -125,12 +125,15 @@ pub(crate) async fn save_profile(
     complete_action: bool,
 ) -> Result<bool, StorageError> {
     let email = profile.email.as_deref().map(str::to_lowercase);
-    let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND email_normalized = $3)")
+    // As `DuplicateEmailValidator`: a changed email collides, unless the
+    // realm allows duplicates, with another user's email or, with email
+    // login allowed, username.
+    let taken: bool = sqlx::query_scalar("SELECT NOT r.duplicate_emails_allowed AND NOT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $3) AND EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $2 AND (email_normalized = $3 OR r.login_with_email_allowed AND username_normalized = $3)) FROM realms r WHERE r.id = $1")
         .bind(realm_id).bind(user_id).bind(&email).fetch_one(&mut *connection).await?;
     if taken {
         return Ok(false);
     }
-    sqlx::query("UPDATE users u SET first_name = $3, last_name = $4, email_verified = u.email_verified AND u.email_normalized IS NOT DISTINCT FROM $5, required_actions = array_remove(CASE WHEN r.verify_email AND u.email_normalized IS DISTINCT FROM $5 AND $5 IS NOT NULL AND NOT ('VERIFY_EMAIL' = ANY(u.required_actions)) THEN array_append(u.required_actions, 'VERIFY_EMAIL') ELSE u.required_actions END, CASE WHEN $6 THEN 'UPDATE_PROFILE' END), email = $5, email_normalized = $5 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
+    sqlx::query("UPDATE users u SET first_name = $3, last_name = $4, email_verified = u.email_verified AND u.email_normalized IS NOT DISTINCT FROM $5, required_actions = array_remove(CASE WHEN r.verify_email AND u.email_normalized IS DISTINCT FROM $5 AND $5 IS NOT NULL AND NOT ('VERIFY_EMAIL' = ANY(u.required_actions)) THEN array_append(u.required_actions, 'VERIFY_EMAIL') ELSE u.required_actions END, CASE WHEN $6 THEN 'UPDATE_PROFILE' END), email_unique = CASE WHEN u.email_normalized IS NOT DISTINCT FROM $5 THEN u.email_unique ELSE NOT r.duplicate_emails_allowed END, email = $5, email_normalized = $5 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
         .bind(realm_id).bind(user_id).bind(&profile.first_name).bind(&profile.last_name).bind(&email).bind(complete_action)
         .execute(connection).await?;
     Ok(true)

@@ -157,15 +157,17 @@ impl Storage {
         }))
     }
 
-    /// Finds the user a forgot-password request names, by username or email,
-    /// if the realm allows resets and the user is enabled with an email.
+    /// Finds the user a forgot-password request names, if the realm allows
+    /// resets and the user is enabled with an email: by username, else, as
+    /// `ResetCredentialChooseUser` looks it up, by an email with '@' that
+    /// one user has while the realm allows email login.
     pub async fn reset_target(
         &self,
         realm_id: &str,
         name: &str,
     ) -> Result<Option<(String, String)>, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query_as("SELECT u.id, u.email FROM users u JOIN realms r ON r.id = u.realm_id WHERE u.realm_id = $1 AND r.reset_password_allowed AND u.enabled AND u.email IS NOT NULL AND u.service_account_client_id IS NULL AND (u.username_normalized = $2 OR u.email_normalized = $2) ORDER BY u.username_normalized = $2 DESC LIMIT 1")
+        let row = sqlx::query_as("SELECT u.id, u.email FROM users u JOIN realms r ON r.id = u.realm_id WHERE u.realm_id = $1 AND u.id = COALESCE((SELECT n.id FROM users n WHERE n.realm_id = $1 AND n.username_normalized = $2), (SELECT min(e.id) FROM users e WHERE e.realm_id = $1 AND r.login_with_email_allowed AND strpos($2, '@') > 0 AND e.email_normalized = $2 HAVING count(*) = 1)) AND r.reset_password_allowed AND u.enabled AND u.email IS NOT NULL AND u.service_account_client_id IS NULL")
             .bind(realm_id).bind(name.to_lowercase()).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
         Ok(row)

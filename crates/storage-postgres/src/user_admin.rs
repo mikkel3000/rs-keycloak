@@ -70,6 +70,8 @@ pub enum UserUpdate {
     /// Another user in the realm has this email, or has a changed email as
     /// username.
     EmailExists,
+    /// Several users share an email the checks look up.
+    SharedEmail,
     /// Nothing collides; the caller asked only for the check.
     Checked,
 }
@@ -82,6 +84,61 @@ pub enum UserCreation {
     UsernameExists,
     /// Another user in the realm has this email.
     EmailExists,
+}
+
+/// What a username and email collide with, as the reference's
+/// `DuplicateUsernameValidator` and `DuplicateEmailValidator` find it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Collision {
+    /// Nothing collides.
+    None,
+    /// Another user has the username, or, with email login allowed, has it
+    /// as email.
+    Username,
+    /// Without duplicate emails, another user has the changed email, or,
+    /// with email login allowed, has it as username.
+    Email,
+    /// Several users share an email the checks look up, which the
+    /// reference's lookup refuses.
+    SharedEmail,
+}
+
+/// Checks a username and email against the realm's other users; `user_id`
+/// is the user being changed, if any. Usernames are checked first, as the
+/// reference validates attributes in that order.
+pub(crate) async fn collision(
+    connection: &mut sqlx::PgConnection,
+    realm_id: &str,
+    user_id: Option<&str>,
+    username: &str,
+    email: Option<&str>,
+) -> Result<Collision, StorageError> {
+    let row = sqlx::query("SELECT r.login_with_email_allowed, r.duplicate_emails_allowed, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND username_normalized = $3 AND id IS DISTINCT FROM $2) AS username_taken, (SELECT count(*) FROM users WHERE realm_id = $1 AND email_normalized = $3) AS username_emails, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND email_normalized = $3 AND id IS DISTINCT FROM $2) AS username_other_email, (SELECT count(*) FROM users WHERE realm_id = $1 AND email_normalized = $4) AS emails, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND email_normalized = $4 AND id IS DISTINCT FROM $2) AS other_email, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND username_normalized = $4 AND id IS DISTINCT FROM $2) AS email_other_username, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $2 AND email_normalized IS NOT DISTINCT FROM $4) AS email_kept FROM realms r WHERE r.id = $1")
+        .bind(realm_id).bind(user_id).bind(username).bind(email).fetch_one(connection).await?;
+    let login_with_email: bool = row.try_get("login_with_email_allowed")?;
+    let duplicates: bool = row.try_get("duplicate_emails_allowed")?;
+    if row.try_get("username_taken")? {
+        return Ok(Collision::Username);
+    }
+    // An email lookup of a username with '@' after its first character.
+    if login_with_email && username.find('@').is_some_and(|at| at > 0) {
+        if row.try_get::<i64, _>("username_emails")? > 1 {
+            return Ok(Collision::SharedEmail);
+        }
+        if row.try_get("username_other_email")? {
+            return Ok(Collision::Username);
+        }
+    }
+    if email.is_none() || duplicates || row.try_get("email_kept")? {
+        return Ok(Collision::None);
+    }
+    if row.try_get::<i64, _>("emails")? > 1 {
+        return Ok(Collision::SharedEmail);
+    }
+    if row.try_get("other_email")? || login_with_email && row.try_get("email_other_username")? {
+        return Ok(Collision::Email);
+    }
+    Ok(Collision::None)
 }
 
 /// Filters for listing and counting users. Text filters are lowercase SQL
@@ -128,6 +185,20 @@ pub(crate) fn user_row(row: &PgRow) -> Result<UserRecord, StorageError> {
 }
 
 impl Storage {
+    /// Checks a new user's lowercased username and email against the
+    /// realm's users.
+    pub async fn new_user_collision(
+        &self,
+        realm_id: &str,
+        username: &str,
+        email: Option<&str>,
+    ) -> Result<Collision, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let found = collision(tx.connection(), realm_id, None, username, email).await?;
+        tx.commit().await?;
+        Ok(found)
+    }
+
     /// Creates a user, with an initial password when given, unless its
     /// username or email is already taken.
     pub async fn create_user(
@@ -141,7 +212,7 @@ impl Storage {
         let mut tx = self.begin_request(false).await?;
         let conn = tx.connection();
         // New users also get the realm's default required actions.
-        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_verified, first_name, last_name, enabled, required_actions) VALUES ($1, $2, $3, $3, $4, $4, $5, $6, $7, $8, ARRAY(SELECT DISTINCT action FROM unnest($9::text[] || ARRAY(SELECT alias FROM required_action_settings WHERE realm_id = $1 AND default_action AND enabled)) AS action ORDER BY action)) ON CONFLICT DO NOTHING RETURNING id")
+        let created: Option<String> = sqlx::query_scalar("INSERT INTO users (realm_id, id, username, username_normalized, email, email_normalized, email_unique, email_verified, first_name, last_name, enabled, required_actions) VALUES ($1, $2, $3, $3, $4, $4, (SELECT NOT duplicate_emails_allowed FROM realms WHERE id = $1), $5, $6, $7, $8, ARRAY(SELECT DISTINCT action FROM unnest($9::text[] || ARRAY(SELECT alias FROM required_action_settings WHERE realm_id = $1 AND default_action AND enabled)) AS action ORDER BY action)) ON CONFLICT DO NOTHING RETURNING id")
             .bind(realm_id).bind(user_id).bind(user.username).bind(user.email).bind(user.email_verified)
             .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions).fetch_optional(&mut *conn).await?;
         if created.is_none() {
@@ -193,22 +264,21 @@ impl Storage {
             return Ok(UserUpdate::NotFound);
         }
         let username = user.username.to_lowercase();
-        let row = sqlx::query("SELECT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND username_normalized = $2 AND id <> $4) AS username_taken, EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id <> $4 AND (email_normalized = $3 OR (username_normalized = $3 AND NOT EXISTS (SELECT 1 FROM users WHERE realm_id = $1 AND id = $4 AND email_normalized IS NOT DISTINCT FROM $3)))) AS email_taken")
-            .bind(realm_id).bind(&username).bind(user.email).bind(user_id).fetch_one(&mut *conn).await?;
-        let outcome = if row.try_get("username_taken")? {
-            UserUpdate::UsernameExists
-        } else if row.try_get("email_taken")? {
-            UserUpdate::EmailExists
-        } else if !apply {
-            UserUpdate::Checked
-        } else {
-            UserUpdate::Updated
-        };
+        let outcome =
+            match collision(&mut *conn, realm_id, Some(user_id), &username, user.email).await? {
+                Collision::Username => UserUpdate::UsernameExists,
+                Collision::Email => UserUpdate::EmailExists,
+                Collision::SharedEmail => UserUpdate::SharedEmail,
+                Collision::None if !apply => UserUpdate::Checked,
+                Collision::None => UserUpdate::Updated,
+            };
         if !matches!(outcome, UserUpdate::Updated) {
             tx.commit().await?;
             return Ok(outcome);
         }
-        sqlx::query("UPDATE users SET username = $9, username_normalized = $9, email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 WHERE realm_id = $1 AND id = $2")
+        // A kept email keeps its uniqueness; a new one is unique unless the
+        // realm allows duplicates, as the reference's EMAIL_CONSTRAINT.
+        sqlx::query("UPDATE users u SET username = $9, username_normalized = $9, email_unique = CASE WHEN u.email_normalized IS NOT DISTINCT FROM $3 THEN u.email_unique ELSE NOT r.duplicate_emails_allowed END, email = $3, email_normalized = $3, email_verified = $4, first_name = $5, last_name = $6, enabled = $7, required_actions = $8 FROM realms r WHERE r.id = u.realm_id AND u.realm_id = $1 AND u.id = $2")
             .bind(realm_id).bind(user_id).bind(user.email).bind(user.email_verified)
             .bind(user.first_name).bind(user.last_name).bind(user.enabled).bind(user.required_actions)
             .bind(&username)

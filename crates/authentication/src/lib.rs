@@ -74,6 +74,9 @@ pub enum LoginResult {
     Authenticated { session_id: String },
     /// Authentication failed without identifying the failed condition.
     Denied,
+    /// The login is an email several users share, which the reference
+    /// answers with `usernameExistsMessage` before checking a password.
+    SharedEmail,
 }
 
 /// Coordinates password work with guarded database state transitions.
@@ -104,6 +107,15 @@ impl LoginService {
     ) -> Result<LoginResult, PasswordWorkError> {
         if password.len() > 1024 {
             return Err(PasswordWorkError);
+        }
+        match self
+            .storage
+            .shared_login_email(realm_id, username_normalized)
+            .await
+        {
+            Ok(false) => (),
+            Ok(true) => return Ok(LoginResult::SharedEmail),
+            Err(_) => return Err(PasswordWorkError),
         }
         let challenge_id = Uuid::new_v4().to_string();
         let credential = self

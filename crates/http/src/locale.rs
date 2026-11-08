@@ -64,6 +64,8 @@ pub(crate) struct PageLocale {
     /// Whether the realm's username is the email, which names the
     /// username field.
     pub(crate) email_as_username: bool,
+    /// Whether users may sign in with their email.
+    pub(crate) login_with_email: bool,
     /// The realm's locales and their labels, in display order; empty unless
     /// the realm is internationalized with more than one locale.
     pub(crate) languages: Vec<(String, String)>,
@@ -78,6 +80,7 @@ impl PageLocale {
             messages: Messages::english(),
             realm_label: String::new(),
             email_as_username: false,
+            login_with_email: true,
             languages: Vec::new(),
         }
     }
@@ -112,14 +115,17 @@ impl PageLocale {
             messages,
             realm_label: state.realm_label.clone(),
             email_as_username: settings.registration_email_as_username,
+            login_with_email: settings.login_with_email_allowed,
             languages,
         }
     }
 
     /// The message key that labels the username field, as the reference's
-    /// login template picks it with email login allowed.
+    /// login templates pick it.
     pub(crate) fn username_key(&self) -> &'static str {
-        if self.email_as_username {
+        if !self.login_with_email {
+            "username"
+        } else if self.email_as_username {
             "email"
         } else {
             "usernameOrEmail"

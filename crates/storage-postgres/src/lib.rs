@@ -42,7 +42,9 @@ pub use role_admin::{
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use session_admin::{ClientSessionCount, SessionRecord};
 pub use sso::SsoSession;
-pub use user_admin::{NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate};
+pub use user_admin::{
+    Collision, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
+};
 
 use std::time::Duration;
 
@@ -92,6 +94,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0035_logout_requests.sql"),
     include_str!("../../../migrations/0036_totp_setup_secret.sql"),
     include_str!("../../../migrations/0037_realm_localizations.sql"),
+    include_str!("../../../migrations/0038_email_login.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -638,8 +641,33 @@ impl Storage {
         tx.commit().await
     }
 
+    /// Reports whether a lowercased login input is an email several users
+    /// share while the realm allows email login, which the reference's
+    /// lookup refuses.
+    pub async fn shared_login_email(
+        &self,
+        realm_id: &str,
+        login: &str,
+    ) -> Result<bool, StorageError> {
+        if !login.contains('@') {
+            return Ok(false);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let shared = sqlx::query_scalar("SELECT r.login_with_email_allowed AND (SELECT count(*) FROM users u WHERE u.realm_id = r.id AND u.email_normalized = $2) > 1 FROM realms r WHERE r.id = $1")
+            .bind(realm_id)
+            .bind(login)
+            .fetch_optional(tx.connection())
+            .await?
+            .unwrap_or(false);
+        tx.commit().await?;
+        Ok(shared)
+    }
+
     /// Create a short-lived login challenge and return the password hash for verification.
     /// The caller must use opaque, unpredictable challenge IDs and equalize external failure behavior.
+    /// The login names the user by email when the realm allows email login,
+    /// it has an '@' and one user has that email, else by username, as
+    /// `KeycloakModelUtils.findUserByNameOrEmail` looks it up.
     pub async fn start_login(
         &self,
         realm_id: &str,
@@ -656,7 +684,7 @@ impl Storage {
         // Amortize expiry cleanup without waiting for rows held by other requests.
         sqlx::query("DELETE FROM login_challenges WHERE id IN (SELECT id FROM login_challenges WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)")
             .execute(&mut *conn).await?;
-        let row = sqlx::query("SELECT u.id AS user_id, u.revision AS user_revision, c.id AS credential_id, c.revision AS credential_revision, c.secret_data FROM users u JOIN realms r ON r.id = u.realm_id JOIN clients cl ON cl.realm_id = u.realm_id AND cl.id = $2 JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'password' WHERE u.realm_id = $1 AND u.username_normalized = $3 AND u.enabled AND r.enabled AND cl.enabled FOR SHARE OF r, cl FOR UPDATE OF u, c")
+        let row = sqlx::query("SELECT u.id AS user_id, u.revision AS user_revision, c.id AS credential_id, c.revision AS credential_revision, c.secret_data FROM users u JOIN realms r ON r.id = u.realm_id JOIN clients cl ON cl.realm_id = u.realm_id AND cl.id = $2 JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'password' WHERE u.realm_id = $1 AND u.id = COALESCE((SELECT min(e.id) FROM users e WHERE e.realm_id = $1 AND r.login_with_email_allowed AND strpos($3, '@') > 0 AND e.email_normalized = $3 HAVING count(*) = 1), (SELECT n.id FROM users n WHERE n.realm_id = $1 AND n.username_normalized = $3)) AND u.enabled AND r.enabled AND cl.enabled FOR SHARE OF r, cl FOR UPDATE OF u, c")
             .bind(realm_id).bind(client_id).bind(username_normalized).fetch_optional(&mut *conn).await?;
         let Some(row) = row else {
             return Ok(None);
