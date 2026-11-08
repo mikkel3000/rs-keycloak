@@ -28,6 +28,22 @@ Follow googles rust styleguide: https://google.github.io/styleguide/rustguide.ht
 
 Always use versionedcommits: https://github.com/mikkel3000/versionedcommits
 
+Always use scopedcommits together with versionedcommits: https://scopedcommits.com/. The title is `<scope>: <description>`, with the description in lower case and no full stop. The scope is the area the commit touches: a server area (`login`, `oidc`, `admin`, `account`, `storage`, `crypto`, `server`), `reference` for recordings, `contract` for contract tests, `compatibility`, `plan` for PLAN.md and IMPLEMENTATION.md, or `agents` for CLAUDE.md, AGENTS/ and the goal loop. Join two scopes with a comma; a commit touching all of them uses `treewide`. Example of a server change:
+
+```txt
+login: follow the realm OTP policy on TOTP setup
+
+TOTP setup now takes the algorithm, digits and period from the realm's
+OTP policy instead of fixed values, as OTPPolicy and TotpBean do in the
+pinned source, and the key URI carries them so authenticator apps agree
+with the server. HOTP keeps its counter per credential, as recorded.
+
+@minor Added realm OTP policies
+TOTP and HOTP setup follow the realm's algorithm, digits and period.
+```
+
+A recording or agent commit has the same form without a hint, for example `reference: record the pinned realm OTP policy`.
+
 Every commit body explains its decisions in plain prose, without a "Decision:" label: what was chosen, why, and the reference evidence. Only commits that change the server's behaviour for its users carry a `@major`, `@minor` or `@patch` hint; commits to agent setup, CLAUDE.md, AGENTS/ or the goal loop carry no hint.
 
 ## Keycloak compatibility work
