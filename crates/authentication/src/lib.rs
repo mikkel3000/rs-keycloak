@@ -104,6 +104,7 @@ impl LoginService {
         client_id: &str,
         username_normalized: &str,
         password: Zeroizing<Vec<u8>>,
+        remember_me: bool,
     ) -> Result<LoginResult, PasswordWorkError> {
         if password.len() > 1024 {
             return Err(PasswordWorkError);
@@ -151,6 +152,7 @@ impl LoginService {
                 valid,
                 &session_id,
                 1800,
+                remember_me,
             )
             .await
             .map_err(|_| PasswordWorkError)?

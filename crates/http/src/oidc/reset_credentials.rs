@@ -168,6 +168,7 @@ pub(super) async fn request(
             &csrf,
             LoginNotice::EmailSent,
             &headers,
+            None,
         )
         .await;
     }
@@ -229,6 +230,7 @@ pub(super) async fn request(
         &csrf,
         LoginNotice::EmailSent,
         &headers,
+        None,
     )
     .await
 }

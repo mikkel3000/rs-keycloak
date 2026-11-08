@@ -694,8 +694,11 @@ const REALM_FIELDS: [&str; 19] = [
 /// masked secrets (a new one is generated) and service-account users
 /// (created with their clients).
 fn strip_export_fields(body: &mut Map<String, Value>) {
-    for field in REALM_FIELDS {
-        body.remove(field);
+    for field in REALM_FIELDS
+        .iter()
+        .chain(&super::login_settings::REPRESENTED)
+    {
+        body.remove(*field);
     }
     let remove = |item: &mut Value, fields: &[&str]| {
         if let Some(item) = item.as_object_mut() {

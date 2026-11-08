@@ -1412,3 +1412,41 @@ Remaining differences: only missing values count, since admin creation
 already refuses the formats the profile checks; VERIFY_PROFILE cannot be
 a default action, since it is never assigned; the reference's
 `VERIFY_PROFILE` event is not written.
+
+## Remember me
+
+Realms keep `rememberMe` and its two session lifetimes, as recorded in
+`tests/reference/remember-me-observations.json` and read from the pinned
+source (`login.ftl`, `AuthenticatorUtils.processRememberMe`,
+`UsernamePasswordForm`, `AuthenticationManager`, `RealmExpiration`):
+
+- Migration 40 adds `rememberMe`, `ssoSessionIdleTimeoutRememberMe` and
+  `ssoSessionMaxLifespanRememberMe` (0 keeps the normal lifetimes) to
+  realms and a flag to sessions. A new storage module,
+  `login_settings`, reads and changes the login-flow settings in the
+  realm's own transaction. The representation also shows the fixed
+  `ssoSessionIdleTimeout` (1800) and `ssoSessionMaxLifespan` (36000);
+  partial import leaves all five alone.
+- With the setting, the login form shows the "Remember me" checkbox. A
+  sign-in with `rememberMe=on` makes a remembered session, which lives
+  and gives refresh tokens the larger of 1800 seconds and the remember-me
+  idle timeout. The admin session listing reports the flag.
+- After a remembered login, `KEYCLOAK_REMEMBER_ME="username:<name>"`
+  (form-encoded, a year, HttpOnly) is set, and the identity cookie gets a
+  Max-Age: the remember-me lifespan if set, else 36000. The session
+  cookie always carries that Max-Age, 36000 without remember-me. All
+  carry `Version=1`. A login that is not remembered, and logout, remove a
+  sent remember-me cookie.
+- A later login form fills the username from the cookie and checks the
+  box, unless the realm has the setting off or `login_hint` is given,
+  which fills the username instead. A refused sign-in keeps the username.
+
+`tests/public/remember_me_contract.py` replays every recorded case in 5
+tests.
+
+Remaining differences: sessions do not extend their idle time on use, so
+the normal session ends after 1800 seconds where the reference's lasts
+up to 36000 with activity; `ssoSessionIdleTimeout` and
+`ssoSessionMaxLifespan` cannot be changed; the box is not kept checked
+after a refused sign-in; `login_hint` is not kept when a language link
+re-shows the form.

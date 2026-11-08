@@ -71,7 +71,7 @@ fn representation(session: &SessionRecord) -> Value {
         "userId": session.user_id,
         "start": session.started,
         "lastAccess": session.last_access,
-        "rememberMe": false,
+        "rememberMe": session.remember_me,
         "clients": clients,
         "transientUser": false,
     })

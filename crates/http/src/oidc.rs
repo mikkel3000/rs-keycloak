@@ -258,6 +258,7 @@ struct AuthorizationQuery {
     prompt: Option<String>,
     max_age: Option<String>,
     ui_locales: Option<String>,
+    login_hint: Option<String>,
 }
 
 /// Reads one cookie value from the request.
@@ -273,17 +274,36 @@ pub(crate) fn cookie<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> 
 
 /// The SSO session cookies, set after login and cleared at logout.
 /// `KEYCLOAK_SESSION` carries the unpadded base64url SHA-384 of the session
-/// ID, which the login status iframe compares with `session_state`.
-fn sso_cookies(path_prefix: &str, realm: &str, identity: Option<(&str, &str)>) -> [String; 2] {
+/// ID, which the login status iframe compares with `session_state`. As the
+/// reference's AuthenticationManager, both live for the session's lifespan,
+/// which `remembered` gives for a remembered session (its remember-me
+/// lifespan, 0 or less for the normal one); otherwise the identity cookie
+/// ends with the browser.
+fn sso_cookies(
+    path_prefix: &str,
+    realm: &str,
+    identity: Option<(&str, &str, Option<i32>)>,
+) -> [String; 2] {
     let path = format!("{path_prefix}/realms/{realm}/");
     match identity {
-        Some((token, session_id)) => [
-            format!("KEYCLOAK_IDENTITY={token}; Path={path}; Secure; HttpOnly; SameSite=None"),
-            format!(
-                "KEYCLOAK_SESSION={}; Path={path}; Max-Age={SSO_SESSION_SECONDS}; Secure; SameSite=None",
-                URL_SAFE_NO_PAD.encode(Sha384::digest(session_id.as_bytes()))
-            ),
-        ],
+        Some((token, session_id, remembered)) => {
+            let lifespan = remembered
+                .filter(|seconds| *seconds > 0)
+                .unwrap_or(SSO_SESSION_MAX_LIFESPAN);
+            let identity_age = match remembered {
+                Some(_) => format!(" Max-Age={lifespan};"),
+                None => String::new(),
+            };
+            [
+                format!(
+                    "KEYCLOAK_IDENTITY={token}; Version=1; Path={path};{identity_age} Secure; HttpOnly; SameSite=None"
+                ),
+                format!(
+                    "KEYCLOAK_SESSION={}; Version=1; Path={path}; Max-Age={lifespan}; Secure; SameSite=None",
+                    URL_SAFE_NO_PAD.encode(Sha384::digest(session_id.as_bytes()))
+                ),
+            ]
+        }
         None => [
             // Clearing needs only the path, as the reference sends it.
             format!("KEYCLOAK_IDENTITY=; Path={path}; Max-Age=0"),
@@ -298,8 +318,13 @@ fn reauthentication_required(auth_time: i64, max_age: i64, now: i64) -> bool {
     auth_time.saturating_add(max_age) < now
 }
 
-/// Lifetime of the SSO session cookie, matching the stored session lifetime.
-const SSO_SESSION_SECONDS: u32 = 1800;
+/// The reference's default `ssoSessionMaxLifespan` in seconds, the SSO
+/// cookies' lifetime.
+pub(crate) const SSO_SESSION_MAX_LIFESPAN: i32 = 36000;
+
+/// The reference's default `ssoSessionIdleTimeout` in seconds, which stored
+/// sessions and refresh tokens follow.
+pub(crate) const SSO_SESSION_IDLE_TIMEOUT: i32 = 1800;
 
 /// The realm's access and ID token lifetime in seconds, or `None` if it
 /// cannot be read.
@@ -488,7 +513,20 @@ async fn authorize(
                 .unwrap_or_else(|()| unavailable());
         }
     }
-    login_page(&s, &realm, &request_id, &csrf, LoginNotice::None, &headers).await
+    let hint = q
+        .login_hint
+        .as_deref()
+        .filter(|hint| !hint.is_empty() && hint.len() <= 255);
+    login_page(
+        &s,
+        &realm,
+        &request_id,
+        &csrf,
+        LoginNotice::None,
+        &headers,
+        hint,
+    )
+    .await
 }
 
 /// Renders the password form; after a failed attempt it shows the same form
@@ -524,6 +562,35 @@ enum LoginNotice {
 
 /// Renders the password form, with a forgot-password link when the realm
 /// allows it.
+/// The cookie that remembers the username, as the reference's
+/// `KEYCLOAK_REMEMBER_ME`.
+const REMEMBER_ME_COOKIE: &str = "KEYCLOAK_REMEMBER_ME";
+
+/// The username of a remember-me cookie value: `username:` and the
+/// form-encoded name, quoted as a version 1 cookie.
+fn remembered_username(value: &str) -> Option<String> {
+    let value = value.trim_matches('"');
+    let (kind, encoded) = value.split_once(':')?;
+    if kind != "username" {
+        return None;
+    }
+    url::form_urlencoded::parse(format!("u={encoded}").as_bytes())
+        .next()
+        .map(|(_, name)| name.into_owned())
+}
+
+/// The remember-me cookie for a username, kept a year, or its removal.
+fn remember_me_cookie(path_prefix: &str, realm: &str, username: Option<&str>) -> String {
+    let path = format!("{path_prefix}/realms/{realm}/");
+    match username {
+        Some(username) => format!(
+            "{REMEMBER_ME_COOKIE}=\"username:{}\"; Version=1; Path={path}; Max-Age=31536000; Secure; HttpOnly; SameSite=None",
+            url::form_urlencoded::byte_serialize(username.as_bytes()).collect::<String>()
+        ),
+        None => format!("{REMEMBER_ME_COOKIE}=; Version=1; Path={path}; Max-Age=0"),
+    }
+}
+
 async fn login_page(
     s: &OidcState,
     realm: &str,
@@ -531,6 +598,7 @@ async fn login_page(
     csrf: &str,
     notice: LoginNotice,
     headers: &HeaderMap,
+    hint: Option<&str>,
 ) -> Response {
     let record = match s.storage.realm_by_name(realm).await {
         Ok(record) => record,
@@ -553,6 +621,17 @@ async fn login_page(
     let reset_allowed = record
         .as_ref()
         .is_some_and(|record| record.reset_password_allowed);
+    let remember_me = record
+        .as_ref()
+        .is_some_and(|record| record.login.remember_me);
+    // As UsernamePasswordForm: login_hint fills the username, else a
+    // remember-me cookie fills it and checks the box.
+    let remembered = if remember_me && hint.is_none() {
+        cookie(headers, REMEMBER_ME_COOKIE).and_then(remembered_username)
+    } else {
+        None
+    };
+    let username_value = hint.map(str::to_owned).or_else(|| remembered.clone());
     let prefix = escape(&s.path_prefix);
     let texts = &locale.messages;
     // A failed attempt marks the username field, as the reference does.
@@ -579,9 +658,19 @@ async fn login_page(
     } else {
         String::new()
     };
+    let remember = if remember_me {
+        format!(
+            "<input type=\"checkbox\" id=\"rememberMe\" name=\"rememberMe\"{checked}><label for=\"rememberMe\">{label}</label>",
+            checked = if remembered.is_some() { " checked" } else { "" },
+            label = texts.html("rememberMe", &[]),
+        )
+    } else {
+        String::new()
+    };
     let body = format!(
-        "{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" autocomplete=\"username\" required>{error}<label for=\"password\">{password}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required><button id=\"kc-login\" name=\"login\">{submit}</button></form>{reset}",
+        "{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" value=\"{value}\" autocomplete=\"username\" required>{error}<label for=\"password\">{password}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>{remember}<button id=\"kc-login\" name=\"login\">{submit}</button></form>{reset}",
         username = texts.html(locale.username_key(), &[]),
+        value = escape(username_value.as_deref().unwrap_or_default()),
         password = texts.html("password", &[]),
         submit = texts.html("doLogIn", &[]),
     );
@@ -635,7 +724,18 @@ async fn reshow(
             };
             login_steps::continue_login(&s, &realm, &request_id, &held, &headers).await
         }
-        Ok(None) => login_page(&s, &realm, &request_id, csrf, LoginNotice::None, &headers).await,
+        Ok(None) => {
+            login_page(
+                &s,
+                &realm,
+                &request_id,
+                csrf,
+                LoginNotice::None,
+                &headers,
+                None,
+            )
+            .await
+        }
         Err(_) => return unavailable(),
     };
     login_locale::with_cookie(response, picked)
@@ -646,6 +746,8 @@ async fn reshow(
 struct LoginForm {
     username: String,
     password: String,
+    #[serde(rename = "rememberMe")]
+    remember_me: Option<String>,
 }
 fn csrf(headers: &HeaderMap) -> Option<&str> {
     headers
@@ -697,6 +799,12 @@ async fn authenticate(
         Err(()) => return unavailable(),
     };
     let password = Zeroizing::new(form.password.into_bytes());
+    // As AuthenticatorUtils.processRememberMe; the realm setting is checked
+    // when the session is made.
+    let remember_me = form
+        .remember_me
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("on"));
     let result = s
         .login
         .authenticate(
@@ -704,8 +812,11 @@ async fn authenticate(
             &client_id,
             &form.username.to_lowercase(),
             password,
+            remember_me,
         )
         .await;
+    // A refused form keeps the username, as the reference's LoginBean.
+    let hint = Some(form.username.as_str());
     let response = match result {
         Ok(LoginResult::Authenticated { session_id }) => {
             let held = login_steps::Held {
@@ -716,7 +827,16 @@ async fn authenticate(
             login_steps::continue_login(&s, &realm, &request_id, &held, &headers).await
         }
         Ok(LoginResult::Denied) => {
-            login_page(&s, &realm, &request_id, csrf, LoginNotice::Failed, &headers).await
+            login_page(
+                &s,
+                &realm,
+                &request_id,
+                csrf,
+                LoginNotice::Failed,
+                &headers,
+                hint,
+            )
+            .await
         }
         Ok(LoginResult::SharedEmail) => {
             login_page(
@@ -726,6 +846,7 @@ async fn authenticate(
                 csrf,
                 LoginNotice::SharedEmail,
                 &headers,
+                hint,
             )
             .await
         }
@@ -750,15 +871,15 @@ async fn complete_login(
     );
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let sso_token = random_token();
-    match s
+    let session = match s
         .storage
         .set_sso_token(realm_id, session_id, &digest(&sso_token))
         .await
     {
-        Ok(true) => (),
-        Ok(false) => return failure(),
+        Ok(Some(session)) => session,
+        Ok(None) => return failure(),
         Err(_) => return unavailable(),
-    }
+    };
     let request = RequestContext {
         realm,
         realm_id,
@@ -773,7 +894,27 @@ async fn complete_login(
         Ok(None) => return failure(),
         Err(()) => return unavailable(),
     };
-    for value in sso_cookies(&s.path_prefix, realm, Some((&sso_token, session_id))) {
+    let remembered = session
+        .remember_me
+        .then_some(session.max_lifespan_remember_me);
+    let mut cookies = sso_cookies(
+        &s.path_prefix,
+        realm,
+        Some((&sso_token, session_id, remembered)),
+    )
+    .to_vec();
+    // As AuthenticationManager: a remembered session names its user in the
+    // remember-me cookie, and any other login removes a sent one.
+    if session.remember_me {
+        cookies.push(remember_me_cookie(
+            &s.path_prefix,
+            realm,
+            Some(&session.username),
+        ));
+    } else if cookie(headers, REMEMBER_ME_COOKIE).is_some() {
+        cookies.push(remember_me_cookie(&s.path_prefix, realm, None));
+    }
+    for value in cookies {
         match HeaderValue::from_str(&value) {
             Ok(value) => {
                 response.headers_mut().append(header::SET_COOKIE, value);

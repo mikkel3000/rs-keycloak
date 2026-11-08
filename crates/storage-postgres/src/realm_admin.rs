@@ -4,6 +4,10 @@ use sqlx::Row;
 use sqlx::postgres::PgRow;
 
 use crate::localization::{LocalizationTexts, merge_texts};
+use crate::login_settings::{
+    LOGIN_SETTING_COLUMNS, LoginSettingChanges, LoginSettings, change_login_settings,
+    login_settings_row, save_login_settings,
+};
 use crate::{Actor, Storage, StorageError, audit};
 
 /// The administrative realm; it cannot be deleted.
@@ -29,6 +33,8 @@ pub struct RealmRecord {
     pub access_token_lifespan: i32,
     /// Locale and username settings.
     pub user_settings: UserSettings,
+    /// Login-flow settings.
+    pub login: LoginSettings,
 }
 
 /// The settings that decide a realm's page locale and username rules.
@@ -122,6 +128,8 @@ pub struct RealmSettings {
     pub user_settings: UserSettings,
     /// Localization texts given at creation.
     pub localization_texts: LocalizationTexts,
+    /// Login-flow settings.
+    pub login: LoginSettings,
 }
 
 /// Changes to a realm's locale and username settings; `None` keeps one.
@@ -161,6 +169,8 @@ pub struct RealmChanges<'a> {
     pub access_token_lifespan: Option<i32>,
     /// Locale and username settings.
     pub user_settings: UserSettingChanges<'a>,
+    /// Login-flow settings.
+    pub login: LoginSettingChanges,
 }
 
 /// A realm's SMTP settings as stored.
@@ -224,6 +234,7 @@ fn realm_row(row: &PgRow) -> Result<RealmRecord, StorageError> {
         display_name: row.try_get("display_name")?,
         access_token_lifespan: row.try_get("access_token_lifespan")?,
         user_settings: user_settings_row(row)?,
+        login: login_settings_row(row)?,
         smtp: match host.zip(port) {
             Some((host, port)) => Some(RealmSmtp {
                 host,
@@ -268,7 +279,7 @@ impl Storage {
     pub async fn realm_by_name(&self, name: &str) -> Result<Option<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
         let row = sqlx::query(&format!(
-            "SELECT {REALM_COLUMNS} FROM realms WHERE name = $1"
+            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS} FROM realms WHERE name = $1"
         ))
         .bind(name)
         .fetch_optional(tx.connection())
@@ -303,9 +314,11 @@ impl Storage {
     /// Lists every realm by name.
     pub async fn realms(&self) -> Result<Vec<RealmRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let rows = sqlx::query(&format!("SELECT {REALM_COLUMNS} FROM realms ORDER BY name"))
-            .fetch_all(tx.connection())
-            .await?;
+        let rows = sqlx::query(&format!(
+            "SELECT {REALM_COLUMNS}, {LOGIN_SETTING_COLUMNS} FROM realms ORDER BY name"
+        ))
+        .fetch_all(tx.connection())
+        .await?;
         tx.commit().await?;
         rows.iter().map(realm_row).collect()
     }
@@ -335,6 +348,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RealmCreation::Exists);
         }
+        save_login_settings(tx.connection(), name, &settings.login).await?;
         for (locale, texts) in &settings.localization_texts {
             merge_texts(tx.connection(), realm_id, locale, texts).await?;
         }
@@ -370,6 +384,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(false);
         }
+        change_login_settings(&mut *conn, name, &changes.login).await?;
         audit(&mut *conn, actor, "realm_updated").await?;
         tx.commit().await?;
         Ok(true)

@@ -8,6 +8,7 @@ mod cors;
 mod group_admin;
 mod localization;
 mod login_locale;
+mod login_settings;
 mod login_steps;
 mod logout;
 mod realm_admin;
@@ -27,6 +28,7 @@ pub use cors::WebOriginCheck;
 pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
 pub use localization::LocalizationTexts;
 pub use login_locale::{LoginLocale, UserLocaleUpdate};
+pub use login_settings::{LoginSettingChanges, LoginSettings};
 pub use login_steps::{
     CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate, RequiredActionSetting,
 };
@@ -41,7 +43,7 @@ pub use role_admin::{
 };
 pub use service_account::{ServiceAccount, ServiceAccountGrant, service_account_username};
 pub use session_admin::{ClientSessionCount, SessionRecord};
-pub use sso::SsoSession;
+pub use sso::{SsoCookieSession, SsoSession};
 pub use user_admin::{
     Collision, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
 };
@@ -96,6 +98,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0037_realm_localizations.sql"),
     include_str!("../../../migrations/0038_email_login.sql"),
     include_str!("../../../migrations/0039_verify_profile.sql"),
+    include_str!("../../../migrations/0040_remember_me.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -720,6 +723,7 @@ impl Storage {
 
     /// Consume a challenge once and create a session only after rechecking revisions and policy.
     /// The caller verifies the hash outside the transaction and supplies an unpredictable session ID.
+    #[allow(clippy::too_many_arguments)]
     pub async fn finish_login(
         &self,
         challenge_id: &str,
@@ -728,6 +732,7 @@ impl Storage {
         password_valid: bool,
         session_id: &str,
         session_ttl_seconds: i32,
+        remember_me: bool,
     ) -> Result<LoginOutcome, StorageError> {
         if !(1..=86400).contains(&session_ttl_seconds) {
             return Err(StorageError::InvalidInput);
@@ -766,7 +771,9 @@ impl Storage {
             return Ok(LoginOutcome::Denied);
         }
         sqlx::query("UPDATE login_lockouts SET failures = 0, locked_until = NULL WHERE realm_id = $1 AND user_id = $2").bind(&realm).bind(&user).execute(&mut *conn).await?;
-        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => $4), rs_prepare_login_steps($1, $3) FROM users u WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).execute(&mut *conn).await?;
+        // A remembered session lives for the larger of the idle timeout and
+        // its remember-me value, as the reference's RealmExpiration.
+        sqlx::query("INSERT INTO user_sessions (realm_id, id, user_id, expires_at, steps_pending, remember_me) SELECT $1, $2, $3, CURRENT_TIMESTAMP + make_interval(secs => CASE WHEN $5 AND r.remember_me THEN GREATEST($4, r.sso_session_idle_timeout_remember_me) ELSE $4 END), rs_prepare_login_steps($1, $3), $5 AND r.remember_me FROM users u JOIN realms r ON r.id = u.realm_id WHERE u.realm_id = $1 AND u.id = $3").bind(&realm).bind(session_id).bind(&user).bind(f64::from(session_ttl_seconds)).bind(remember_me).execute(&mut *conn).await?;
         sqlx::query("INSERT INTO client_sessions (realm_id, id, user_session_id, client_id) VALUES ($1, $2, $2, $3)").bind(&realm).bind(session_id).bind(&client).execute(&mut *conn).await?;
         tx.commit().await?;
         Ok(LoginOutcome::Authenticated)
@@ -1121,7 +1128,7 @@ impl Storage {
         // An offline family lives on its own lifetime; an online one ends
         // with its session.
         let offline = is_offline_scope(scope);
-        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN clock_timestamp() + make_interval(secs => $8) ELSE LEAST(clock_timestamp() + make_interval(secs => $6), (SELECT expires_at FROM user_sessions WHERE realm_id = $2 AND id = $4)) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
+        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN clock_timestamp() + make_interval(secs => $8) ELSE (SELECT LEAST(clock_timestamp() + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($6, r.sso_session_idle_timeout_remember_me) ELSE $6 END), us.expires_at) FROM user_sessions us JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $2 AND us.id = $4) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
             .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).bind(offline).bind(f64::from(OFFLINE_SESSION_SECONDS)).fetch_one(&mut *conn).await?;
         sqlx::query(
             "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, 0)",

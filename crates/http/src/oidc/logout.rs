@@ -572,6 +572,13 @@ async fn finish(
             }
         }
     }
+    // Logout forgets a remembered username, as AuthenticationManager does.
+    if cookie(headers, super::REMEMBER_ME_COOKIE).is_some()
+        && let Ok(value) =
+            HeaderValue::from_str(&super::remember_me_cookie(&state.path_prefix, realm, None))
+    {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
     response
 }
 

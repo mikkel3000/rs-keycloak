@@ -18,6 +18,8 @@ pub struct SessionRecord {
     pub started: i64,
     /// Latest start or token refresh in Unix milliseconds.
     pub last_access: i64,
+    /// Whether the user asked to be remembered.
+    pub remember_me: bool,
     /// Clients in the session as `(internal id, public identifier)`.
     pub clients: Vec<(String, String)>,
 }
@@ -36,7 +38,7 @@ pub struct ClientSessionCount {
 
 /// Live sessions with their columns; `$1` is the realm and the caller adds
 /// the remaining conditions on `us`.
-const SESSION_SELECT: &str = "SELECT us.id, us.user_id, u.username, floor(EXTRACT(EPOCH FROM us.created_at) * 1000)::bigint AS started, floor(EXTRACT(EPOCH FROM GREATEST(us.created_at, (SELECT max(t.consumed_at) FROM refresh_families f JOIN refresh_tokens t ON t.family_id = f.id WHERE f.realm_id = us.realm_id AND f.user_session_id = us.id))) * 1000)::bigint AS last_access, ARRAY(SELECT c.id FROM client_sessions cs JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE cs.realm_id = us.realm_id AND cs.user_session_id = us.id ORDER BY c.client_id) AS client_ids, ARRAY(SELECT c.client_id FROM client_sessions cs JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE cs.realm_id = us.realm_id AND cs.user_session_id = us.id ORDER BY c.client_id) AS client_identifiers FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE us.realm_id = $1 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp()";
+const SESSION_SELECT: &str = "SELECT us.id, us.user_id, u.username, us.remember_me, floor(EXTRACT(EPOCH FROM us.created_at) * 1000)::bigint AS started, floor(EXTRACT(EPOCH FROM GREATEST(us.created_at, (SELECT max(t.consumed_at) FROM refresh_families f JOIN refresh_tokens t ON t.family_id = f.id WHERE f.realm_id = us.realm_id AND f.user_session_id = us.id))) * 1000)::bigint AS last_access, ARRAY(SELECT c.id FROM client_sessions cs JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE cs.realm_id = us.realm_id AND cs.user_session_id = us.id ORDER BY c.client_id) AS client_ids, ARRAY(SELECT c.client_id FROM client_sessions cs JOIN clients c ON c.realm_id = cs.realm_id AND c.id = cs.client_id WHERE cs.realm_id = us.realm_id AND cs.user_session_id = us.id ORDER BY c.client_id) AS client_identifiers FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id WHERE us.realm_id = $1 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp()";
 
 fn session_row(row: &PgRow) -> Result<SessionRecord, StorageError> {
     let ids: Vec<String> = row.try_get("client_ids")?;
@@ -47,6 +49,7 @@ fn session_row(row: &PgRow) -> Result<SessionRecord, StorageError> {
         username: row.try_get("username")?,
         started: row.try_get("started")?,
         last_access: row.try_get("last_access")?,
+        remember_me: row.try_get("remember_me")?,
         clients: ids.into_iter().zip(identifiers).collect(),
     })
 }
@@ -108,7 +111,7 @@ impl Storage {
         user_id: Option<&str>,
     ) -> Result<Vec<SessionRecord>, StorageError> {
         let mut tx = self.begin_request(false).await?;
-        let rows = sqlx::query("SELECT f.user_session_id AS id, us.user_id, u.username, floor(EXTRACT(EPOCH FROM us.created_at) * 1000)::bigint AS started, floor(EXTRACT(EPOCH FROM GREATEST(us.created_at, (SELECT max(t.consumed_at) FROM refresh_tokens t WHERE t.family_id = f.id))) * 1000)::bigint AS last_access, ARRAY[c.id] AS client_ids, ARRAY[c.client_id] AS client_identifiers FROM refresh_families f JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id WHERE f.realm_id = $1 AND f.client_id = $2 AND ($3::text IS NULL OR us.user_id = $3) AND f.offline AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() ORDER BY us.created_at DESC, f.id")
+        let rows = sqlx::query("SELECT f.user_session_id AS id, us.user_id, u.username, us.remember_me, floor(EXTRACT(EPOCH FROM us.created_at) * 1000)::bigint AS started, floor(EXTRACT(EPOCH FROM GREATEST(us.created_at, (SELECT max(t.consumed_at) FROM refresh_tokens t WHERE t.family_id = f.id))) * 1000)::bigint AS last_access, ARRAY[c.id] AS client_ids, ARRAY[c.client_id] AS client_identifiers FROM refresh_families f JOIN user_sessions us ON us.realm_id = f.realm_id AND us.id = f.user_session_id JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN clients c ON c.realm_id = f.realm_id AND c.id = f.client_id WHERE f.realm_id = $1 AND f.client_id = $2 AND ($3::text IS NULL OR us.user_id = $3) AND f.offline AND f.revoked_at IS NULL AND f.expires_at > clock_timestamp() ORDER BY us.created_at DESC, f.id")
             .bind(realm_id).bind(client_id).bind(user_id).fetch_all(tx.connection()).await?;
         tx.commit().await?;
         rows.iter().map(session_row).collect()

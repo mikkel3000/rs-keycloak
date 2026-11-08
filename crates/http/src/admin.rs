@@ -29,6 +29,7 @@ mod clients;
 mod export;
 mod groups;
 mod localization;
+mod login_settings;
 mod roles;
 mod sessions;
 mod users;
@@ -561,10 +562,9 @@ impl UserSettingFields {
 }
 
 fn unsupported_realm_field(fields: &Map<String, Value>) -> Result<(), AdminError> {
-    match fields
-        .keys()
-        .find(|key| !REALM_FIELDS.contains(&key.as_str()))
-    {
+    match fields.keys().find(|key| {
+        !REALM_FIELDS.contains(&key.as_str()) && !login_settings::FIELDS.contains(&key.as_str())
+    }) {
         Some(field) => Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
         ))),
@@ -614,6 +614,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             access_token_lifespan: access_token_lifespan(&fields)?.unwrap_or(300),
             user_settings: UserSettingFields::parse(&fields)?.settings(),
             localization_texts: localization_texts(&fields)?,
+            login: login_settings::parse(&fields)?.settings(),
         },
     })
 }
@@ -706,6 +707,7 @@ fn realm_representation(realm: &RealmRecord) -> Value {
     representation["registrationEmailAsUsername"] = json!(users.registration_email_as_username);
     representation["loginWithEmailAllowed"] = json!(users.login_with_email_allowed);
     representation["duplicateEmailsAllowed"] = json!(users.duplicate_emails_allowed);
+    login_settings::represent(&realm.login, &mut representation);
     representation
 }
 
@@ -828,6 +830,7 @@ async fn update_realm(
         display_name: display_name.as_ref().map(Option::as_deref),
         access_token_lifespan: access_token_lifespan(&fields)?,
         user_settings: user_settings.changes(),
+        login: login_settings::parse(&fields)?,
     };
     if state.storage.update_realm(&name, &changes, &actor).await? {
         Ok(StatusCode::NO_CONTENT)

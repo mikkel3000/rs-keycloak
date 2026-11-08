@@ -1,5 +1,7 @@
 //! Browser SSO sessions identified by the KEYCLOAK_IDENTITY cookie.
 
+use sqlx::Row;
+
 use crate::{Storage, StorageError};
 
 /// An active SSO session found from its cookie token.
@@ -14,22 +16,41 @@ pub struct SsoSession {
     pub locale: Option<String>,
 }
 
+/// What the cookies set at the end of a login need from its session.
+pub struct SsoCookieSession {
+    /// Whether the user asked to be remembered.
+    pub remember_me: bool,
+    /// The signed-in user's username, which the remember-me cookie names.
+    pub username: String,
+    /// The realm's remember-me lifespan in seconds; 0 or less keeps the
+    /// normal one.
+    pub max_lifespan_remember_me: i32,
+}
+
 impl Storage {
-    /// Binds a new SSO cookie token digest to a freshly authenticated session.
+    /// Binds a new SSO cookie token digest to a freshly authenticated
+    /// session; `None` if the session is not ready for SSO.
     pub async fn set_sso_token(
         &self,
         realm_id: &str,
         session_id: &str,
         token_hash: &[u8],
-    ) -> Result<bool, StorageError> {
+    ) -> Result<Option<SsoCookieSession>, StorageError> {
         if token_hash.len() != 32 {
             return Err(StorageError::InvalidInput);
         }
         let mut tx = self.begin_request(true).await?;
-        let changed = sqlx::query("UPDATE user_sessions SET sso_token_hash = $3 WHERE realm_id = $1 AND id = $2 AND revoked_at IS NULL AND NOT steps_pending AND expires_at > clock_timestamp()")
-            .bind(realm_id).bind(session_id).bind(token_hash).execute(tx.connection()).await?.rows_affected();
+        let row = sqlx::query("UPDATE user_sessions us SET sso_token_hash = $3 FROM users u, realms r WHERE u.realm_id = us.realm_id AND u.id = us.user_id AND r.id = us.realm_id AND us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp() RETURNING us.remember_me, u.username, r.sso_session_max_lifespan_remember_me")
+            .bind(realm_id).bind(session_id).bind(token_hash).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(changed == 1)
+        row.map(|row| {
+            Ok(SsoCookieSession {
+                remember_me: row.try_get("remember_me")?,
+                username: row.try_get("username")?,
+                max_lifespan_remember_me: row.try_get("sso_session_max_lifespan_remember_me")?,
+            })
+        })
+        .transpose()
     }
 
     /// Finds the active session of an SSO cookie token in a realm.
