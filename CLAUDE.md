@@ -28,7 +28,7 @@ Follow googles rust styleguide: https://google.github.io/styleguide/rustguide.ht
 
 Always use versionedcommits: https://github.com/mikkel3000/versionedcommits
 
-Every commit body holds its decisions in a "Decision:" paragraph: what was chosen, why, and the reference evidence. Only commits that change the server's behaviour for its users carry a `@major`, `@minor` or `@patch` hint; commits to agent setup, CLAUDE.md, AGENTS/ or the goal loop carry no hint.
+Every commit body explains its decisions in plain prose, without a "Decision:" label: what was chosen, why, and the reference evidence. Only commits that change the server's behaviour for its users carry a `@major`, `@minor` or `@patch` hint; commits to agent setup, CLAUDE.md, AGENTS/ or the goal loop carry no hint.
 
 ## Keycloak compatibility work
 
@@ -44,7 +44,7 @@ Each feature follows `AGENTS/workflow.md`. A new machine is set up with `AGENTS/
 
 The interactive session is the manager. Goals run one per fresh `claude -p` session through `AGENTS/goal-loop/run_goal.sh`, as `AGENTS/goal-loop/README.md` describes; do the goals' work only through the loop. The loop's state is in `~/.claude/goal-loop/`.
 
-Between runs, review the run: `git log` shows a recording commit (`@patch`) and an implementation commit (`@minor`) per feature, each with a "Decision:" paragraph and no co-author trailer, all pushed; the fast suite passes with no test over 500 ms; `NEXT_GOAL` holds the next goal. Then start the next run. If `QUESTION` exists or a run fails for a reason other than a usage limit, stop and tell the user.
+Between runs, review the run: `git log` shows a recording commit (`@patch`) and an implementation commit (`@minor`) per feature, each body explaining its decisions and with no co-author trailer, all pushed; the fast suite passes with no test over 500 ms; `NEXT_GOAL` holds the next goal. Then start the next run. If `QUESTION` exists or a run fails for a reason other than a usage limit, stop and tell the user.
 
 Start a run with the test environment set, since a shell started before `~/.bashrc` changed lacks it:
 
