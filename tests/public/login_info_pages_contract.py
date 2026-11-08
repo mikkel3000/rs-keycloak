@@ -298,6 +298,26 @@ class LogoutPagesContract(InfoPagesCase):
             self.check(label, browser.logout(query), browser)
 
 
+class TotpSetupKeyContract(InfoPagesCase):
+    def test_setup_keeps_its_key_until_a_new_authorization(self):
+        login, _ = self.new_user("totp", {"requiredActions": ["CONFIGURE_TOTP"]})
+        browser = Browser(self)
+        fields = {"username": login, "password": self.password}
+        page = browser.submit(browser.authorize({"ui_locales": "de"}), fields)
+
+        def key(response):
+            forms = Forms()
+            forms.feed(response[2].decode())
+            return next(form for form in forms.forms if "totpSecret" in form["fields"])["fields"]["totpSecret"]
+
+        first = key(page)
+        switched = browser.follow(page, "fr")
+        wrong = browser.submit(switched, {"totp": "", "userLabel": ""})
+        again = browser.submit(browser.authorize({"ui_locales": "de"}), fields)
+        observed = {"after_switch": key(switched) == first, "after_error": key(wrong) == first, "after_new_authorization": key(again) == first}
+        self.assertEqual(observed, REFERENCE["configure-totp/key"])
+
+
 class AuthorizeErrorContract(InfoPagesCase):
     def test_refused_authorizations(self):
         for label, query, client in (

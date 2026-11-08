@@ -57,6 +57,50 @@ fn new_secret() -> Zeroizing<String> {
     secret
 }
 
+/// Associated data that binds a sealed setup secret to one login request.
+fn setup_context(realm_id: &str, request_id: &str) -> Vec<u8> {
+    [
+        b"totp-setup\0",
+        realm_id.as_bytes(),
+        b"\0",
+        request_id.as_bytes(),
+    ]
+    .concat()
+}
+
+/// The TOTP setup secret of a login: drawn once and kept sealed on the
+/// request, as the reference keeps it in the authentication session, so
+/// re-showing the page shows the same key.
+async fn setup_secret(
+    s: &OidcState,
+    realm_id: &str,
+    request_id: &str,
+) -> Result<Zeroizing<String>, ()> {
+    let fresh = new_secret();
+    // Without a secret key the setup cannot be stored, so nothing is kept.
+    let Some(key) = s.secret_key.as_ref() else {
+        return Ok(fresh);
+    };
+    let context = setup_context(realm_id, request_id);
+    let sealed = key.seal(fresh.as_bytes(), &context).map_err(|_| ())?;
+    let kept = s
+        .storage
+        .keep_totp_setup_secret(realm_id, request_id, &sealed)
+        .await
+        .map_err(|_| ())?;
+    let Some(kept) = kept else {
+        return Ok(fresh);
+    };
+    // A secret sealed under a replaced key gives way to the fresh one.
+    let Ok(opened) = key.open(&kept, &context) else {
+        return Ok(fresh);
+    };
+    match String::from_utf8(opened.to_vec()) {
+        Ok(secret) => Ok(Zeroizing::new(secret)),
+        Err(_) => Ok(fresh),
+    }
+}
+
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -231,7 +275,10 @@ async fn hold(
     };
     let request = StepRequest::new(realm, request_id, csrf);
     match step {
-        LoginStep::ConfigureTotp => setup_page(s, request, &locale, &new_secret(), CodeError::None),
+        LoginStep::ConfigureTotp => match setup_secret(s, &held.realm_id, request_id).await {
+            Ok(secret) => setup_page(s, request, &locale, &secret, CodeError::None),
+            Err(()) => unavailable(),
+        },
         LoginStep::UpdatePassword => password_page(s, request, &locale, PasswordError::None),
         LoginStep::UpdateProfile { username, profile } => {
             let shown = Shown {

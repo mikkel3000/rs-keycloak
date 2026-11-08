@@ -297,6 +297,25 @@ impl Storage {
         Ok(accepted)
     }
 
+    /// Keeps `sealed` as a live request's TOTP setup secret unless it
+    /// already has one, and returns the one it keeps.
+    pub async fn keep_totp_setup_secret(
+        &self,
+        realm_id: &str,
+        request_id: &str,
+        sealed: &[u8],
+    ) -> Result<Option<Vec<u8>>, StorageError> {
+        if sealed.is_empty() || sealed.len() > 256 {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let kept: Option<Vec<u8>> = sqlx::query_scalar("UPDATE authorization_requests SET totp_setup_secret = COALESCE(totp_setup_secret, $3) WHERE realm_id = $1 AND id = $2 AND consumed_at IS NULL AND expires_at > clock_timestamp() RETURNING totp_setup_secret")
+            .bind(realm_id).bind(request_id).bind(sealed)
+            .fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        Ok(kept)
+    }
+
     /// Stores a newly set-up OTP credential, replacing any earlier one,
     /// completes CONFIGURE_TOTP and settles the session.
     #[allow(clippy::too_many_arguments)]

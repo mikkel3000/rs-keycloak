@@ -1175,8 +1175,7 @@ label, selection and locale; a page in a locale outside the theme whose
 language the theme lacks (such as `eo`) takes its language labels from its
 fallback locale, where the reference asks the JDK, and the order can
 differ for scripts the JDK's collator orders otherwise; TOTP setup shows
-the manual-entry steps without a QR code, and re-showing it draws a new
-key, where the reference keeps the first; realm localization texts, the
+the manual-entry steps without a QR code; realm localization texts, the
 `loginWithEmailAllowed` setting and themes other than the pinned default
 are not implemented; a login continued from the page after a sent email
 keeps the pick, where the reference's fork has none. Info, error and
@@ -1230,6 +1229,12 @@ and `detachedInfo`, `DetachedInfoStateChecker`, `MessageFormatterMethod`):
   there) and `invalidRedirectUriMessage`; a confirmation no longer kept
   shows `failedLogout` while a session remains, else `successLogout`.
   Logout pages are `no-cache`, as recorded.
+- TOTP setup keeps its key for the rest of a login, through language
+  links and failed codes, as the reference keeps it in the
+  authentication session: the first key drawn is sealed with the server's
+  secret key, bound to the request, in a new `totp_setup_secret` column of
+  the authorization request. A new authorization draws a new key, as
+  recorded.
 - Pages without a login to re-show them from link their languages to
   `login-actions/detached-info` with a fresh `kc_state_checker`, and set
   the `KC_STATE_CHECKER` cookie (path of the realm, 300 seconds, strict)
