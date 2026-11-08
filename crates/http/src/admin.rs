@@ -14,8 +14,9 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rs_keycloak_storage_postgres::{
-    AccessTokenStatus, Actor, MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion,
-    RealmRecord, RealmSettings, RealmSmtp, StorageError, UserSettingChanges, UserSettings,
+    AccessTokenStatus, Actor, LocalizationTexts, MASTER_REALM, RealmChanges, RealmCreation,
+    RealmDeletion, RealmRecord, RealmSettings, RealmSmtp, StorageError, UserSettingChanges,
+    UserSettings,
 };
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
@@ -27,6 +28,7 @@ mod client_scopes;
 mod clients;
 mod export;
 mod groups;
+mod localization;
 mod roles;
 mod sessions;
 mod users;
@@ -39,6 +41,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(clients::routes())
         .merge(export::routes())
         .merge(groups::routes())
+        .merge(localization::routes())
         .merge(roles::routes())
         .merge(sessions::routes())
         .merge(users::routes())
@@ -401,6 +404,36 @@ fn display_name(fields: &Map<String, Value>) -> Result<Option<Option<String>>, A
     }
 }
 
+/// Reads `localizationTexts`, each locale's texts as the localization
+/// endpoints take them; locales longer than 255 bytes are refused.
+fn localization_texts(fields: &Map<String, Value>) -> Result<LocalizationTexts, AdminError> {
+    let unparsable = || {
+        AdminError::OAuth(
+            StatusCode::BAD_REQUEST,
+            "unknown_error",
+            "Cannot parse the JSON",
+        )
+    };
+    match fields.get("localizationTexts") {
+        None | Some(Value::Null) => Ok(LocalizationTexts::new()),
+        Some(Value::Object(locales)) => locales
+            .iter()
+            .map(|(locale, texts)| {
+                if locale.is_empty() || locale.len() > 255 {
+                    return Err(AdminError::bad_request("Invalid locale"));
+                }
+                match texts {
+                    Value::Object(texts) => localization::texts_of(texts.clone())
+                        .map(|texts| (locale.clone(), texts))
+                        .ok_or_else(unparsable),
+                    _ => Err(unparsable()),
+                }
+            })
+            .collect(),
+        Some(_) => Err(unparsable()),
+    }
+}
+
 /// Reads `accessTokenLifespan` in seconds. The reference also stores zero
 /// and negative values, which only yield expired tokens; they are refused.
 fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, AdminError> {
@@ -421,7 +454,8 @@ fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, Adm
 }
 
 /// Realm fields this server stores besides the name.
-const REALM_FIELDS: [&str; 12] = [
+const REALM_FIELDS: [&str; 13] = [
+    "localizationTexts",
     "enabled",
     "smtpServer",
     "resetPasswordAllowed",
@@ -567,6 +601,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             display_name: display_name(&fields)?.flatten(),
             access_token_lifespan: access_token_lifespan(&fields)?.unwrap_or(300),
             user_settings: UserSettingFields::parse(&fields)?.settings(),
+            localization_texts: localization_texts(&fields)?,
         },
     })
 }

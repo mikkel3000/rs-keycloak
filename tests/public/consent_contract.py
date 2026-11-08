@@ -71,12 +71,14 @@ class ConsentContract(AdminCase):
         action = re.search(r'action="([^"]+)"', response[2].decode()).group(1)
         return self.browse("POST", action, jar, {button: "x"})
 
-    def test_deny_then_accept_then_remembered(self):
+    def test_deny_keeps_no_consent(self):
         jar = {}
         page = self.login(jar)
         self.assertEqual(self.summarize(page), REFERENCE["consent/after-password"])
         self.assertEqual(self.summarize(self.answer(jar, page, "cancel")), REFERENCE["consent/deny"])
         self.assertEqual(len(json.loads(self.call("GET", self.consents)[2])), REFERENCE["admin/consents-after-deny"]["count"])
+
+    def test_accept_then_remembered(self):
         jar = {}
         page = self.login(jar)
         self.assertEqual(self.summarize(self.answer(jar, page, "accept")), REFERENCE["consent/accept"])

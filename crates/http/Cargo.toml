@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 rs-keycloak-authentication = { path = "../authentication" }
 rs-keycloak-crypto = { path = "../crypto" }
 rs-keycloak-protocols = { path = "../protocols" }

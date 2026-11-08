@@ -91,7 +91,7 @@ impl PageLocale {
         };
         let settings = &state.settings;
         let lang = resolve(settings, choices, headers);
-        let messages = Messages::new(&lang, settings);
+        let messages = Messages::new(&lang, settings, &state.texts);
         // `LocaleBean` checks the direction of the locale's label.
         let dir = settings.internationalization_enabled.then(|| {
             if is_right_to_left(&messages.language_label(&lang)) {

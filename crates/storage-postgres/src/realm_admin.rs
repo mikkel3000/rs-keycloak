@@ -3,6 +3,7 @@
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
+use crate::localization::{LocalizationTexts, merge_texts};
 use crate::{Actor, Storage, StorageError, audit};
 
 /// The administrative realm; it cannot be deleted.
@@ -62,6 +63,8 @@ pub struct RealmSettings {
     pub access_token_lifespan: i32,
     /// Locale and username settings.
     pub user_settings: UserSettings,
+    /// Localization texts given at creation.
+    pub localization_texts: LocalizationTexts,
 }
 
 /// Changes to a realm's locale and username settings; `None` keeps one.
@@ -267,6 +270,9 @@ impl Storage {
         if created.is_none() {
             tx.commit().await?;
             return Ok(RealmCreation::Exists);
+        }
+        for (locale, texts) in &settings.localization_texts {
+            merge_texts(tx.connection(), realm_id, locale, texts).await?;
         }
         audit(tx.connection(), actor, "realm_created").await?;
         tx.commit().await?;

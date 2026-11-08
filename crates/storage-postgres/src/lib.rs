@@ -6,6 +6,7 @@ mod client_admin;
 mod consent;
 mod cors;
 mod group_admin;
+mod localization;
 mod login_locale;
 mod login_steps;
 mod logout;
@@ -24,6 +25,7 @@ pub use client_admin::{
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
+pub use localization::LocalizationTexts;
 pub use login_locale::{LoginLocale, UserLocaleUpdate};
 pub use login_steps::{
     CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate, RequiredActionSetting,
@@ -89,6 +91,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0034_login_locale.sql"),
     include_str!("../../../migrations/0035_logout_requests.sql"),
     include_str!("../../../migrations/0036_totp_setup_secret.sql"),
+    include_str!("../../../migrations/0037_realm_localizations.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

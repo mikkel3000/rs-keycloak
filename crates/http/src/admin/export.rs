@@ -71,6 +71,8 @@ async fn partial_export(
     export["clientScopes"] = json!(super::client_scopes::all_scopes(&realm_id));
     let settings = state.storage.required_action_settings(&realm_id).await?;
     export["requiredActions"] = json!(super::authentication::all_actions(&settings));
+    // `ExportUtils.exportRealm` always sets the realm's texts.
+    export["localizationTexts"] = json!(state.storage.localization_texts(&realm_id).await?);
     export["defaultRole"] = json!({
         "name": format!("default-roles-{}", record.name),
         "composite": true,
@@ -665,8 +667,9 @@ async fn user_links(
 
 /// Realm fields an export carries that import leaves alone, as the
 /// reference's partial import does.
-const REALM_FIELDS: [&str; 16] = [
+const REALM_FIELDS: [&str; 17] = [
     "id",
+    "localizationTexts",
     "realm",
     "enabled",
     "displayName",

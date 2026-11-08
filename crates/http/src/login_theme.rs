@@ -9,13 +9,13 @@
 //! Java `MessageFormat` patterns. Checked by
 //! `tests/reference/login-message-observations.json`.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::LazyLock;
 
 use icu_normalizer::DecomposingNormalizerBorrowed;
 use icu_properties::CodePointMapData;
 use icu_properties::props::GeneralCategory;
-use rs_keycloak_storage_postgres::UserSettings;
+use rs_keycloak_storage_postgres::{LocalizationTexts, UserSettings};
 
 use crate::account_console::properties;
 use crate::locale;
@@ -45,12 +45,25 @@ static BUNDLES: LazyLock<HashMap<&'static str, Bundle>> = LazyLock::new(|| {
 /// Longest fallback chain followed; real chains have at most five locales.
 const MAX_LEVELS: usize = 8;
 
-/// One locale of a page's fallback chain and its bundles, later ones
-/// winning.
+/// One locale of a page's fallback chain: the realm's texts of that locale,
+/// then its bundles, later ones winning.
 #[derive(Clone, Debug)]
 struct Level {
     tag: String,
+    realm: BTreeMap<String, String>,
     bundles: Vec<&'static Bundle>,
+}
+
+impl Level {
+    /// This locale's value of a key: the realm's text, else the bundles'.
+    fn get(&self, key: &str) -> Option<&str> {
+        self.realm.get(key).map(String::as_str).or_else(|| {
+            self.bundles
+                .iter()
+                .rev()
+                .find_map(|bundle| bundle.get(key).map(String::as_str))
+        })
+    }
 }
 
 /// The messages of a page in one locale.
@@ -61,8 +74,11 @@ pub(crate) struct Messages {
 }
 
 impl Messages {
-    /// The messages of a page in `lang` in a realm with these settings.
-    pub(crate) fn new(lang: &str, settings: &UserSettings) -> Self {
+    /// The messages of a page in `lang` in a realm with these settings and
+    /// localization texts. A realm text wins over the theme's text of its
+    /// locale, and loses to a theme text of a more specific locale, as
+    /// `LocaleUtil.mergeGroupedMessages` merges them.
+    pub(crate) fn new(lang: &str, settings: &UserSettings, texts: &LocalizationTexts) -> Self {
         let mut levels: Vec<Level> = Vec::new();
         let mut next = Some(lang.to_owned());
         while let Some(tag) = next.take() {
@@ -74,31 +90,49 @@ impl Messages {
                 .iter()
                 .filter_map(|name| BUNDLES.get(name.as_str()))
                 .collect();
-            levels.push(Level { tag, bundles });
+            let realm = texts.get(&tag).cloned().unwrap_or_default();
+            levels.push(Level {
+                tag,
+                realm,
+                bundles,
+            });
         }
         Self { levels }
     }
 
     /// English messages, for pages outside a realm's login.
     pub(crate) fn english() -> Self {
-        Self::new("en", &UserSettings::default())
+        Self::new("en", &UserSettings::default(), &LocalizationTexts::new())
     }
 
-    /// The most specific value of a key, if any bundle has it.
-    fn value(&self, key: &str) -> Option<&'static str> {
-        self.levels.iter().find_map(|level| {
-            level
-                .bundles
-                .iter()
-                .rev()
-                .find_map(|bundle| bundle.get(key).map(String::as_str))
-        })
+    /// The most specific value of a key, if any level has it.
+    fn value(&self, key: &str) -> Option<&str> {
+        self.levels.iter().find_map(|level| level.get(key))
     }
 
     /// A message with its arguments; a missing key stands for itself, as
-    /// the reference's `msg` does.
+    /// the reference's `msg` does. `${key}` in the message is replaced by
+    /// that key's message first, as `MessageFormatterMethod` resolves it.
     pub(crate) fn text(&self, key: &str, args: &[&str]) -> String {
-        format(self.value(key).unwrap_or(key), args)
+        format(&self.resolve(self.value(key).unwrap_or(key)), args)
+    }
+
+    /// Replaces each `${key}` with the key's message, or the key itself, as
+    /// `TemplatingUtil.resolveVariables` does.
+    pub(crate) fn resolve(&self, text: &str) -> String {
+        let mut resolved = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("${") {
+            let Some(length) = rest[start + 2..].find('}') else {
+                break;
+            };
+            resolved.push_str(&rest[..start]);
+            let key = &rest[start + 2..start + 2 + length];
+            resolved.push_str(self.value(key).unwrap_or(key));
+            rest = &rest[start + 3 + length..];
+        }
+        resolved.push_str(rest);
+        resolved
     }
 
     /// A message with its arguments, escaped for HTML.
@@ -115,10 +149,8 @@ impl Messages {
             .iter()
             .find_map(|level| {
                 level
-                    .bundles
-                    .iter()
-                    .rev()
-                    .find_map(|bundle| bundle.get(&key).cloned())
+                    .get(&key)
+                    .map(str::to_owned)
                     .or_else(|| locale::generated_label(&level.tag, listed))
             })
             .unwrap_or_else(|| listed.to_owned())
@@ -233,22 +265,51 @@ mod tests {
     #[test]
     fn missing_keys_fall_back_through_the_realm_default() {
         let settings = realm(&["de-CH", "lv", "fr"], Some("fr"));
-        let swiss = Messages::new("de-CH", &settings);
+        let swiss = Messages::new("de-CH", &settings, &LocalizationTexts::new());
         assert_eq!(swiss.text("doLogIn", &[]), "Anmelden");
-        let latvian = Messages::new("lv", &settings);
+        let latvian = Messages::new("lv", &settings, &LocalizationTexts::new());
         assert_eq!(
             latvian.text("verifyEmailMessage", &[]),
             "Vous devez vérifier votre adresse de courriel pour activer votre compte."
         );
         assert_eq!(latvian.text("noSuchKey", &[]), "noSuchKey");
-        let chinese = Messages::new("zh-CN", &settings);
+        let chinese = Messages::new("zh-CN", &settings, &LocalizationTexts::new());
         assert_eq!(chinese.text("doLogIn", &[]), "登录");
+    }
+
+    #[test]
+    fn realm_texts_win_only_within_their_locale() {
+        let settings = realm(&["de-CH", "de", "fr"], Some("fr"));
+        let texts: LocalizationTexts = [
+            ("de", [("loginAccountTitle", "Realm de")].as_slice()),
+            (
+                "fr",
+                &[("usernameOrEmail", "Realm fr"), ("custom", "Hi ${name}")],
+            ),
+            ("en", &[("name", "you")]),
+        ]
+        .into_iter()
+        .map(|(locale, pairs)| {
+            let pairs = pairs
+                .iter()
+                .map(|(key, text)| ((*key).to_owned(), (*text).to_owned()));
+            (locale.to_owned(), pairs.collect())
+        })
+        .collect();
+        let swiss = Messages::new("de-CH", &settings, &texts);
+        assert_eq!(swiss.text("loginAccountTitle", &[]), "Realm de");
+        assert_eq!(
+            swiss.text("usernameOrEmail", &[]),
+            "Benutzername oder E-Mail"
+        );
+        assert_eq!(swiss.text("custom", &[]), "Hi you");
+        assert_eq!(swiss.resolve("${missing} and ${open"), "missing and ${open");
     }
 
     #[test]
     fn labels_sort_without_accents_or_case() {
         let settings = realm(&["en", "de", "de-CH", "zh-CN", "ar"], None);
-        let tags: Vec<String> = Messages::new("de", &settings)
+        let tags: Vec<String> = Messages::new("de", &settings, &LocalizationTexts::new())
             .languages(&settings.supported_locales)
             .into_iter()
             .map(|(tag, _)| tag)

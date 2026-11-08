@@ -1175,9 +1175,10 @@ label, selection and locale; a page in a locale outside the theme whose
 language the theme lacks (such as `eo`) takes its language labels from its
 fallback locale, where the reference asks the JDK, and the order can
 differ for scripts the JDK's collator orders otherwise; TOTP setup shows
-the manual-entry steps without a QR code; realm localization texts, the
-`loginWithEmailAllowed` setting and themes other than the pinned default
-are not implemented; a login continued from the page after a sent email
+the manual-entry steps without a QR code; the `loginWithEmailAllowed`
+setting and themes other than the pinned default are not implemented
+(realm localization texts came later, see "Realm localization texts"); a
+login continued from the page after a sent email
 keeps the pick, where the reference's fork has none. Info, error and
 logout pages are in "Info and error pages".
 
@@ -1254,3 +1255,47 @@ offers only UPDATE_PASSWORD, as before; a key past its lifespan shows
 `expiredActionMessage`, where the reference's expiry check shows
 `expiredActionTokenNoSessionMessage`, and once its row is purged it reads
 as never issued.
+
+## Realm localization texts
+
+Realms keep localization texts per locale, managed through the admin
+`/localization` endpoints and shown on login pages over the theme's
+messages, as recorded in
+`tests/reference/realm-localization-observations.json` and read from the
+pinned source (`RealmLocalizationResource`, `JpaRealmProvider` and the JPA
+`RealmAdapter`, `LocaleUtil.enhancePropertiesWithRealmLocalizationTexts`,
+`MessageFormatterMethod`, `TemplatingUtil`):
+
+- A new `realm_localizations` table (migration 37) holds each locale's
+  texts as one JSON object, as `REALM_LOCALIZATIONS` does, so a locale
+  saved with no texts, or whose last text was removed, stays listed.
+- `GET localization` lists the locales sorted; `GET {locale}` returns its
+  texts, `{}` for an unknown locale, over the default locale's with the
+  deprecated `useRealmDefaultLocaleFallback=true`; `GET {locale}/{key}`
+  returns the text as `text/plain`. These need any `realm-management`
+  role.
+- `PUT {locale}/{key}` takes a `text/plain` body (else 415); `POST
+  {locale}` merges a JSON object, or the JSON `file` part of a form upload,
+  into the locale's texts, numbers and booleans becoming texts as Jackson
+  coerces them; `DELETE {locale}` and `DELETE {locale}/{key}` remove them.
+  These need `manage-realm` and write an audit event. Errors carry the
+  reference's `error` bodies.
+- `localizationTexts` given at realm creation are saved; realm updates
+  ignore them and the realm representation leaves them out, as in the
+  reference. Partial export always carries them, and partial import
+  ignores them.
+- A page's messages read, for each locale of its fallback chain, the
+  realm's texts of that locale before the theme's bundles, so a realm text
+  wins over the theme's text of its locale and loses to a theme text of a
+  more specific locale. Texts are message patterns, and `${key}` in a
+  message is replaced by that key's message; arguments, such as the realm
+  display name in the title, are not, as recorded. Language labels read
+  `locale_<tag>` texts the same way. Pages outside a realm stay English.
+
+`tests/public/realm_localization_contract.py` checks 6 groups, each under
+100 ms.
+
+Remaining differences: `rememberMe` is not implemented, so the login
+page's "Remember me" label is not compared; email templates do not read
+realm texts yet; texts are read from the database for each page, where the
+reference caches the realm.

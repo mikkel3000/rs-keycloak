@@ -356,11 +356,13 @@ class RequiredActionContract(LoginMessagesCase):
         self.check("switch/otp/to-ar", browser.follow(response, "ar"), browser)
 
     def test_verify_email(self):
-        for locale in ("de", "lv"):
-            browser, page = self.sign_in("verify", f"verify-{locale}", locale, {"emailVerified": False})
-            self.check(f"verify-email/verify/{locale}", page, browser)
-            if locale == "de":
-                self.check("switch/verify-email/to-fr", browser.follow(page, "fr"), browser)
+        browser, page = self.sign_in("verify", "verify-de", "de", {"emailVerified": False})
+        self.check("verify-email/verify/de", page, browser)
+        self.check("switch/verify-email/to-fr", browser.follow(page, "fr"), browser)
+
+    def test_verify_email_latvian(self):
+        browser, page = self.sign_in("verify", "verify-lv", "lv", {"emailVerified": False})
+        self.check("verify-email/verify/lv", page, browser)
 
 
 class ConsentPageContract(LoginMessagesCase):

@@ -4,6 +4,7 @@
 
 use sqlx::Row;
 
+use crate::localization::{LocalizationTexts, realm_texts};
 use crate::realm_admin::user_settings_row;
 use crate::{Storage, StorageError, UserSettings};
 
@@ -20,6 +21,9 @@ pub struct LoginLocale {
     pub client: Option<String>,
     /// The realm's display name, else its name, as login pages name it.
     pub realm_label: String,
+    /// The realm's localization texts, which override the theme's
+    /// messages.
+    pub texts: LocalizationTexts,
 }
 
 /// A user's locale before and after a login applied the request's choice.
@@ -45,17 +49,20 @@ impl Storage {
             .bind(request_id)
             .fetch_optional(tx.connection())
             .await?;
+        let Some(row) = row else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        let texts = realm_texts(tx.connection(), realm_id).await?;
         tx.commit().await?;
-        row.map(|row| {
-            Ok(LoginLocale {
-                settings: user_settings_row(&row)?,
-                requested: row.try_get("requested_locale")?,
-                user: row.try_get("locale")?,
-                client: row.try_get("ui_locales")?,
-                realm_label: row.try_get("realm_label")?,
-            })
-        })
-        .transpose()
+        Ok(Some(LoginLocale {
+            settings: user_settings_row(&row)?,
+            requested: row.try_get("requested_locale")?,
+            user: row.try_get("locale")?,
+            client: row.try_get("ui_locales")?,
+            realm_label: row.try_get("realm_label")?,
+            texts,
+        }))
     }
 
     /// Keeps the locale a user picked with `kc_locale` for the rest of a
@@ -89,10 +96,12 @@ impl Storage {
             .bind(realm_id)
             .fetch_one(tx.connection())
             .await?;
+        let texts = realm_texts(tx.connection(), realm_id).await?;
         tx.commit().await?;
         Ok(LoginLocale {
             settings: user_settings_row(&row)?,
             realm_label: row.try_get("realm_label")?,
+            texts,
             ..LoginLocale::default()
         })
     }
