@@ -1,6 +1,6 @@
 Never add co-author to commits.
 
-Always push after a commit.
+Always push after a commit. Never force push.
 
 Install skills from agents/skills.
 
