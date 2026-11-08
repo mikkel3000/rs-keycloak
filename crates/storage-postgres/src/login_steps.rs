@@ -79,8 +79,50 @@ pub struct OtpCredential {
     pub sealed: Vec<u8>,
     /// Identifier of the sealing key.
     pub key_id: String,
-    /// Last accepted time step; later codes only.
-    pub last_step: Option<i64>,
+    /// The policy the credential was made with, and its counter.
+    pub data: OtpData,
+    /// Steps of TOTP codes already accepted that may still match.
+    pub used_steps: Vec<i64>,
+    /// The realm's current look-ahead window, which checks use.
+    pub look_ahead: i32,
+    /// Whether the realm lets a TOTP code be used again.
+    pub code_reusable: bool,
+}
+
+/// An OTP credential's policy, as the reference's `OTPCredentialData`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OtpData {
+    /// `totp` or `hotp`.
+    pub kind: Option<String>,
+    /// Java HMAC name, if any.
+    pub algorithm: Option<String>,
+    /// Digits in a code.
+    pub digits: Option<i32>,
+    /// Seconds per TOTP step.
+    pub period: Option<i32>,
+    /// The next HOTP counter.
+    pub counter: Option<i64>,
+}
+
+/// How an accepted code changes its credential.
+pub enum OtpUse {
+    /// A TOTP code of `step`; steps before `oldest` can no longer match
+    /// and are forgotten.
+    Step {
+        /// The accepted code's step.
+        step: i64,
+        /// The first step still inside the window.
+        oldest: i64,
+    },
+    /// A HOTP code moves the counter from `from` to `to`.
+    Counter {
+        /// The counter the code was checked from.
+        from: i64,
+        /// One past the matched counter.
+        to: i64,
+    },
+    /// A reusable TOTP code, which changes nothing.
+    Reusable,
 }
 
 /// A credential as listed by the admin API.
@@ -93,6 +135,8 @@ pub struct CredentialRecord {
     pub user_label: Option<String>,
     /// Creation time in Unix milliseconds.
     pub created: i64,
+    /// An OTP credential's policy; empty for passwords.
+    pub otp: OtpData,
 }
 
 /// Clears the pending flag once the user has no required actions left.
@@ -224,7 +268,7 @@ impl Storage {
         session_id: &str,
     ) -> Result<LoginStep, StorageError> {
         let mut tx = self.begin_request(true).await?;
-        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, rs_verify_profile_due(u.realm_id, u.id) AS verify_profile, u.id AS user_id, u.username, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_last_step FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
+        let row = sqlx::query(&format!("SELECT us.steps_pending, us.otp_verified, {configure}, {update_password}, {verify_email}, {update_profile}, rs_verify_profile_due(u.realm_id, u.id) AS verify_profile, u.id AS user_id, u.username, u.email, u.first_name, u.last_name, c.id AS credential_id, c.secret_data, c.secret_key_id, c.otp_type, c.otp_algorithm, c.otp_digits, c.otp_period, c.otp_counter, c.otp_used_steps, r.otp_policy_look_ahead, r.otp_policy_code_reusable FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id LEFT JOIN credentials c ON c.realm_id = u.realm_id AND c.user_id = u.id AND c.credential_type = 'otp' WHERE us.realm_id = $1 AND us.id = $2 AND us.revoked_at IS NULL AND us.expires_at > clock_timestamp()",
             configure = assigned("CONFIGURE_TOTP", "configure"),
             update_password = assigned("UPDATE_PASSWORD", "update_password"),
             verify_email = assigned("VERIFY_EMAIL", "verify_email"),
@@ -248,7 +292,16 @@ impl Storage {
                     id,
                     sealed: row.try_get("secret_data")?,
                     key_id: row.try_get("secret_key_id")?,
-                    last_step: row.try_get("otp_last_step")?,
+                    data: OtpData {
+                        kind: row.try_get("otp_type")?,
+                        algorithm: row.try_get("otp_algorithm")?,
+                        digits: row.try_get("otp_digits")?,
+                        period: row.try_get("otp_period")?,
+                        counter: row.try_get("otp_counter")?,
+                    },
+                    used_steps: row.try_get("otp_used_steps")?,
+                    look_ahead: row.try_get("otp_policy_look_ahead")?,
+                    code_reusable: row.try_get("otp_policy_code_reusable")?,
                 },
                 username: row.try_get("username")?,
             });
@@ -297,19 +350,24 @@ impl Storage {
         Ok(LoginStep::Complete)
     }
 
-    /// Records an accepted code's step, unless a concurrent request already
-    /// used this or a later step, and settles the session.
+    /// Records an accepted code, unless a concurrent request already used
+    /// its step or counter, and settles the session.
     pub async fn accept_otp(
         &self,
         realm_id: &str,
         session_id: &str,
         credential_id: &str,
-        step: i64,
+        used: &OtpUse,
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
-        let accepted = sqlx::query("UPDATE credentials SET otp_last_step = $3 WHERE realm_id = $1 AND id = $2 AND credential_type = 'otp' AND (otp_last_step IS NULL OR otp_last_step < $3)")
-            .bind(realm_id).bind(credential_id).bind(step).execute(&mut *conn).await?.rows_affected() == 1;
+        let accepted = match used {
+            OtpUse::Step { step, oldest } => sqlx::query("UPDATE credentials SET otp_used_steps = array_append(ARRAY(SELECT s FROM unnest(otp_used_steps) AS s WHERE s >= $4), $3) WHERE realm_id = $1 AND id = $2 AND credential_type = 'otp' AND NOT ($3 = ANY(otp_used_steps))")
+                .bind(realm_id).bind(credential_id).bind(step).bind(oldest).execute(&mut *conn).await?.rows_affected() == 1,
+            OtpUse::Counter { from, to } => sqlx::query("UPDATE credentials SET otp_counter = $4 WHERE realm_id = $1 AND id = $2 AND credential_type = 'otp' AND otp_counter = $3")
+                .bind(realm_id).bind(credential_id).bind(from).bind(to).execute(&mut *conn).await?.rows_affected() == 1,
+            OtpUse::Reusable => true,
+        };
         if accepted {
             sqlx::query(
                 "UPDATE user_sessions SET otp_verified = true WHERE realm_id = $1 AND id = $2",
@@ -354,7 +412,8 @@ impl Storage {
         sealed_seed: &[u8],
         key_id: &str,
         label: Option<&str>,
-        step: i64,
+        data: &OtpData,
+        used_steps: &[i64],
     ) -> Result<bool, StorageError> {
         let mut tx = self.begin_request(true).await?;
         let conn = tx.connection();
@@ -364,8 +423,9 @@ impl Storage {
         };
         sqlx::query("DELETE FROM credentials WHERE realm_id = $1 AND user_id = $2 AND credential_type = 'otp'")
             .bind(realm_id).bind(&user).execute(&mut *conn).await?;
-        sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data, secret_key_id, user_label, otp_last_step) VALUES ($1, $2, $3, 'otp', $4, $5, $6, $7)")
-            .bind(realm_id).bind(credential_id).bind(&user).bind(sealed_seed).bind(key_id).bind(label).bind(step)
+        sqlx::query("INSERT INTO credentials (realm_id, id, user_id, credential_type, secret_data, secret_key_id, user_label, otp_type, otp_algorithm, otp_digits, otp_period, otp_counter, otp_used_steps) VALUES ($1, $2, $3, 'otp', $4, $5, $6, $7, $8, $9, $10, $11, $12)")
+            .bind(realm_id).bind(credential_id).bind(&user).bind(sealed_seed).bind(key_id).bind(label)
+            .bind(data.kind.as_deref()).bind(data.algorithm.as_deref()).bind(data.digits).bind(data.period).bind(data.counter).bind(used_steps)
             .execute(&mut *conn).await?;
         sqlx::query("UPDATE user_sessions SET otp_verified = true WHERE realm_id = $1 AND id = $2")
             .bind(realm_id)
@@ -419,7 +479,7 @@ impl Storage {
         .fetch_one(&mut *conn)
         .await?;
         let credentials = if exists {
-            let rows = sqlx::query("SELECT id, credential_type, user_label, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created FROM credentials WHERE realm_id = $1 AND user_id = $2 ORDER BY credential_type DESC, created_at")
+            let rows = sqlx::query("SELECT id, credential_type, user_label, (floor(EXTRACT(EPOCH FROM created_at) * 1000))::bigint AS created, otp_type, otp_algorithm, otp_digits, otp_period, otp_counter FROM credentials WHERE realm_id = $1 AND user_id = $2 ORDER BY credential_type DESC, created_at")
                 .bind(realm_id).bind(user_id).fetch_all(&mut *conn).await?;
             Some(
                 rows.iter()
@@ -429,6 +489,13 @@ impl Storage {
                             credential_type: row.try_get("credential_type")?,
                             user_label: row.try_get("user_label")?,
                             created: row.try_get("created")?,
+                            otp: OtpData {
+                                kind: row.try_get("otp_type")?,
+                                algorithm: row.try_get("otp_algorithm")?,
+                                digits: row.try_get("otp_digits")?,
+                                period: row.try_get("otp_period")?,
+                                counter: row.try_get("otp_counter")?,
+                            },
                         })
                     })
                     .collect::<Result<_, StorageError>>()?,

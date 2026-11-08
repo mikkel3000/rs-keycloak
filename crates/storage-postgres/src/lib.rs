@@ -28,9 +28,10 @@ pub use cors::WebOriginCheck;
 pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
 pub use localization::LocalizationTexts;
 pub use login_locale::{LoginLocale, UserLocaleUpdate};
-pub use login_settings::{LoginSettingChanges, LoginSettings};
+pub use login_settings::{LoginSettingChanges, LoginSettings, OtpPolicy};
 pub use login_steps::{
-    CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate, RequiredActionSetting,
+    CredentialRecord, LoginStep, OtpCredential, OtpData, OtpUse, Profile, ProfileUpdate,
+    RequiredActionSetting,
 };
 pub use logout::{LogoutRequest, RefreshLogout};
 pub use realm_admin::{
@@ -100,6 +101,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0039_verify_profile.sql"),
     include_str!("../../../migrations/0040_remember_me.sql"),
     include_str!("../../../migrations/0041_registration.sql"),
+    include_str!("../../../migrations/0042_otp_policy.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

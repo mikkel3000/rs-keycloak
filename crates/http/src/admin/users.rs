@@ -879,16 +879,25 @@ async fn list_credentials(
         .into_iter()
         .map(|credential| {
             // Secrets and seeds are never returned, only algorithm parameters.
+            // OTP data keeps OTPCredentialData's field order.
             let data = if credential.credential_type == "otp" {
-                json!({"subType":"totp","digits":6,"period":30,"algorithm":"HmacSHA1"})
+                let otp = &credential.otp;
+                format!(
+                    "{{\"subType\":{},\"digits\":{},\"counter\":{},\"period\":{},\"algorithm\":{}}}",
+                    json!(otp.kind),
+                    otp.digits.unwrap_or_default(),
+                    otp.counter.unwrap_or_default(),
+                    otp.period.unwrap_or_default(),
+                    json!(otp.algorithm),
+                )
             } else {
-                json!({"algorithm":"argon2"})
+                json!({"algorithm":"argon2"}).to_string()
             };
             let mut fields = json!({
                 "id": credential.id,
                 "type": credential.credential_type,
                 "createdDate": credential.created,
-                "credentialData": data.to_string(),
+                "credentialData": data,
             });
             if let Some(label) = credential.user_label {
                 fields["userLabel"] = json!(label);

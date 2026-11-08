@@ -8,7 +8,8 @@
 //! the codes by what they hold, read by `tests/qr_code.py`.
 
 use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
-use rs_keycloak_protocols::totp;
+use rs_keycloak_protocols::totp::{self, Algorithm};
+use rs_keycloak_storage_postgres::OtpPolicy;
 
 /// The side of the drawn square in pixels, as `TotpUtils.qrCode` asks.
 const SIDE: usize = 246;
@@ -32,17 +33,30 @@ fn url_encode(value: &str) -> String {
     encoded
 }
 
-/// The key URI of a TOTP secret: `issuer` is the realm's resolved display
-/// name, else its name, and `account` the username.
-pub(super) fn key_uri(issuer: &str, account: &str, secret: &[u8]) -> String {
+/// The key URI of a secret under the realm's OTP policy: `issuer` is the
+/// realm's resolved display name, else its name, and `account` the
+/// username. An unknown algorithm shows as `null`, as the reference's map
+/// lookup gives.
+pub(super) fn key_uri(issuer: &str, account: &str, secret: &[u8], policy: &OtpPolicy) -> String {
     // ':' separates issuer and account in the label, so it becomes a space.
     let issuer = url_encode(&issuer.replace(':', " ")).replace('+', "%20");
+    let algorithm = policy
+        .algorithm
+        .as_deref()
+        .and_then(Algorithm::parse)
+        .map_or("null", Algorithm::key);
+    // The counter or the period follows, by the policy's type.
+    let tail = match policy.kind.as_str() {
+        "hotp" => format!("&counter={}", policy.initial_counter),
+        "totp" => format!("&period={}", policy.period),
+        _ => String::new(),
+    };
     format!(
-        "otpauth://totp/{issuer}:{account}?secret={secret}&digits={digits}&algorithm=SHA1&issuer={issuer}&period={period}",
+        "otpauth://{kind}/{issuer}:{account}?secret={secret}&digits={digits}&algorithm={algorithm}&issuer={issuer}{tail}",
+        kind = policy.kind,
         account = url_encode(account),
         secret = totp::base32(secret),
-        digits = totp::DIGITS,
-        period = totp::PERIOD,
+        digits = policy.digits,
     )
 }
 
@@ -95,13 +109,34 @@ pub(super) fn png(text: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
+    fn policy(kind: &str, algorithm: Option<&str>) -> OtpPolicy {
+        OtpPolicy {
+            kind: kind.into(),
+            algorithm: algorithm.map(Into::into),
+            digits: 6,
+            period: 30,
+            look_ahead: 1,
+            initial_counter: 5,
+            code_reusable: false,
+        }
+    }
+
     #[test]
     fn key_uri_encodes_as_the_reference() {
-        let uri = key_uri("A:B & C+D/é", "name+tag@example.invalid", b"secret");
+        let totp = policy("totp", Some("HmacSHA1"));
+        let uri = key_uri("A:B & C+D/é", "name+tag@example.invalid", b"secret", &totp);
         assert_eq!(
             uri,
             "otpauth://totp/A%20B%20%26%20C%2BD%2F%C3%A9:name%2Btag%40example.invalid?secret=ONSWG4TFOQ&digits=6&algorithm=SHA1&issuer=A%20B%20%26%20C%2BD%2F%C3%A9&period=30"
         );
+    }
+
+    #[test]
+    fn key_uri_ends_with_the_counter_or_period_by_type() {
+        let uri = |kind, algorithm| key_uri("R", "u", b"s", &policy(kind, algorithm));
+        assert!(uri("hotp", Some("HmacSHA256")).ends_with("algorithm=SHA256&issuer=R&counter=5"));
+        assert!(uri("totp", None).ends_with("algorithm=null&issuer=R&period=30"));
+        assert!(uri("other", Some("HmacSHA1")).ends_with("&issuer=R"));
     }
 
     #[test]

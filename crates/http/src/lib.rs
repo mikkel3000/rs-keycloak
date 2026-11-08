@@ -23,6 +23,7 @@ mod admin;
 mod locale;
 mod login_theme;
 mod mail;
+mod otp_policy;
 mod security_headers;
 
 pub mod client_auth;

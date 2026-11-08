@@ -367,9 +367,9 @@ yields neither a code nor an SSO cookie. The user representation now reports
 `tests/public/otp_contract.py` checks the recorded sequence in 340 ms using the
 next step's code instead of the reference's 30-second wait.
 
-Remaining differences: one OTP credential per user; HOTP, other OTP policies,
-WebAuthn and recovery codes are not implemented; setup trusts the posted
-secret as the reference does.
+Remaining differences: one OTP credential per user; WebAuthn and recovery
+codes are not implemented; setup trusts the posted secret as the
+reference does. Realm OTP policies came later, see "Realm OTP policy".
 
 ## Temporary passwords and login steps
 
@@ -1380,8 +1380,8 @@ pinned source (`TotpUtils`, `QRCodeUtils`, `OTPPolicy.getKeyURI`,
 list items and links too.
 
 Remaining differences: the QR code's mask can differ from zxing's, which
-the comparison by content does not see; HOTP policies and other OTP
-policy settings are not implemented, so the policy shown is the default.
+the comparison by content does not see. The key URI and manual mode now
+follow the realm's policy, see "Realm OTP policy".
 
 ## Profile verification at login
 
@@ -1485,3 +1485,47 @@ Remaining differences: no password policy, terms, reCAPTCHA or
 organization invites; with `verifyEmail` the reference hides the
 password fields and sets UPDATE_PASSWORD, which this server does not;
 the REGISTER event is not written.
+
+## Realm OTP policy
+
+Realms keep an OTP policy and OTP credentials keep the policy they were
+made with, as recorded in `tests/reference/otp-policy-observations.json`
+and read from the pinned source (`OTPPolicy`,
+`DefaultExportImportManager.toPolicy`, `TotpBean`,
+`login-config-totp.ftl`, the `OTPApplicationProvider`s, `UpdateTotp`,
+`CredentialHelper.createOTPCredential`, `OTPCredentialProvider`,
+`TimeBasedOTP` and `HmacOTP`):
+
+- Migration 42 adds `otpPolicyType`, `otpPolicyAlgorithm`,
+  `otpPolicyDigits`, `otpPolicyPeriod`, `otpPolicyLookAheadWindow`,
+  `otpPolicyInitialCounter` and `otpPolicyCodeReusable`, with the
+  reference's defaults. As in the reference, nothing is checked, and a
+  policy given at creation or update is read only with its type, then
+  replaces the whole policy, with 0, null or false for missing fields.
+  `otpSupportedApplications` lists FreeOTP, Google Authenticator for HOTP
+  or 30-second TOTP, and Microsoft Authenticator for 6-digit HMAC-SHA1
+  30-second TOTP; setup lists the same apps.
+- The key URI names the type, digits, algorithm (`null` when unknown) and
+  then the counter for HOTP or the period for TOTP; the manual mode shows
+  the type, algorithm, digits and interval or counter.
+- Codes use HMAC-SHA1, SHA-256 or SHA-512 with up to 10 digits, checked
+  against the RFC 6238 vectors. TOTP accepts the look-ahead window either
+  side; HOTP accepts the counter through counter plus the window. Setup
+  checks the realm's policy and stores it with the credential; as the
+  reference checks the code once more on the new credential, a HOTP
+  counter starts past the setup code and a TOTP setup code counts as
+  used. Logins check the credential's own algorithm, digits, period and
+  counter with the realm's current window and reuse setting.
+- A TOTP code is accepted once unless codes are reusable: each accepted
+  step is kept while it can still match, so an older unused code still
+  passes after a newer one, as the reference's single-use store allows;
+  this replaces the last accepted step. Admin credential listings show
+  `credentialData` with the subtype, digits, counter, period and
+  algorithm.
+
+`tests/public/otp_policy_contract.py` replays every recorded case in 14
+tests.
+
+Remaining differences: digits outside 1 to 10, an unknown algorithm or
+type, or a period under 1 make every code fail, where the reference
+fails with an error; reuse is tracked by step rather than by code text.

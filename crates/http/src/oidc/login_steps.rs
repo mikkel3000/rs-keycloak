@@ -14,9 +14,10 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
-use rs_keycloak_protocols::totp;
+use rs_keycloak_protocols::totp::{self, Algorithm};
 use rs_keycloak_storage_postgres::{
-    AccountChange, LoginStep, Profile, ProfileUpdate, UserSettings,
+    AccountChange, LoginStep, OtpCredential, OtpData, OtpPolicy, OtpUse, Profile, ProfileUpdate,
+    UserSettings,
 };
 use serde::Deserialize;
 use uuid::Uuid;
@@ -202,6 +203,16 @@ struct Setup<'a> {
     secret: &'a str,
     username: &'a str,
     mode: Option<SetupMode>,
+    /// The realm's OTP policy, which the page describes.
+    policy: &'a OtpPolicy,
+}
+
+/// The realm's OTP policy, which setup follows.
+async fn realm_policy(s: &OidcState, realm: &str) -> Result<OtpPolicy, ()> {
+    match s.storage.realm_by_name(realm).await {
+        Ok(Some(record)) => Ok(record.login.otp_policy),
+        _ => Err(()),
+    }
 }
 
 /// Shows TOTP setup as `login-config-totp.ftl` does: the QR code of the key
@@ -225,26 +236,48 @@ fn setup_page(
             text = texts.html(key, &[]),
         )
     };
+    let policy = setup.policy;
     let key_step = if setup.mode == Some(SetupMode::Manual) {
+        // As login-config-totp.ftl: the counter for HOTP, the interval for
+        // TOTP, and the algorithm as `getAlgorithmKey` names it.
+        let last = match policy.kind.as_str() {
+            "totp" => format!(
+                " <li id=\"kc-totp-period\">{}: {}</li>",
+                texts.html("loginTotpInterval", &[]),
+                policy.period
+            ),
+            "hotp" => format!(
+                " <li id=\"kc-totp-counter\">{}: {}</li>",
+                texts.html("loginTotpCounter", &[]),
+                policy.initial_counter
+            ),
+            _ => String::new(),
+        };
+        let algorithm = policy.algorithm.as_deref().map_or_else(
+            || "null".to_owned(),
+            |name| {
+                Algorithm::parse(name)
+                    .map_or_else(|| name.to_owned(), |known| known.key().to_owned())
+            },
+        );
         format!(
-            "<li><p>{step2}</p> <p><span id=\"kc-totp-secret-key\">{key}</span></p> <p>{link}</p></li> <li><p>{step3}</p> <ul><li id=\"kc-totp-type\">{type_label}: {type_value}</li> <li id=\"kc-totp-algorithm\">{algorithm}: SHA1</li> <li id=\"kc-totp-digits\">{digits}: {digit_count}</li> <li id=\"kc-totp-period\">{interval}: {period}</li></ul></li>",
+            "<li><p>{step2}</p> <p><span id=\"kc-totp-secret-key\">{key}</span></p> <p>{link}</p></li> <li><p>{step3}</p> <ul><li id=\"kc-totp-type\">{type_label}: {type_value}</li> <li id=\"kc-totp-algorithm\">{algorithm_label}: {algorithm}</li> <li id=\"kc-totp-digits\">{digits}: {digit_count}</li>{last}</ul></li>",
             step2 = texts.html("loginTotpManualStep2", &[]),
             key = grouped_key(secret),
             link = mode_link(SetupMode::Qr, "mode-barcode", "loginTotpScanBarcode"),
             step3 = texts.html("loginTotpManualStep3", &[]),
             type_label = texts.html("loginTotpType", &[]),
-            type_value = texts.html("loginTotp.totp", &[]),
-            algorithm = texts.html("loginTotpAlgorithm", &[]),
+            type_value = texts.html(&format!("loginTotp.{}", policy.kind), &[]),
+            algorithm_label = texts.html("loginTotpAlgorithm", &[]),
+            algorithm = escape(&algorithm),
             digits = texts.html("loginTotpDigits", &[]),
-            digit_count = totp::DIGITS,
-            interval = texts.html("loginTotpInterval", &[]),
-            period = totp::PERIOD,
+            digit_count = policy.digits,
         )
     } else {
         // The issuer is the display name with `${key}` resolved in the
         // page's messages, as `TotpUtils.getIssuerName` resolves it.
         let issuer = texts.resolve(&locale.realm_label);
-        let uri = totp_qr::key_uri(&issuer, setup.username, secret.as_bytes());
+        let uri = totp_qr::key_uri(&issuer, setup.username, secret.as_bytes(), policy);
         let Some(image) = totp_qr::png(&uri) else {
             return unavailable();
         };
@@ -275,14 +308,10 @@ fn setup_page(
             field_error("otp-code", &texts.html("invalidTotpMessage", &[])),
         ),
     };
-    let apps: String = [
-        "totpAppFreeOTPName",
-        "totpAppMicrosoftAuthenticatorName",
-        "totpAppGoogleName",
-    ]
-    .iter()
-    .map(|app| format!("<li>{}</li>", texts.html(app, &[])))
-    .collect();
+    let apps: String = crate::otp_policy::supported_applications(policy)
+        .iter()
+        .map(|app| format!("<li>{}</li>", texts.html(app, &[])))
+        .collect();
     let body = format!(
         "{message}<ol id=\"kc-totp-settings\"><li><p>{step1}</p> <ul id=\"kc-totp-supported-apps\">{apps}</ul></li> {key_step} <li><p>{finish}</p> <p>{device}</p></li></ol><form id=\"kc-totp-settings-form\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/totp-setup/{request_id}\"><label for=\"totp\">{code_label}</label><input id=\"totp\" name=\"totp\" type=\"text\" autocomplete=\"one-time-code\" required>{code_error}<input type=\"hidden\" name=\"totpSecret\" value=\"{secret}\">{mode_field}<label for=\"userLabel\">{device_label}</label><input id=\"userLabel\" name=\"userLabel\" type=\"text\">{logout}<button id=\"saveTOTPBtn\">{submit}</button></form>",
         step1 = texts.html("loginTotpStep1", &[]),
@@ -353,12 +382,16 @@ async fn hold(
     let request = StepRequest::new(realm, request_id, csrf);
     match step {
         LoginStep::ConfigureTotp { username } => {
+            let Ok(policy) = realm_policy(s, realm).await else {
+                return unavailable();
+            };
             match setup_secret(s, &held.realm_id, request_id).await {
                 Ok(secret) => {
                     let setup = Setup {
                         secret: &secret,
                         username,
                         mode: None,
+                        policy: &policy,
                     };
                     setup_page(s, request, &locale, &setup, CodeError::None)
                 }
@@ -533,18 +566,12 @@ async fn verify_code(
     ) else {
         return unavailable();
     };
-    let last_step = credential
-        .last_step
-        .and_then(|step| u64::try_from(step).ok());
-    let accepted = match totp::verify(&seed, form.otp.trim(), now(), last_step) {
-        Some(step) => match i64::try_from(step) {
-            Ok(step) => {
-                s.storage
-                    .accept_otp(&held.realm_id, &held.session_id, &credential.id, step)
-                    .await
-            }
-            Err(_) => return failure(),
-        },
+    let accepted = match login_code(&credential, &seed, form.otp.trim(), now()) {
+        Some(used) => {
+            s.storage
+                .accept_otp(&held.realm_id, &held.session_id, &credential.id, &used)
+                .await
+        }
         None => Ok(false),
     };
     match accepted {
@@ -605,6 +632,76 @@ pub(super) async fn configure(
     with_pick(&s, &realm, &request_id, &query, &held, step).await
 }
 
+/// Checks a setup code under the realm's policy, as `UpdateTotp` does;
+/// returns what the new credential keeps and the TOTP steps already used.
+/// As `CredentialHelper.createOTPCredential` checks the code once more on
+/// the new credential, a HOTP counter moves past the code and a TOTP code
+/// counts as used unless codes are reusable.
+fn setup_code(
+    policy: &OtpPolicy,
+    secret: &[u8],
+    code: &str,
+    now: u64,
+) -> Option<(OtpData, Vec<i64>)> {
+    let mut data = crate::otp_policy::credential_data(policy);
+    let format = crate::otp_policy::code_format(&data)?;
+    let window = crate::otp_policy::window(policy.look_ahead);
+    match policy.kind.as_str() {
+        "totp" => {
+            let period = u64::try_from(policy.period).ok()?;
+            let step = format.verify_totp(secret, code, now, period, window, &[])?;
+            let step = i64::try_from(step).ok()?;
+            let used = if policy.code_reusable {
+                Vec::new()
+            } else {
+                vec![step]
+            };
+            Some((data, used))
+        }
+        "hotp" => {
+            let counter = u64::try_from(policy.initial_counter).ok()?;
+            let matched = format.verify_hotp(secret, code, counter, window)?;
+            data.counter = Some(i64::try_from(matched).ok()?.checked_add(1)?);
+            Some((data, Vec::new()))
+        }
+        _ => None,
+    }
+}
+
+/// Checks a login code against a credential under its stored policy and
+/// the realm's current look-ahead and reuse settings, as
+/// `OTPCredentialProvider.isValid`; returns how the credential changes.
+fn login_code(credential: &OtpCredential, secret: &[u8], code: &str, now: u64) -> Option<OtpUse> {
+    let data = &credential.data;
+    let format = crate::otp_policy::code_format(data)?;
+    let window = crate::otp_policy::window(credential.look_ahead);
+    match data.kind.as_deref() {
+        Some("totp") => {
+            let period = u64::try_from(data.period?).ok()?;
+            if credential.code_reusable {
+                format.verify_totp(secret, code, now, period, window, &[])?;
+                return Some(OtpUse::Reusable);
+            }
+            let step =
+                format.verify_totp(secret, code, now, period, window, &credential.used_steps)?;
+            let oldest = (now / period).saturating_sub(window);
+            Some(OtpUse::Step {
+                step: i64::try_from(step).ok()?,
+                oldest: i64::try_from(oldest).ok()?,
+            })
+        }
+        Some("hotp") => {
+            let from = data.counter?;
+            let matched = format.verify_hotp(secret, code, u64::try_from(from).ok()?, window)?;
+            Some(OtpUse::Counter {
+                from,
+                to: i64::try_from(matched).ok()?.checked_add(1)?,
+            })
+        }
+        _ => None,
+    }
+}
+
 async fn set_up_totp(
     s: &OidcState,
     realm: &str,
@@ -622,8 +719,10 @@ async fn set_up_totp(
     if secret.len() != SECRET_LENGTH || !secret.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
         return failure();
     }
-    let Some(step) = totp::verify(secret.as_bytes(), form.totp.trim(), now(), None)
-        .and_then(|step| i64::try_from(step).ok())
+    let Ok(policy) = realm_policy(s, realm).await else {
+        return unavailable();
+    };
+    let Some((data, used_steps)) = setup_code(&policy, secret.as_bytes(), form.totp.trim(), now())
     else {
         let error = if form.totp.trim().is_empty() {
             CodeError::Missing
@@ -634,6 +733,7 @@ async fn set_up_totp(
             secret: &secret,
             username: &username,
             mode: SetupMode::parse(form.mode.as_deref()),
+            policy: &policy,
         };
         return match shown_locale(s, held, request_id, headers).await {
             Ok(locale) => setup_page(
@@ -670,7 +770,8 @@ async fn set_up_totp(
             &sealed,
             key.key_id(),
             label,
-            step,
+            &data,
+            &used_steps,
         )
         .await
     {
@@ -1005,10 +1106,14 @@ pub(super) async fn resend(
                 Ok(secret) => secret,
                 Err(()) => return unavailable(),
             };
+            let Ok(policy) = realm_policy(&s, &realm).await else {
+                return unavailable();
+            };
             let setup = Setup {
                 secret: &secret,
                 username: &username,
                 mode: SetupMode::parse(params.get("mode").map(String::as_str)),
+                policy: &policy,
             };
             match shown_locale(&s, &held, request_id, &headers).await {
                 Ok(locale) => {
