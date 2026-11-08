@@ -99,6 +99,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0038_email_login.sql"),
     include_str!("../../../migrations/0039_verify_profile.sql"),
     include_str!("../../../migrations/0040_remember_me.sql"),
+    include_str!("../../../migrations/0041_registration.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 
@@ -1128,6 +1129,13 @@ impl Storage {
         // An offline family lives on its own lifetime; an online one ends
         // with its session.
         let offline = is_offline_scope(scope);
+        // Issuing tokens counts as session activity, as the reference
+        // refreshes the session's idle time, so an online family gets its
+        // whole lifetime.
+        if !offline {
+            sqlx::query("UPDATE user_sessions us SET expires_at = GREATEST(us.expires_at, clock_timestamp() + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($3, r.sso_session_idle_timeout_remember_me) ELSE $3 END)) FROM realms r WHERE r.id = us.realm_id AND us.realm_id = $1 AND us.id = $2")
+                .bind(realm).bind(session_id).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+        }
         let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN clock_timestamp() + make_interval(secs => $8) ELSE (SELECT LEAST(clock_timestamp() + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($6, r.sso_session_idle_timeout_remember_me) ELSE $6 END), us.expires_at) FROM user_sessions us JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $2 AND us.id = $4) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
             .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).bind(offline).bind(f64::from(OFFLINE_SESSION_SECONDS)).fetch_one(&mut *conn).await?;
         sqlx::query(

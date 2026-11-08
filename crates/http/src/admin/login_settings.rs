@@ -1,6 +1,6 @@
 //! The realm representation's login-flow settings: rememberMe and its
-//! session lifetimes, read on realm creation and update and shown in the
-//! representation.
+//! session lifetimes and registrationAllowed, read on realm creation and
+//! update and shown in the representation.
 
 use axum::http::StatusCode;
 use rs_keycloak_storage_postgres::{LoginSettingChanges, LoginSettings};
@@ -10,15 +10,17 @@ use super::AdminError;
 use crate::oidc::{SSO_SESSION_IDLE_TIMEOUT, SSO_SESSION_MAX_LIFESPAN};
 
 /// The realm fields this module reads.
-pub(super) const FIELDS: [&str; 3] = [
+pub(super) const FIELDS: [&str; 4] = [
     "rememberMe",
     "ssoSessionIdleTimeoutRememberMe",
     "ssoSessionMaxLifespanRememberMe",
+    "registrationAllowed",
 ];
 
 /// The realm fields [`represent`] adds, which partial import leaves alone.
-pub(super) const REPRESENTED: [&str; 5] = [
+pub(super) const REPRESENTED: [&str; 6] = [
     "rememberMe",
+    "registrationAllowed",
     "ssoSessionIdleTimeout",
     "ssoSessionMaxLifespan",
     "ssoSessionIdleTimeoutRememberMe",
@@ -61,6 +63,7 @@ pub(super) fn parse(fields: &Map<String, Value>) -> Result<LoginSettingChanges, 
         remember_me: flag(fields, "rememberMe")?,
         sso_session_idle_timeout_remember_me: number(fields, "ssoSessionIdleTimeoutRememberMe")?,
         sso_session_max_lifespan_remember_me: number(fields, "ssoSessionMaxLifespanRememberMe")?,
+        registration_allowed: flag(fields, "registrationAllowed")?,
     })
 }
 
@@ -68,6 +71,7 @@ pub(super) fn parse(fields: &Map<String, Value>) -> Result<LoginSettingChanges, 
 /// this server keeps.
 pub(super) fn represent(settings: &LoginSettings, representation: &mut Value) {
     representation["rememberMe"] = json!(settings.remember_me);
+    representation["registrationAllowed"] = json!(settings.registration_allowed);
     representation["ssoSessionIdleTimeout"] = json!(SSO_SESSION_IDLE_TIMEOUT);
     representation["ssoSessionMaxLifespan"] = json!(SSO_SESSION_MAX_LIFESPAN);
     representation["ssoSessionIdleTimeoutRememberMe"] =

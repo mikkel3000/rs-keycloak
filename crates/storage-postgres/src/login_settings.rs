@@ -1,6 +1,7 @@
 //! Realm settings of the login flow, kept apart from the realm's core
 //! columns: each is read with the realm and changed by one statement in
-//! the realm's create or update transaction.
+//! the realm's create or update transaction. A new realm starts from the
+//! columns' defaults, which are the reference's.
 
 use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
@@ -18,20 +19,12 @@ pub struct LoginSettings {
     /// Lifespan of remembered sessions in seconds; 0 or less keeps the
     /// normal one.
     pub sso_session_max_lifespan_remember_me: i32,
+    /// Whether the login page links to the registration form.
+    pub registration_allowed: bool,
 }
 
-impl Default for LoginSettings {
-    /// A new realm's settings, as the reference's `RealmManager` sets them.
-    fn default() -> Self {
-        Self {
-            remember_me: false,
-            sso_session_idle_timeout_remember_me: 0,
-            sso_session_max_lifespan_remember_me: 0,
-        }
-    }
-}
-
-/// Changes to a realm's login-flow settings; `None` keeps one.
+/// Changes to a realm's login-flow settings; `None` keeps one, or for a
+/// new realm its default.
 #[derive(Clone, Debug, Default)]
 pub struct LoginSettingChanges {
     /// See [`LoginSettings::remember_me`].
@@ -40,38 +33,12 @@ pub struct LoginSettingChanges {
     pub sso_session_idle_timeout_remember_me: Option<i32>,
     /// See [`LoginSettings::sso_session_max_lifespan_remember_me`].
     pub sso_session_max_lifespan_remember_me: Option<i32>,
-}
-
-impl LoginSettingChanges {
-    /// A new realm's settings: the defaults with these changes applied.
-    pub fn settings(&self) -> LoginSettings {
-        let defaults = LoginSettings::default();
-        LoginSettings {
-            remember_me: self.remember_me.unwrap_or(defaults.remember_me),
-            sso_session_idle_timeout_remember_me: self
-                .sso_session_idle_timeout_remember_me
-                .unwrap_or(defaults.sso_session_idle_timeout_remember_me),
-            sso_session_max_lifespan_remember_me: self
-                .sso_session_max_lifespan_remember_me
-                .unwrap_or(defaults.sso_session_max_lifespan_remember_me),
-        }
-    }
-}
-
-impl LoginSettings {
-    /// Changes that set every setting to this value.
-    fn changes(&self) -> LoginSettingChanges {
-        LoginSettingChanges {
-            remember_me: Some(self.remember_me),
-            sso_session_idle_timeout_remember_me: Some(self.sso_session_idle_timeout_remember_me),
-            sso_session_max_lifespan_remember_me: Some(self.sso_session_max_lifespan_remember_me),
-        }
-    }
+    /// See [`LoginSettings::registration_allowed`].
+    pub registration_allowed: Option<bool>,
 }
 
 /// The realm columns [`login_settings_row`] reads.
-pub(crate) const LOGIN_SETTING_COLUMNS: &str =
-    "remember_me, sso_session_idle_timeout_remember_me, sso_session_max_lifespan_remember_me";
+pub(crate) const LOGIN_SETTING_COLUMNS: &str = "remember_me, sso_session_idle_timeout_remember_me, sso_session_max_lifespan_remember_me, registration_allowed";
 
 pub(crate) fn login_settings_row(row: &PgRow) -> Result<LoginSettings, StorageError> {
     Ok(LoginSettings {
@@ -80,6 +47,7 @@ pub(crate) fn login_settings_row(row: &PgRow) -> Result<LoginSettings, StorageEr
             .try_get("sso_session_idle_timeout_remember_me")?,
         sso_session_max_lifespan_remember_me: row
             .try_get("sso_session_max_lifespan_remember_me")?,
+        registration_allowed: row.try_get("registration_allowed")?,
     })
 }
 
@@ -89,21 +57,13 @@ pub(crate) async fn change_login_settings(
     realm: &str,
     changes: &LoginSettingChanges,
 ) -> Result<(), StorageError> {
-    sqlx::query("UPDATE realms SET remember_me = COALESCE($2, remember_me), sso_session_idle_timeout_remember_me = COALESCE($3, sso_session_idle_timeout_remember_me), sso_session_max_lifespan_remember_me = COALESCE($4, sso_session_max_lifespan_remember_me) WHERE name = $1")
+    sqlx::query("UPDATE realms SET remember_me = COALESCE($2, remember_me), sso_session_idle_timeout_remember_me = COALESCE($3, sso_session_idle_timeout_remember_me), sso_session_max_lifespan_remember_me = COALESCE($4, sso_session_max_lifespan_remember_me), registration_allowed = COALESCE($5, registration_allowed) WHERE name = $1")
         .bind(realm)
         .bind(changes.remember_me)
         .bind(changes.sso_session_idle_timeout_remember_me)
         .bind(changes.sso_session_max_lifespan_remember_me)
+        .bind(changes.registration_allowed)
         .execute(connection)
         .await?;
     Ok(())
-}
-
-/// Saves a new realm's settings.
-pub(crate) async fn save_login_settings(
-    connection: &mut PgConnection,
-    realm: &str,
-    settings: &LoginSettings,
-) -> Result<(), StorageError> {
-    change_login_settings(connection, realm, &settings.changes()).await
 }

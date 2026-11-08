@@ -6,7 +6,7 @@ use sqlx::postgres::PgRow;
 use crate::localization::{LocalizationTexts, merge_texts};
 use crate::login_settings::{
     LOGIN_SETTING_COLUMNS, LoginSettingChanges, LoginSettings, change_login_settings,
-    login_settings_row, save_login_settings,
+    login_settings_row,
 };
 use crate::{Actor, Storage, StorageError, audit};
 
@@ -128,8 +128,8 @@ pub struct RealmSettings {
     pub user_settings: UserSettings,
     /// Localization texts given at creation.
     pub localization_texts: LocalizationTexts,
-    /// Login-flow settings.
-    pub login: LoginSettings,
+    /// Login-flow settings given at creation, over the defaults.
+    pub login: LoginSettingChanges,
 }
 
 /// Changes to a realm's locale and username settings; `None` keeps one.
@@ -348,7 +348,7 @@ impl Storage {
             tx.commit().await?;
             return Ok(RealmCreation::Exists);
         }
-        save_login_settings(tx.connection(), name, &settings.login).await?;
+        change_login_settings(tx.connection(), name, &settings.login).await?;
         for (locale, texts) in &settings.localization_texts {
             merge_texts(tx.connection(), realm_id, locale, texts).await?;
         }

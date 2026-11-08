@@ -1408,8 +1408,8 @@ pinned source (`VerifyUserProfile`, `UpdateProfile.processAction`,
 7 tests. Contracts whose users sign in now give them a name and email, as
 the reference fixtures did.
 
-Remaining differences: only missing values count, since admin creation
-already refuses the formats the profile checks; VERIFY_PROFILE cannot be
+Remaining differences: only missing values count, so a stored value the
+profile's format checks would refuse does not stop the login; VERIFY_PROFILE cannot be
 a default action, since it is never assigned; the reference's
 `VERIFY_PROFILE` event is not written.
 
@@ -1444,9 +1444,44 @@ source (`login.ftl`, `AuthenticatorUtils.processRememberMe`,
 `tests/public/remember_me_contract.py` replays every recorded case in 5
 tests.
 
-Remaining differences: sessions do not extend their idle time on use, so
-the normal session ends after 1800 seconds where the reference's lasts
-up to 36000 with activity; `ssoSessionIdleTimeout` and
+Remaining differences: sessions extend their idle time only when a code
+is exchanged, not on refresh, and have no 36000-second cap; `ssoSessionIdleTimeout` and
 `ssoSessionMaxLifespan` cannot be changed; the box is not kept checked
 after a refused sign-in; `login_hint` is not kept when a language link
 re-shows the form.
+
+## Registration
+
+Realms keep `registrationAllowed` (migration 41), as recorded in
+`tests/reference/registration-observations.json` and read from the
+pinned source (`login.ftl` and `register.ftl` of keycloak.v2,
+`LoginActionsService.registerPage`, `RegistrationUserCreation`,
+`RegistrationPassword` and the default user profile's validators):
+
+- With the setting, the login page shows "New user? Register", linking to
+  `login-actions/registration/<request>` of the live login; without it
+  that URL answers the 400 `registrationNotAllowedMessage` error page.
+- The form lists username, password, password confirmation, email, first
+  and last name, or with `registrationEmailAsUsername` email, the two
+  passwords and the names, and a back-to-login link.
+- A submission is checked as the reference does, every field at once:
+  `missingUsernameMessage`, the 3 to 255 length and the prohibited
+  characters of the username, `missingEmailMessage`,
+  `invalidEmailMessage`, `error-user-attribute-required`, the 255 limit
+  and the prohibited characters of names, then taken usernames and
+  emails, then `missingPasswordMessage` or
+  `invalidPasswordConfirmMessage`. Failed forms keep the profile values
+  and clear the passwords.
+- A passing form makes an enabled user with an unverified email and the
+  password, then signs in with it, so the login continues with its steps
+  and the code.
+- Issuing tokens for a code now extends the session's idle time, so the
+  refresh token gets its whole lifetime as in the reference.
+
+`tests/public/registration_contract.py` replays every recorded case in 16
+tests.
+
+Remaining differences: no password policy, terms, reCAPTCHA or
+organization invites; with `verifyEmail` the reference hides the
+password fields and sets UPDATE_PASSWORD, which this server does not;
+the REGISTER event is not written.

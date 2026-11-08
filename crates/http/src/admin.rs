@@ -614,7 +614,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             access_token_lifespan: access_token_lifespan(&fields)?.unwrap_or(300),
             user_settings: UserSettingFields::parse(&fields)?.settings(),
             localization_texts: localization_texts(&fields)?,
-            login: login_settings::parse(&fields)?.settings(),
+            login: login_settings::parse(&fields)?,
         },
     })
 }

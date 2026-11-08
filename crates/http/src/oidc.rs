@@ -11,6 +11,7 @@ mod login_locale;
 mod login_steps;
 mod logout;
 mod notice;
+mod registration;
 mod reset_credentials;
 mod revocation;
 mod totp_qr;
@@ -161,6 +162,10 @@ pub fn router(state: OidcState) -> Router {
         .route(
             "/realms/{realm}/login-actions/required-action",
             get(login_steps::resend),
+        )
+        .route(
+            "/realms/{realm}/login-actions/registration/{request_id}",
+            get(registration::form).post(registration::submit),
         )
         .route(
             "/realms/{realm}/login-actions/reset-credentials",
@@ -658,6 +663,15 @@ async fn login_page(
     } else {
         String::new()
     };
+    // As login.ftl, which shows the link with password login.
+    let register = if record
+        .as_ref()
+        .is_some_and(|record| record.login.registration_allowed)
+    {
+        registration::link(&s.path_prefix, realm, request_id, &locale)
+    } else {
+        String::new()
+    };
     let remember = if remember_me {
         format!(
             "<input type=\"checkbox\" id=\"rememberMe\" name=\"rememberMe\"{checked}><label for=\"rememberMe\">{label}</label>",
@@ -668,7 +682,7 @@ async fn login_page(
         String::new()
     };
     let body = format!(
-        "{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" value=\"{value}\" autocomplete=\"username\" required>{error}<label for=\"password\">{password}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>{remember}<button id=\"kc-login\" name=\"login\">{submit}</button></form>{reset}",
+        "{message}<form id=\"kc-form-login\" method=\"post\" action=\"{prefix}/realms/{realm}/login-actions/authenticate/{request_id}\"><label for=\"username\">{username}</label><input id=\"username\" name=\"username\" value=\"{value}\" autocomplete=\"username\" required>{error}<label for=\"password\">{password}</label><input id=\"password\" name=\"password\" type=\"password\" autocomplete=\"current-password\" required>{remember}<button id=\"kc-login\" name=\"login\">{submit}</button></form>{reset}{register}",
         username = texts.html(locale.username_key(), &[]),
         value = escape(username_value.as_deref().unwrap_or_default()),
         password = texts.html("password", &[]),
