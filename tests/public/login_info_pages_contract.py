@@ -220,6 +220,8 @@ class ActionPagesContract(InfoPagesCase):
         self.check("actions/default", browser.visit(link), browser)
         german = Browser(self, "de")
         self.check("actions/accept-de", german.visit(link), german)
+
+    def test_action_list_in_the_user_locale(self):
         _, arabic = self.new_user("actions-ar", locale="ar")
         other = Browser(self, "de")
         self.check("actions/user-ar", other.visit(self.emailed(f"/users/{arabic}/execute-actions-email", ["UPDATE_PASSWORD"])), other)
@@ -255,6 +257,45 @@ class VerifyPagesContract(InfoPagesCase):
         self.check("verify-reused/ar", browser.visit(link), browser)
         fresh = Browser(self, "de")
         self.check("verify-reused/accept-de", fresh.visit(link), fresh)
+
+
+class LogoutPagesContract(InfoPagesCase):
+    def test_confirm_without_session(self):
+        browser = Browser(self, "de")
+        confirm = browser.logout()
+        self.check("logout-confirm/accept-de", confirm, browser)
+        other = Browser(self, "de")
+        self.check("logout-confirm/ui-ar", other.logout({"ui_locales": "ar"}), other)
+        switched = browser.follow(confirm, "fr")
+        self.check("switch/logout-confirm/to-fr", switched, browser)
+        done = browser.submit(switched, {})
+        self.check("logged-out/fr", done, browser)
+        self.check("switch/logged-out/to-de", browser.follow(done, "de"), browser)
+
+    def test_confirm_with_session(self):
+        login, _ = self.new_user("logout-de", locale="de")
+        browser = Browser(self, "ar")
+        browser.sign_in(login)
+        confirm = browser.logout()
+        self.check("logout-confirm/session-de", confirm, browser)
+        self.check("logged-out/session-de", browser.submit(confirm, {}), browser)
+        page = browser.authorize()
+        self.assertEqual({"status": page[0], "form": bool(re.search(r'name="password"', page[2].decode()))}, REFERENCE["after-logout/login"])
+
+    def test_hint_logs_out_without_confirmation(self):
+        login, _ = self.new_user("logout-hint", locale="ar")
+        browser = Browser(self, "de")
+        tokens = browser.sign_in(login)
+        self.check("logged-out/hint-ar", browser.logout({"id_token_hint": tokens["id_token"]}), browser)
+
+    def test_refused_logouts(self):
+        for label, query in (
+            ("logout-error/invalid-hint/accept-de", {"id_token_hint": "not-a-token"}),
+            ("logout-error/redirect/accept-de", {"client_id": "login-app", "post_logout_redirect_uri": ELSEWHERE}),
+            ("logout-error/redirect/ui-ar", {"client_id": "login-app", "post_logout_redirect_uri": ELSEWHERE, "ui_locales": "ar"}),
+        ):
+            browser = Browser(self, "de")
+            self.check(label, browser.logout(query), browser)
 
 
 class AuthorizeErrorContract(InfoPagesCase):

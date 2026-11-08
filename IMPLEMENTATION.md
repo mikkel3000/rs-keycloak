@@ -301,9 +301,8 @@ discovery lists `end_session_endpoint`. `tests/public/logout_contract.py`
 checks 3 groups of cases; the slowest takes 227 ms. The fixture now provides
 an `AdminCase` base class and a shared browser login.
 
-Remaining differences: there is no SSO cookie yet, so browser logout without
-`id_token_hint` has no session to end and shows a plain page instead of
-Keycloak's confirmation form; front-channel and back-channel logout
+Remaining differences: browser logout now asks for confirmation and ends
+the SSO cookie's session, see "Info and error pages"; front-channel and back-channel logout
 notifications to other clients are not implemented. A refresh token whose
 session has ended (logout, revocation) now gets the recorded "Session not
 active" description; replayed and unknown refresh tokens keep a bare
@@ -1180,8 +1179,8 @@ the manual-entry steps without a QR code, and re-showing it draws a new
 key, where the reference keeps the first; realm localization texts, the
 `loginWithEmailAllowed` setting and themes other than the pinned default
 are not implemented; a login continued from the page after a sent email
-keeps the pick, where the reference's fork has none; logout pages stay
-English, see "Info and error pages".
+keeps the pick, where the reference's fork has none. Info, error and
+logout pages are in "Info and error pages".
 
 ## Info and error pages
 
@@ -1215,6 +1214,22 @@ and `detachedInfo`, `DetachedInfoStateChecker`, `MessageFormatterMethod`):
   (403) and `invalidParameterMessage`. These pages skip the user's locale
   and the client's `ui_locales`, as the reference shows them before a
   login exists.
+- Browser logout follows `LogoutEndpoint.logout`: a hint whose client
+  exists, or a `client_id` that matches the hint, or a registered redirect
+  with no session in the browser, skips the confirmation; an unknown
+  `client_id`, or a browser session other than the hint's, forces it. The
+  confirmation (`logoutConfirmTitle`, `logoutConfirmHeader`, `doLogout`)
+  is kept in a new `logout_requests` row bound to an `rs_logout` CSRF
+  cookie, as the reference keeps a logout authentication session; its
+  language links re-show it through `GET logout/logout-confirm`, which
+  keeps the pick, and its form posts there. The logout ends the hint's
+  session and the SSO cookie's, then redirects or shows `successLogout`
+  in the pick, the user's locale, then `ui_locales`. Refused logouts show
+  `missingParameterMessage`, `invalidParameterMessage` (also for a
+  `client_id` other than the hint's, as the source names `id_token_hint`
+  there) and `invalidRedirectUriMessage`; a confirmation no longer kept
+  shows `failedLogout` while a session remains, else `successLogout`.
+  Logout pages are `no-cache`, as recorded.
 - Pages without a login to re-show them from link their languages to
   `login-actions/detached-info` with a fresh `kc_state_checker`, and set
   the `KC_STATE_CHECKER` cookie (path of the realm, 300 seconds, strict)
@@ -1227,7 +1242,8 @@ and `detachedInfo`, `DetachedInfoStateChecker`, `MessageFormatterMethod`):
 `tests/public/login_info_pages_contract.py` checks these pages, each test
 under 200 ms.
 
-Remaining differences: the detached page keeps a back link as a URL,
+Remaining differences: the logout confirmation has no back link, as this
+server keeps no client base URL; the detached page keeps a back link as a URL,
 where the reference keeps the client and re-checks it; the action list
 offers only UPDATE_PASSWORD, as before; a key past its lifespan shows
 `expiredActionMessage`, where the reference's expiry check shows

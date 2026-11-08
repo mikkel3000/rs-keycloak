@@ -1,5 +1,6 @@
 //! Ending user sessions at OIDC logout.
 
+use sqlx::postgres::PgRow;
 use sqlx::{PgConnection, Row};
 
 use crate::{RedirectRules, Storage, StorageError, authenticated_client};
@@ -10,6 +11,18 @@ pub enum RefreshLogout {
     Ended,
     /// No refresh token with this ID was issued to the client.
     UnknownToken,
+}
+
+fn logout_request_row(row: &PgRow) -> Result<LogoutRequest, StorageError> {
+    let session: Option<String> = row.try_get("hint_session_id")?;
+    let user: Option<String> = row.try_get("hint_user_id")?;
+    Ok(LogoutRequest {
+        redirect_uri: row.try_get("redirect_uri")?,
+        state: row.try_get("state")?,
+        ui_locales: row.try_get("ui_locales")?,
+        requested_locale: row.try_get("requested_locale")?,
+        hint: session.zip(user),
+    })
 }
 
 /// Revokes a user session and every refresh family bound to it.
@@ -27,7 +40,103 @@ pub(crate) async fn end_session(
     Ok(())
 }
 
+/// A browser logout waiting for confirmation.
+#[derive(Clone, Debug, Default)]
+pub struct LogoutRequest {
+    /// The validated post-logout redirect URI.
+    pub redirect_uri: Option<String>,
+    /// The client's `state`, sent back with the redirect.
+    pub state: Option<String>,
+    /// The client's `ui_locales`.
+    pub ui_locales: Option<String>,
+    /// The locale picked with `kc_locale` on the confirmation page.
+    pub requested_locale: Option<String>,
+    /// The session an ID token hint named, and its user.
+    pub hint: Option<(String, String)>,
+}
+
 impl Storage {
+    /// Stores a logout waiting for confirmation, bound to a CSRF digest.
+    pub async fn create_logout_request(
+        &self,
+        realm_id: &str,
+        id: &str,
+        csrf_hash: &[u8],
+        request: &LogoutRequest,
+        lifespan_seconds: i32,
+    ) -> Result<(), StorageError> {
+        if id.len() != 64 || csrf_hash.len() != 32 || lifespan_seconds <= 0 {
+            return Err(StorageError::InvalidInput);
+        }
+        let (hint_session, hint_user) = request
+            .hint
+            .as_ref()
+            .map(|(session, user)| (session.as_str(), user.as_str()))
+            .unzip();
+        let mut tx = self.begin_request(false).await?;
+        let conn = tx.connection();
+        sqlx::query("DELETE FROM logout_requests WHERE id IN (SELECT id FROM logout_requests WHERE expires_at <= clock_timestamp() ORDER BY expires_at LIMIT 16 FOR UPDATE SKIP LOCKED)")
+            .execute(&mut *conn).await?;
+        sqlx::query("INSERT INTO logout_requests (id, csrf_hash, realm_id, redirect_uri, state, ui_locales, hint_session_id, hint_user_id, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + make_interval(secs => $9))")
+            .bind(id).bind(csrf_hash).bind(realm_id).bind(&request.redirect_uri).bind(&request.state).bind(&request.ui_locales).bind(hint_session).bind(hint_user).bind(f64::from(lifespan_seconds))
+            .execute(&mut *conn).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Reads a live logout request bound to the CSRF digest, after keeping
+    /// a `kc_locale` pick on it when given.
+    pub async fn logout_request(
+        &self,
+        realm_id: &str,
+        id: &str,
+        csrf_hash: &[u8],
+        picked: Option<&str>,
+    ) -> Result<Option<LogoutRequest>, StorageError> {
+        if picked.is_some_and(|locale| locale.is_empty() || locale.len() > 255) {
+            return Err(StorageError::InvalidInput);
+        }
+        let mut tx = self.begin_request(true).await?;
+        let row = sqlx::query("UPDATE logout_requests SET requested_locale = COALESCE($4, requested_locale) WHERE realm_id = $1 AND id = $2 AND csrf_hash = $3 AND expires_at > clock_timestamp() RETURNING redirect_uri, state, ui_locales, requested_locale, hint_session_id, hint_user_id")
+            .bind(realm_id).bind(id).bind(csrf_hash).bind(picked)
+            .fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        row.map(|row| logout_request_row(&row)).transpose()
+    }
+
+    /// Uses up a live logout request bound to the CSRF digest.
+    pub async fn take_logout_request(
+        &self,
+        realm_id: &str,
+        id: &str,
+        csrf_hash: &[u8],
+    ) -> Result<Option<LogoutRequest>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let row = sqlx::query("DELETE FROM logout_requests WHERE realm_id = $1 AND id = $2 AND csrf_hash = $3 AND expires_at > clock_timestamp() RETURNING redirect_uri, state, ui_locales, requested_locale, hint_session_id, hint_user_id")
+            .bind(realm_id).bind(id).bind(csrf_hash)
+            .fetch_optional(tx.connection()).await?;
+        tx.commit().await?;
+        row.map(|row| logout_request_row(&row)).transpose()
+    }
+
+    /// The stored locale of an enabled user of the realm.
+    pub async fn user_locale(
+        &self,
+        realm_id: &str,
+        user_id: &str,
+    ) -> Result<Option<String>, StorageError> {
+        let mut tx = self.begin_request(true).await?;
+        let locale: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT locale FROM users WHERE realm_id = $1 AND id = $2 AND enabled",
+        )
+        .bind(realm_id)
+        .bind(user_id)
+        .fetch_optional(tx.connection())
+        .await?;
+        tx.commit().await?;
+        Ok(locale.flatten())
+    }
+
     /// Ends the session of a refresh token issued to an authenticated client.
     /// Repeating the logout with the same token is harmless.
     pub async fn logout_with_refresh_token(

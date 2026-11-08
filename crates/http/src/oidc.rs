@@ -205,6 +205,10 @@ pub fn router(state: OidcState) -> Router {
             get(logout::get).post(logout::post),
         )
         .route(
+            "/realms/{realm}/protocol/openid-connect/logout/logout-confirm",
+            get(logout::confirm_get).post(logout::confirm_post),
+        )
+        .route(
             "/realms/{realm}/protocol/openid-connect/certs",
             get(certs)
                 .options(|| async { StatusCode::OK })
@@ -855,12 +859,24 @@ fn language_links(locale: &PageLocale, switch: &str) -> String {
 /// template does, the page is titled after the realm, names it above the
 /// heading, and offers the realm's locales when it has several.
 fn framed_page(realm: &str, locale: &PageLocale, frame: &Frame, body: &str) -> Response {
+    framed_page_titled(realm, locale, None, frame, body)
+}
+
+/// As `framed_page`, titled `title` when given, as the logout
+/// confirmation's template titles itself.
+fn framed_page_titled(
+    realm: &str,
+    locale: &PageLocale,
+    title: Option<&str>,
+    frame: &Frame,
+    body: &str,
+) -> Response {
     let label = if locale.realm_label.is_empty() {
         realm
     } else {
         &locale.realm_label
     };
-    let title = locale.messages.html("loginTitle", &[label]);
+    let title = title.map_or_else(|| locale.messages.html("loginTitle", &[label]), escape);
     let body = format!(
         "<p id=\"kc-header\">{}</p><h1 id=\"kc-page-title\">{}</h1>{}{body}",
         escape(label),

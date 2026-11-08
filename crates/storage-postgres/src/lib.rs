@@ -28,7 +28,7 @@ pub use login_locale::{LoginLocale, UserLocaleUpdate};
 pub use login_steps::{
     CredentialRecord, LoginStep, OtpCredential, Profile, ProfileUpdate, RequiredActionSetting,
 };
-pub use logout::RefreshLogout;
+pub use logout::{LogoutRequest, RefreshLogout};
 pub use realm_admin::{
     MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion, RealmRecord, RealmSettings,
     RealmSmtp, UserSettingChanges, UserSettings,
@@ -87,6 +87,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0032_offline_sessions.sql"),
     include_str!("../../../migrations/0033_account_settings.sql"),
     include_str!("../../../migrations/0034_login_locale.sql"),
+    include_str!("../../../migrations/0035_logout_requests.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

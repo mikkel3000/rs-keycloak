@@ -22,6 +22,15 @@ pub(super) struct LocaleQuery {
     picked_locale: Option<String>,
 }
 
+impl LocaleQuery {
+    /// The `kc_locale` pick, when it can be kept.
+    pub(super) fn pick(&self) -> Option<&str> {
+        self.kc_locale
+            .as_deref()
+            .filter(|picked| locale::acceptable_pick(picked))
+    }
+}
+
 /// Keeps a `kc_locale` pick for the rest of the request when the realm is
 /// internationalized, and returns the cookie that remembers it. Picks that
 /// are not cookie-safe tags are ignored.

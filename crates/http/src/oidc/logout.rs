@@ -1,8 +1,11 @@
 //! OIDC logout: refresh-token POST logout and RP-initiated browser logout.
 //!
-//! Follows the recorded cases in `tests/reference/logout-observations.json`.
-//! There is no SSO cookie yet, so browser logout ends only the session named
-//! by `id_token_hint`.
+//! Follows the recorded cases in `tests/reference/logout-observations.json`
+//! and `tests/reference/login-info-page-observations.json`, and
+//! `LogoutEndpoint` at the pinned revision: a browser logout the client
+//! cannot vouch for asks for confirmation, then ends the session of the
+//! ID token hint and of the SSO cookie, and shows the logged-out page or
+//! redirects.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -14,16 +17,29 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use rs_keycloak_crypto::signing::VerifiedIdToken;
 use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
-use rs_keycloak_storage_postgres::RefreshLogout;
+use rs_keycloak_storage_postgres::{LoginLocale, LogoutRequest, RefreshLogout, SsoSession};
+use serde::Deserialize;
 use serde_json::json;
 use url::Url;
 use zeroize::Zeroizing;
 
 use crate::client_auth::{self, ClientAuthResult, InvalidClientAuthentication};
+use crate::locale::{self, PageLocale};
+use crate::login_theme::escape;
 
+use super::login_locale::{self, LocaleQuery};
+use super::notice::{self, Notice};
 use super::{
-    OidcState, digest, invalid_client, sso_cookies, unavailable, valid_realm, verified_refresh,
+    Frame, OidcState, cookie, digest, framed_page_titled, invalid_client, random_token,
+    sso_cookies, unavailable, valid_realm, verified_refresh,
 };
+
+/// How long a logout waits for confirmation, the reference's default
+/// user-action lifespan.
+const CONFIRM_SECONDS: i32 = 300;
+
+/// The cookie that binds a logout confirmation to this browser.
+const CSRF_COOKIE: &str = "rs_logout";
 
 fn page(status: StatusCode, message: &'static str) -> Response {
     (
@@ -103,7 +119,7 @@ pub(super) async fn post(
         }
     }
     let Some(refresh_token) = fields.remove("refresh_token").map(Zeroizing::new) else {
-        return browser(state, realm, fields).await;
+        return browser(state, realm, fields, headers).await;
     };
     let realm_id = match realm_id(&state, &realm).await {
         Ok(id) => id,
@@ -164,8 +180,9 @@ pub(super) async fn get(
     State(state): State<OidcState>,
     Path(realm): Path<String>,
     Query(params): Query<BTreeMap<String, String>>,
+    headers: HeaderMap,
 ) -> Response {
-    browser(state, realm, params).await
+    browser(state, realm, params, headers).await
 }
 
 /// Verifies an ID token hint against this realm's issuer.
@@ -192,68 +209,338 @@ async fn verified_hint(
     Ok(claims.ok().filter(|claims| claims.iss == issuer))
 }
 
-async fn browser(state: OidcState, realm: String, params: BTreeMap<String, String>) -> Response {
+/// Marks a logout page `no-cache`, as the reference's logout endpoint
+/// sends its pages.
+fn no_cache(mut response: Response) -> Response {
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    response
+}
+
+/// An error page of a refused logout, which the reference shows before
+/// its logout session exists, so it skips `ui_locales`.
+async fn refuse(
+    state: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    headers: &HeaderMap,
+    status: StatusCode,
+    key: &str,
+    args: &[&str],
+) -> Response {
+    let notice = Notice::error(status, key).with_args(args);
+    no_cache(notice::error_page(state, realm, realm_id, headers, &notice).await)
+}
+
+/// The browser's SSO session, from its identity cookie.
+async fn browser_session(
+    state: &OidcState,
+    realm_id: &str,
+    headers: &HeaderMap,
+) -> Result<Option<SsoSession>, ()> {
+    match cookie(headers, "KEYCLOAK_IDENTITY") {
+        Some(token) => state
+            .storage
+            .sso_session(realm_id, &digest(token))
+            .await
+            .map_err(|_| ()),
+        None => Ok(None),
+    }
+}
+
+/// Whether a post-logout redirect URI is registered for a client.
+fn redirect_allowed(
+    state: &OidcState,
+    rules: &rs_keycloak_storage_postgres::RedirectRules,
+    uri: &str,
+) -> bool {
+    let server = state.issuer_base.trim_end_matches('/');
+    rules.redirect_uris.iter().any(|registered| {
+        resolve_redirect(registered, rules.root_url.as_deref(), server)
+            .is_some_and(|resolved| redirect_matches(&resolved, uri))
+    })
+}
+
+/// Starts a browser logout, as `LogoutEndpoint.logout` decides it: a
+/// client named by the ID token hint, or a matching `client_id` with a
+/// hint, or a valid redirect without any session, skips the confirmation;
+/// an unknown client or another session in the browser forces it.
+async fn browser(
+    state: OidcState,
+    realm: String,
+    params: BTreeMap<String, String>,
+    headers: HeaderMap,
+) -> Response {
     let realm_id = match realm_id(&state, &realm).await {
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    let hint = match params.get("id_token_hint") {
+    let client_param = params.get("client_id");
+    let redirect_param = params.get("post_logout_redirect_uri");
+    let hint_param = params.get("id_token_hint");
+    let refused = async |status, key, args: &[&str]| {
+        refuse(&state, &realm, &realm_id, &headers, status, key, args).await
+    };
+    if redirect_param.is_some() && hint_param.is_none() && client_param.is_none() {
+        return refused(
+            StatusCode::BAD_REQUEST,
+            "missingParameterMessage",
+            &["id_token_hint"],
+        )
+        .await;
+    }
+    let hint = match hint_param {
         None => None,
         Some(hint) => match verified_hint(&state, &realm, hint).await {
             Ok(Some(claims)) => Some(claims),
-            Ok(None) => return page(StatusCode::BAD_REQUEST, "Invalid parameter: id_token_hint"),
+            Ok(None) => {
+                return refused(
+                    StatusCode::BAD_REQUEST,
+                    "invalidParameterMessage",
+                    &["id_token_hint"],
+                )
+                .await;
+            }
             Err(()) => return unavailable(),
         },
     };
-    let client = match (
-        hint.as_ref().map(|claims| &claims.aud),
-        params.get("client_id"),
-    ) {
-        (Some(audience), Some(client)) if audience != client => {
-            return page(StatusCode::BAD_REQUEST, "Invalid parameter: client_id");
-        }
-        (Some(audience), _) => Some(audience.clone()),
-        (None, client) => client.cloned(),
-    };
-    let redirect = match params.get("post_logout_redirect_uri") {
+    let mut confirm = true;
+    let mut forced = false;
+    let named = client_param.or(hint.as_ref().map(|claims| &claims.aud));
+    let rules = match named {
+        Some(client) => match state.storage.post_logout_rules(&realm_id, client).await {
+            Ok(rules) => rules,
+            Err(_) => return unavailable(),
+        },
         None => None,
-        Some(uri) => {
-            let allowed = match &client {
-                Some(client) => match state.storage.post_logout_rules(&realm_id, client).await {
-                    Ok(Some(rules)) => {
-                        let server = state.issuer_base.trim_end_matches('/');
-                        rules.redirect_uris.iter().any(|registered| {
-                            resolve_redirect(registered, rules.root_url.as_deref(), server)
-                                .is_some_and(|resolved| redirect_matches(&resolved, uri))
-                        })
-                    }
-                    Ok(None) => false,
-                    Err(_) => return unavailable(),
-                },
-                None => false,
-            };
-            match Url::parse(uri) {
-                Ok(url) if allowed => Some(url),
-                _ => return page(StatusCode::BAD_REQUEST, "Invalid redirect uri"),
+    };
+    match (client_param, &hint) {
+        (Some(_), _) if rules.is_none() => forced = true,
+        (Some(client), Some(claims)) if claims.aud != *client => {
+            return refused(
+                StatusCode::BAD_REQUEST,
+                "invalidParameterMessage",
+                &["id_token_hint"],
+            )
+            .await;
+        }
+        (Some(_), Some(_)) => confirm = false,
+        (None, Some(_)) if rules.is_some() => confirm = false,
+        _ => (),
+    }
+    let redirect = match redirect_param {
+        None => None,
+        Some(uri) => match Url::parse(uri) {
+            Ok(url)
+                if rules
+                    .as_ref()
+                    .is_some_and(|rules| redirect_allowed(&state, rules, uri)) =>
+            {
+                Some(url)
+            }
+            _ => return refused(StatusCode::BAD_REQUEST, "invalidRedirectUriMessage", &[]).await,
+        },
+    };
+    let session = match browser_session(&state, &realm_id, &headers).await {
+        Ok(session) => session,
+        Err(()) => return unavailable(),
+    };
+    let hint_sid = hint.as_ref().and_then(|claims| claims.sid.clone());
+    match &session {
+        Some(session) => {
+            if hint_sid
+                .as_ref()
+                .is_some_and(|sid| *sid != session.session_id)
+            {
+                forced = true;
             }
         }
+        None => {
+            if hint.is_none() && rules.is_some() && redirect.is_some() {
+                confirm = false;
+            }
+        }
+    }
+    let request = LogoutRequest {
+        redirect_uri: redirect.map(String::from),
+        state: params
+            .get("state")
+            .filter(|value| value.len() <= 2048)
+            .cloned(),
+        ui_locales: params
+            .get("ui_locales")
+            .filter(|value| value.len() <= 2048)
+            .cloned(),
+        requested_locale: None,
+        hint: hint
+            .as_ref()
+            .and_then(|claims| claims.sid.clone().map(|sid| (sid, claims.sub.clone()))),
     };
-    if let Some(VerifiedIdToken {
-        sid: Some(sid),
-        sub,
-        ..
-    }) = &hint
-        && state
+    if confirm || forced {
+        return ask(
+            &state,
+            &realm,
+            &realm_id,
+            &request,
+            session.as_ref(),
+            &headers,
+        )
+        .await;
+    }
+    finish(
+        &state,
+        &realm,
+        &realm_id,
+        &request,
+        session.as_ref(),
+        hint.is_some(),
+        &headers,
+    )
+    .await
+}
+
+/// The user a logout's pages read the locale of: the browser session's,
+/// else the hint's.
+async fn logout_user_locale(
+    state: &OidcState,
+    realm_id: &str,
+    request: &LogoutRequest,
+    session: Option<&SsoSession>,
+) -> Result<Option<String>, ()> {
+    if let Some(session) = session {
+        return Ok(session.locale.clone());
+    }
+    match &request.hint {
+        Some((_, user)) => state
             .storage
-            .logout_session(&realm_id, sid, sub)
+            .user_locale(realm_id, user)
             .await
-            .is_err()
+            .map_err(|_| ()),
+        None => Ok(None),
+    }
+}
+
+/// The locale of a logout's pages: the pick, the user's locale, the
+/// client's `ui_locales`, then this browser's.
+async fn logout_locale(
+    state: &OidcState,
+    realm_id: &str,
+    request: &LogoutRequest,
+    user: Option<String>,
+    headers: &HeaderMap,
+) -> Result<PageLocale, ()> {
+    let base = state.storage.realm_locale(realm_id).await.map_err(|_| ())?;
+    let chosen = LoginLocale {
+        requested: request.requested_locale.clone(),
+        user,
+        client: request.ui_locales.clone(),
+        ..base
+    };
+    Ok(PageLocale::login(&chosen, headers))
+}
+
+/// The confirmation page, as `logout-confirm.ftl` shows it.
+fn confirm_page(state: &OidcState, realm: &str, locale: &PageLocale, id: &str) -> Response {
+    let texts = &locale.messages;
+    let action = format!(
+        "{}/realms/{realm}/protocol/openid-connect/logout/logout-confirm",
+        state.path_prefix
+    );
+    let body = format!(
+        "<div id=\"kc-logout-confirm\" class=\"content-area\"><p class=\"instruction\">{}</p><form class=\"form-actions\" action=\"{}\" method=\"POST\"><input type=\"hidden\" name=\"session_code\" value=\"{id}\"><input name=\"confirmLogout\" id=\"kc-logout\" type=\"submit\" value=\"{}\"></form></div>",
+        texts.html("logoutConfirmHeader", &[]),
+        escape(&action),
+        texts.html("doLogout", &[]),
+    );
+    let title = texts.text("logoutConfirmTitle", &[]);
+    let frame = Frame {
+        heading: title.clone(),
+        switch: format!("{action}?session_code={id}&kc_locale="),
+    };
+    no_cache(framed_page_titled(
+        realm,
+        locale,
+        Some(&title),
+        &frame,
+        &body,
+    ))
+}
+
+/// Keeps the logout for confirmation and asks for it.
+async fn ask(
+    state: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request: &LogoutRequest,
+    session: Option<&SsoSession>,
+    headers: &HeaderMap,
+) -> Response {
+    let (id, csrf) = (random_token(), random_token());
+    if state
+        .storage
+        .create_logout_request(realm_id, &id, &digest(&csrf), request, CONFIRM_SECONDS)
+        .await
+        .is_err()
     {
         return unavailable();
     }
+    let Ok(user) = logout_user_locale(state, realm_id, request, session).await else {
+        return unavailable();
+    };
+    let Ok(locale) = logout_locale(state, realm_id, request, user, headers).await else {
+        return unavailable();
+    };
+    let mut response = confirm_page(state, realm, &locale, &id);
+    let cookie = format!(
+        "{CSRF_COOKIE}={csrf}; Path={}/realms/{realm}/protocol/openid-connect/logout; Max-Age={CONFIRM_SECONDS}; Secure; HttpOnly; SameSite=Strict",
+        state.path_prefix
+    );
+    match HeaderValue::from_str(&cookie) {
+        Ok(value) => {
+            response.headers_mut().append(header::SET_COOKIE, value);
+            response
+        }
+        Err(_) => unavailable(),
+    }
+}
+
+/// Ends the hint's and the browser's sessions, then redirects or shows the
+/// logged-out page in the user's locale. `clear` expires the SSO cookies.
+async fn finish(
+    state: &OidcState,
+    realm: &str,
+    realm_id: &str,
+    request: &LogoutRequest,
+    session: Option<&SsoSession>,
+    clear: bool,
+    headers: &HeaderMap,
+) -> Response {
+    let Ok(user) = logout_user_locale(state, realm_id, request, session).await else {
+        return unavailable();
+    };
+    let ended = request
+        .hint
+        .iter()
+        .map(|(sid, sub)| (sid.as_str(), sub.as_str()))
+        .chain(session.map(|session| (session.session_id.as_str(), session.user_id.as_str())));
+    for (sid, sub) in ended {
+        if state
+            .storage
+            .logout_session(realm_id, sid, sub)
+            .await
+            .is_err()
+        {
+            return unavailable();
+        }
+    }
+    let redirect = request
+        .redirect_uri
+        .as_deref()
+        .and_then(|uri| Url::parse(uri).ok());
     let mut response = match redirect {
         Some(mut url) => {
-            if let Some(value) = params.get("state") {
+            if let Some(value) = &request.state {
                 url.query_pairs_mut().append_pair("state", value);
             }
             (
@@ -265,15 +552,157 @@ async fn browser(state: OidcState, realm: String, params: BTreeMap<String, Strin
             )
                 .into_response()
         }
-        None if hint.is_some() => page(StatusCode::OK, "You are logged out."),
-        None => page(StatusCode::OK, "You have no active session to log out."),
+        None => {
+            let Ok(locale) = logout_locale(state, realm_id, request, user, headers).await else {
+                return unavailable();
+            };
+            no_cache(notice::detached(
+                state,
+                realm,
+                &locale,
+                &Notice::info("successLogout"),
+            ))
+        }
     };
-    if hint.is_some() {
-        for value in sso_cookies(&state.path_prefix, &realm, None) {
+    let clear = clear || session.is_some() || cookie(headers, "KEYCLOAK_IDENTITY").is_some();
+    if clear {
+        for value in sso_cookies(&state.path_prefix, realm, None) {
             if let Ok(value) = HeaderValue::from_str(&value) {
                 response.headers_mut().append(header::SET_COOKIE, value);
             }
         }
     }
     response
+}
+
+/// The confirmation page's logout request.
+#[derive(Deserialize)]
+pub(super) struct ConfirmQuery {
+    session_code: Option<String>,
+}
+
+/// Re-shows the confirmation in a picked locale, as `logoutConfirmGet`
+/// does; once the logout is gone, shows the logged-out page, or the
+/// failure while a session remains.
+pub(super) async fn confirm_get(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    Query(query): Query<ConfirmQuery>,
+    Query(locale_query): Query<LocaleQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let realm_id = match realm_id(&state, &realm).await {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let Ok(settings) = state.storage.user_settings(&realm_id).await else {
+        return unavailable();
+    };
+    let picked = locale_query
+        .pick()
+        .filter(|_| settings.internationalization_enabled);
+    let found = match (query.session_code.as_deref(), cookie(&headers, CSRF_COOKIE)) {
+        (Some(id), Some(csrf)) if id.len() == 64 && csrf.len() == 64 => {
+            match state
+                .storage
+                .logout_request(&realm_id, id, &digest(csrf), picked)
+                .await
+            {
+                Ok(found) => found.map(|request| (id, request)),
+                Err(_) => return unavailable(),
+            }
+        }
+        _ => None,
+    };
+    let session = match browser_session(&state, &realm_id, &headers).await {
+        Ok(session) => session,
+        Err(()) => return unavailable(),
+    };
+    let Some((id, request)) = found else {
+        if session.is_some() {
+            return refuse(
+                &state,
+                &realm,
+                &realm_id,
+                &headers,
+                StatusCode::BAD_REQUEST,
+                "failedLogout",
+                &[],
+            )
+            .await;
+        }
+        let Ok(locale) = login_locale::realm_page(&state, &realm_id, &headers).await else {
+            return unavailable();
+        };
+        return no_cache(notice::detached(
+            &state,
+            &realm,
+            &locale,
+            &Notice::info("successLogout"),
+        ));
+    };
+    let Ok(user) = logout_user_locale(&state, &realm_id, &request, session.as_ref()).await else {
+        return unavailable();
+    };
+    let Ok(locale) = logout_locale(&state, &realm_id, &request, user, &headers).await else {
+        return unavailable();
+    };
+    let cookie = picked.map(|picked| locale::cookie(&state.path_prefix, &realm, picked));
+    login_locale::with_cookie(confirm_page(&state, &realm, &locale, id), cookie)
+}
+
+/// Logs out once the user confirms.
+pub(super) async fn confirm_post(
+    State(state): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+    form: Result<Form<BTreeMap<String, String>>, FormRejection>,
+) -> Response {
+    let realm_id = match realm_id(&state, &realm).await {
+        Ok(id) => id,
+        Err(error) => return error.into_response(),
+    };
+    let code = form
+        .ok()
+        .and_then(|Form(mut fields)| fields.remove("session_code"));
+    let found = match (code.as_deref(), cookie(&headers, CSRF_COOKIE)) {
+        (Some(id), Some(csrf)) if id.len() == 64 && csrf.len() == 64 => {
+            match state
+                .storage
+                .take_logout_request(&realm_id, id, &digest(csrf))
+                .await
+            {
+                Ok(found) => found,
+                Err(_) => return unavailable(),
+            }
+        }
+        _ => None,
+    };
+    let Some(request) = found else {
+        return refuse(
+            &state,
+            &realm,
+            &realm_id,
+            &headers,
+            StatusCode::BAD_REQUEST,
+            "failedLogout",
+            &[],
+        )
+        .await;
+    };
+    let session = match browser_session(&state, &realm_id, &headers).await {
+        Ok(session) => session,
+        Err(()) => return unavailable(),
+    };
+    let hinted = request.hint.is_some();
+    finish(
+        &state,
+        &realm,
+        &realm_id,
+        &request,
+        session.as_ref(),
+        hinted,
+        &headers,
+    )
+    .await
 }

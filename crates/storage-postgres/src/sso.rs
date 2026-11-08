@@ -10,6 +10,8 @@ pub struct SsoSession {
     pub user_id: String,
     /// Authentication time as Unix seconds, for `max_age`.
     pub auth_time: i64,
+    /// The user's stored locale.
+    pub locale: Option<String>,
 }
 
 impl Storage {
@@ -40,14 +42,17 @@ impl Storage {
             return Ok(None);
         }
         let mut tx = self.begin_request(true).await?;
-        let row: Option<(String, String, i64)> = sqlx::query_as("SELECT us.id, us.user_id, floor(EXTRACT(EPOCH FROM us.created_at))::bigint FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $1 AND us.sso_token_hash = $2 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp() AND u.enabled AND r.enabled")
+        let row: Option<(String, String, i64, Option<String>)> = sqlx::query_as("SELECT us.id, us.user_id, floor(EXTRACT(EPOCH FROM us.created_at))::bigint, u.locale FROM user_sessions us JOIN users u ON u.realm_id = us.realm_id AND u.id = us.user_id JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $1 AND us.sso_token_hash = $2 AND us.revoked_at IS NULL AND NOT us.steps_pending AND us.expires_at > clock_timestamp() AND u.enabled AND r.enabled")
             .bind(realm_id).bind(token_hash).fetch_optional(tx.connection()).await?;
         tx.commit().await?;
-        Ok(row.map(|(session_id, user_id, auth_time)| SsoSession {
-            session_id,
-            user_id,
-            auth_time,
-        }))
+        Ok(
+            row.map(|(session_id, user_id, auth_time, locale)| SsoSession {
+                session_id,
+                user_id,
+                auth_time,
+                locale,
+            }),
+        )
     }
 
     /// Adds a client to an active session so the session can issue it codes.
