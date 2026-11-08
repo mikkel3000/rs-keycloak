@@ -57,7 +57,7 @@ Use established crypto and protocol libraries; do not build signature algorithms
 | `crates/storage-postgres` | Typed queries, mappings, migrations, row locks, job claims and transaction implementation |
 | `crates/integrations` | Broker/federation clients, mail, external callbacks and durable jobs |
 | `crates/provider-sdk` and `crates/provider-host` | Versioned Rust customization contracts, signed provider registration, worker limits and migration bindings |
-| `web` | Admin/account browser interface, Bun tooling and static assets; every auth and data API is implemented in Rust |
+| `web` | Our own admin and account consoles: a React + Astro multi-page application built with Bun into static assets; every auth and data API is implemented in Rust |
 | `compatibility` and `tests` | Reference lock, operation inventory, paired API/browser suites and failure/load fixtures |
 
 Keep the domain free of Axum, SQLx rows and PostgreSQL error codes; HTTP models stay distinct from internal entities so omitted fields, default values and partial updates match Keycloak without weakening domain types.
@@ -82,9 +82,11 @@ PostgreSQL, TLS proxies and browser code are infrastructure/client dependencies,
 
 Use Bun for web dependency management, builds, tests and local live reload; ship static browser assets served by Rust by default, with optional Bun asset serving limited to the web interface. [Bun browser builds](https://bun.sh/docs/bundler).
 
+The admin and account consoles are our own, not Keycloak's React apps: a multi-page application with Astro pages and React islands, built by Bun into static output that Rust serves, so no Node or Astro server runs in production. They cover every workflow of the pinned upstream consoles and aim to be better to use. The upstream consoles stay as compatibility clients in tests only, since they are the strictest check that our APIs match Keycloak's, and are not shipped.
+
 The web interface has no direct database access, signing keys, trusted policy evaluation or separate session store; it uses the same Rust HTTP APIs as external clients, and native diagnostic/provider screens use a distinct versioned management surface.
 
-Deliver complete admin and account workflows, localized and accessible login/recovery pages, theme branding, clear errors, large-list pagination and fast navigation; preserve pinned upstream console/client tests even where the shipped UI adds native setup or Rust-provider tools.
+Deliver complete admin and account workflows, localized and accessible login/recovery pages, theme branding, clear errors, large-list pagination and fast navigation; keep the pinned upstream consoles and their tests passing against our APIs even though the shipped UI is our own.
 
 ## Rust alternatives to server scripts
 
