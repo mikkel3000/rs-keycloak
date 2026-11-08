@@ -3,3 +3,5 @@
 /target/
 __pycache__/
 *.pyc
+CLAUDE.md
+STYLEGUIDE.md
