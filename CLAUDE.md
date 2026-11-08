@@ -42,7 +42,7 @@ Each feature follows `AGENTS/workflow.md`. A new machine is set up with `AGENTS/
 
 ## Goal loop
 
-The interactive session is the manager. Goals run one per fresh `claude -p` session through `AGENTS/goal-loop/run_goal.sh`, as `AGENTS/goal-loop/README.md` describes; do the goals' work only through the loop. The loop's state is in `~/.claude/goal-loop/`.
+The interactive session is the manager. Goals run one per fresh `claude -p` session through `AGENTS/goal-loop/run_goal.sh`, as `AGENTS/goal-loop/README.md` describes; the manager does the goals' work only through the loop. A `claude -p` session started with a `/goal` prompt is the run itself, not the manager: it does the goal's work directly and never waits on or starts a run. The rest of this section is for the manager. The loop's state is in `~/.claude/goal-loop/`.
 
 Between runs, review the run: `git log` shows a recording commit (no hint) and an implementation commit (`@minor`) per feature, each body explaining its decisions and with no co-author trailer, all pushed; the fast suite passes with no test over 500 ms; `NEXT_GOAL` holds the next goal. Then start the next run. Before starting a run, stop and tell the user if its goal needs a sign-off the loop cannot give: an independent security review, load, soak or failover tests on production-like hardware, supply-chain or release approval, or any `PLAN.md` step 6 production gate. If `QUESTION` exists or a run fails for a reason other than a usage limit, stop and tell the user.
 

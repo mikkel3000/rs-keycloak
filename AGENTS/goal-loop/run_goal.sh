@@ -27,7 +27,8 @@ else
   log="$run/log.jsonl"
 fi
 # A session may copy the runner's added instructions into NEXT_GOAL.
-goal=$(sed 's/ Also write the next goal.s text, without the \/goal prefix, into .*$//' "$run/goal.txt")
+goal=$(sed -e 's/ You are this goal.s loop run, not the manager: .*$//' -e 's/ Also write the next goal.s text, without the \/goal prefix, into .*$//' "$run/goal.txt")
+goal+=" You are this goal's loop run, not the manager: do the work yourself and don't wait on or start a run."
 goal+=" Also write the next goal's text, without the /goal prefix, into $dir/NEXT_GOAL. If a decision only the user can make blocks this goal, write the question into $dir/QUESTION and stop instead."
 
 echo $$ > "$dir/RUNNING"
