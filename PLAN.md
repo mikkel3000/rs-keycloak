@@ -84,6 +84,8 @@ Use Bun for web dependency management, builds, tests and local live reload; ship
 
 The admin and account consoles are our own, not Keycloak's React apps: a multi-page application with Astro pages and React islands, built by Bun into static output that Rust serves, so no Node or Astro server runs in production. They cover every workflow of the pinned upstream consoles and aim to be better to use. The upstream consoles stay as compatibility clients in tests only, since they are the strictest check that our APIs match Keycloak's, and are not shipped.
 
+The consoles are simple, fast, predictable, clear and well organized, and follow current web standards: semantic HTML, WCAG 2.2 AA, keyboard use, responsive layout, a strict Content Security Policy, and no tokens in browser storage. Each console area starts by reading the open upstream issues for it (`area/admin/ui` and `area/account/ui` in keycloak/keycloak, 160 and 30 open on 2026-11-08) and fixes those that apply to our design; each fix is noted in the feature's commit and in IMPLEMENTATION.md with the issue number.
+
 The web interface has no direct database access, signing keys, trusted policy evaluation or separate session store; it uses the same Rust HTTP APIs as external clients, and native diagnostic/provider screens use a distinct versioned management surface.
 
 Deliver complete admin and account workflows, localized and accessible login/recovery pages, theme branding, clear errors, large-list pagination and fast navigation; keep the pinned upstream consoles and their tests passing against our APIs even though the shipped UI is our own.
