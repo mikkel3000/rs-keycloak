@@ -12,7 +12,7 @@ import sys
 import unittest
 import urllib.parse
 
-from fixture import ISSUER_BASE, AdminCase
+from fixture import ENDPOINT, ISSUER_BASE, AdminCase
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from smtp_sink import SmtpSink  # noqa: E402
@@ -25,25 +25,40 @@ CALLBACK = "https://app.example.test/callback"
 
 
 class ExecuteActionsContract(AdminCase):
+    """The realm and its users are made once for the class, so the timed
+    tests hold only their own steps."""
+
     @classmethod
     def setUpClass(cls):
         cls.sink = SmtpSink().__enter__()
         super().setUpClass()
+        status, _, body = cls.request("POST", ENDPOINT + "/token", form={"grant_type": "client_credentials", "client_id": cls.ADMIN, "client_secret": cls.ADMIN_SECRET})
+        assert status == 200, "admin token"
+        cls.token = json.loads(body)["access_token"]
+        cls.realm = "contract-" + secrets.token_hex(6)
+        smtp = {"host": "127.0.0.1", "port": str(cls.sink.port), "from": "noreply@example.invalid", "fromDisplayName": "Reference Realm"}
+        assert cls.admin("POST", "/admin/realms", {"realm": cls.realm, "enabled": True, "smtpServer": smtp})[0] == 201
+        assert cls.admin("POST", f"/admin/realms/{cls.realm}/clients", {"clientId": "mail-app", "publicClient": True, "redirectUris": [CALLBACK]})[0] == 201
+        users = f"/admin/realms/{cls.realm}/users"
+        cls.user = cls.admin("POST", users, {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference@example.invalid"})[1]["location"].rsplit("/", 1)[1]
+        cls.no_email = cls.admin("POST", users, {"username": "no-email", "enabled": True})[1]["location"].rsplit("/", 1)[1]
+
+    @classmethod
+    def admin(cls, method, path, payload):
+        status, headers, _ = cls.request(method, path, {"Authorization": "Bearer " + cls.token, "Content-Type": "application/json"}, body=json.dumps(payload))
+        return status, headers
 
     @classmethod
     def tearDownClass(cls):
+        cls.request("DELETE", "/admin/realms/" + cls.realm, {"Authorization": "Bearer " + cls.token})
         super().tearDownClass()
         cls.sink.__exit__(None, None, None)
 
     def setUp(self):
-        super().setUp()
-        smtp = {"host": "127.0.0.1", "port": str(self.sink.port), "from": "noreply@example.invalid", "fromDisplayName": "Reference Realm"}
-        self.assertEqual(self.call("PUT", f"/admin/realms/{self.realm}", {"smtpServer": smtp})[0], 204)
-        self.assertEqual(self.call("POST", f"/admin/realms/{self.realm}/clients", {"clientId": "mail-app", "publicClient": True, "redirectUris": [CALLBACK]})[0], 201)
-        users = f"/admin/realms/{self.realm}/users"
-        self.user = self.call("POST", users, {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference@example.invalid"})[1]["location"].rsplit("/", 1)[1]
-        self.no_email = self.call("POST", users, {"username": "no-email", "enabled": True})[1]["location"].rsplit("/", 1)[1]
         self.sink.received.clear()
+
+    def tearDown(self):
+        """The class's realm is removed with the class."""
 
     def execute(self, user, actions, realm=None):
         status, _, body = self.call("PUT", f"/admin/realms/{realm or self.realm}/users/{user}/execute-actions-email", actions)

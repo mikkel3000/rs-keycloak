@@ -44,6 +44,59 @@ class PasswordSteps:
         return self.request("POST", action, {"Cookie": self.cookie}, form)
 
 
+class ReplacedPasswordContract(PasswordSteps, AdminCase):
+    """A temporary password replaced, then signing in with each password.
+    The realm and user are made once, and the numbered tests run in order,
+    since each update hashes a password."""
+
+    temporary, chosen = secrets.token_urlsafe(30), secrets.token_urlsafe(30)
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        status, _, body = cls.request("POST", ENDPOINT + "/token", form={"grant_type": "client_credentials", "client_id": cls.ADMIN, "client_secret": cls.ADMIN_SECRET})
+        assert status == 200, "admin token"
+        cls.token = json.loads(body)["access_token"]
+        cls.realm = "contract-" + secrets.token_hex(6)
+        headers = {"Authorization": "Bearer " + cls.token, "Content-Type": "application/json"}
+        user = {"username": "reference-user", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "reference-user@example.invalid"}
+        assert cls.request("POST", "/admin/realms", headers, body=json.dumps({"realm": cls.realm, "enabled": True}))[0] == 201
+        assert cls.request("POST", f"/admin/realms/{cls.realm}/clients", headers, body=json.dumps({"clientId": "pw-app", "publicClient": True, "redirectUris": [CALLBACK]}))[0] == 201
+        location = cls.request("POST", f"/admin/realms/{cls.realm}/users", headers, body=json.dumps(user))[1]["location"]
+        cls.users = f"/admin/realms/{cls.realm}/users/{location.rsplit('/', 1)[1]}"
+
+    def setUp(self):
+        """The class's realm replaces the per-test realm."""
+
+    def tearDown(self):
+        """The class's realm is removed with the class."""
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.request("DELETE", "/admin/realms/" + cls.realm, {"Authorization": "Bearer " + cls.token})
+        super().tearDownClass()
+
+    def required_actions(self):
+        return {"requiredActions": json.loads(self.call("GET", self.users)[2])["requiredActions"]}
+
+    def test_1_temporary_password_must_be_replaced(self):
+        status = self.call("PUT", self.users + "/reset-password", {"type": "password", "value": self.temporary, "temporary": True})[0]
+        self.assertEqual(status, REFERENCE["admin/reset-temporary"]["status"])
+        self.assertEqual(self.required_actions(), REFERENCE["admin/user-after-temporary"])
+        observed, action = self.page(self.password_step(self.temporary))
+        self.assertEqual(observed, REFERENCE["login/update-page"])
+        observed, _ = self.page(self.submit(action, {"password-new": self.chosen, "password-confirm": self.chosen}))
+        self.assertEqual(observed, REFERENCE["update/success"])
+        self.assertEqual(self.required_actions(), REFERENCE["admin/user-after-update"])
+
+    def test_2_only_the_new_password_signs_in(self):
+        observed, _ = self.page(self.password_step(self.temporary))
+        self.assertEqual(observed["status"], REFERENCE["login/old-password"]["status"])
+        self.assertEqual(observed["form"], REFERENCE["login/old-password"]["form"])
+        observed, _ = self.page(self.password_step(self.chosen))
+        self.assertEqual(observed, REFERENCE["login/new-password"])
+
+
 class UpdatePasswordContract(PasswordSteps, AdminCase):
     def setUp(self):
         super().setUp()
@@ -71,18 +124,6 @@ class UpdatePasswordContract(PasswordSteps, AdminCase):
         self.assertEqual(observed, REFERENCE["update/mismatch"])
         observed, action = self.page(self.submit(action, {"password-new": "", "password-confirm": ""}))
         self.assertEqual(observed, REFERENCE["update/empty"])
-
-    def test_temporary_password_must_be_replaced(self):
-        temporary, chosen = secrets.token_urlsafe(30), secrets.token_urlsafe(30)
-        action = self.update_page(temporary)
-        observed, _ = self.page(self.submit(action, {"password-new": chosen, "password-confirm": chosen}))
-        self.assertEqual(observed, REFERENCE["update/success"])
-        self.assertEqual(self.required_actions(), REFERENCE["admin/user-after-update"])
-        observed, _ = self.page(self.password_step(temporary))
-        self.assertEqual(observed["status"], REFERENCE["login/old-password"]["status"])
-        self.assertEqual(observed["form"], REFERENCE["login/old-password"]["form"])
-        observed, _ = self.page(self.password_step(chosen))
-        self.assertEqual(observed, REFERENCE["login/new-password"])
 
     def test_pending_update_issues_no_sso_cookie(self):
         self.call("PUT", self.users + "/reset-password", {"type": "password", "value": "temporary-password-value", "temporary": True})
