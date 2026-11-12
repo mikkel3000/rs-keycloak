@@ -1668,3 +1668,24 @@ create and update take bodies up to 1 MiB; other routes keep 16 KiB.
 Remaining differences: an id over 36 characters answers 400 "Database
 operation failed" as the reference's column does, but from a length check;
 realm names keep this server's stricter character set.
+
+## Realm event settings
+
+Realm representations carry `eventsEnabled`, `eventsExpiration`,
+`eventsListeners`, `enabledEventTypes`, `adminEventsEnabled` and
+`adminEventsDetailsEnabled` on creation, update, read and partial export,
+and `GET`/`PUT /admin/realms/{realm}/events/config` serve them, following
+`RealmManager.updateRealmEventsConfig` and
+`tests/reference/event-config-observations.json`: events and admin events
+start off, the listener list is `jboss-logging`, an empty type list reads
+as the reference's 102 types saved by default, the config `PUT` turns
+`eventsEnabled` off and removes the expiration when they are absent, and
+an unknown listener answers 400 "Unknown event listener". Reading needs
+`view-events` and changing `manage-events`. The settings are stored in
+realm columns (migration 44). `tests/public/event_config_contract.py`
+checks 3 tests.
+
+Remaining differences: `jboss-logging` is the only listener, so `email`
+is refused, also in a realm update, where the reference takes any name;
+this server writes no event log lines for it. Event types are kept sorted
+rather than in the reference's hash set order.

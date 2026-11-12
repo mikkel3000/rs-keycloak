@@ -27,6 +27,7 @@ mod attack_detection;
 mod authentication;
 mod client_scopes;
 mod clients;
+mod event_settings;
 mod export;
 mod groups;
 mod localization;
@@ -42,6 +43,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(authentication::routes())
         .merge(client_scopes::routes())
         .merge(clients::routes())
+        .merge(event_settings::routes())
         .merge(export::routes())
         .merge(groups::routes())
         .merge(localization::routes())
@@ -177,6 +179,8 @@ enum Access {
     ManageClients,
     ViewRealm,
     ManageRealm,
+    ViewEvents,
+    ManageEvents,
 }
 
 impl Access {
@@ -194,6 +198,8 @@ impl Access {
             Self::ManageClients => &["manage-clients"],
             Self::ViewRealm => &["view-realm", "manage-realm"],
             Self::ManageRealm => &["manage-realm"],
+            Self::ViewEvents => &["view-events", "manage-events"],
+            Self::ManageEvents => &["manage-events"],
         }
     }
 }
@@ -617,6 +623,7 @@ fn unsupported_realm_field(fields: &Map<String, Value>) -> Result<(), AdminError
     match fields.iter().find(|(key, value)| {
         !REALM_FIELDS.contains(&key.as_str())
             && !login_settings::reads(key)
+            && !event_settings::reads(key)
             && !login_settings::keeps_fixed(key, value)
     }) {
         Some((field, _)) => Err(AdminError::bad_request(format!(
@@ -670,6 +677,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
             user_settings: UserSettingFields::parse(&fields)?.settings(),
             localization_texts: localization_texts(&fields)?,
             login: login_settings::parse(&fields)?,
+            events: event_settings::parse(&fields)?,
         },
     })
 }
@@ -766,6 +774,7 @@ fn realm_representation(realm: &RealmRecord) -> Value {
     representation["loginWithEmailAllowed"] = json!(users.login_with_email_allowed);
     representation["duplicateEmailsAllowed"] = json!(users.duplicate_emails_allowed);
     login_settings::represent(&realm.login, &mut representation);
+    event_settings::represent(&realm.events, &mut representation);
     representation
 }
 
@@ -889,6 +898,7 @@ async fn update_realm(
         access_token_lifespan: access_token_lifespan(&fields)?,
         user_settings: user_settings.changes(),
         login: login_settings::parse(&fields)?,
+        events: event_settings::parse(&fields)?,
     };
     if state.storage.update_realm(&name, &changes, &actor).await? {
         Ok(StatusCode::NO_CONTENT)

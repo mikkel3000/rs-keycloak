@@ -697,7 +697,9 @@ fn strip_export_fields(body: &mut Map<String, Value>) {
     for field in REALM_FIELDS {
         body.remove(field);
     }
-    body.retain(|field, _| !super::login_settings::represented(field));
+    body.retain(|field, _| {
+        !super::login_settings::represented(field) && !super::event_settings::reads(field)
+    });
     let remove = |item: &mut Value, fields: &[&str]| {
         if let Some(item) = item.as_object_mut() {
             for field in fields {
