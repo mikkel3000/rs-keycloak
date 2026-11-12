@@ -20,7 +20,9 @@ REFERENCE = json.loads(
 CALLBACK = "https://app.example.test/callback"
 
 
-class AccountConsoleApiContract(AdminCase):
+class AccountConsoleApiCase(AdminCase):
+    """A fresh realm per test with a console and an application session."""
+
     def setUp(self):
         super().setUp()
         base = f"/admin/realms/{self.realm}"
@@ -42,6 +44,30 @@ class AccountConsoleApiContract(AdminCase):
         status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "refresh_token", "client_id": client, "refresh_token": tokens["refresh_token"]})
         self.assertEqual({"status": status, "error": json.loads(body).get("error")}, REFERENCE[label], label)
 
+
+class ReadContract(AccountConsoleApiCase):
+    """Listings change nothing, so they share one realm and its sessions,
+    made once for the class."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # One instance runs the per-test setup once for the class.
+        cls.shared = cls("test_applications")
+        AccountConsoleApiCase.setUp(cls.shared)
+
+    @classmethod
+    def tearDownClass(cls):
+        AccountConsoleApiCase.tearDown(cls.shared)
+        super().tearDownClass()
+
+    def setUp(self):
+        for name in ("realm", "token", "account", "plain", "api", "headers"):
+            setattr(self, name, getattr(self.shared, name))
+
+    def tearDown(self):
+        """The shared realm is removed with the class."""
+
     def test_applications(self):
         status, listed = self.get("/applications")
         expected = REFERENCE["applications"]
@@ -58,6 +84,11 @@ class AccountConsoleApiContract(AdminCase):
         self.assertEqual(sorted({field for session in sessions for field in session}), expected["session_fields"])
         self.assertEqual(sorted(bool(session["current"]) for session in sessions), expected["current"])
         self.assertEqual(sorted(sorted(client["clientId"] for client in session["clients"]) for session in sessions), expected["clients"])
+
+
+class AccountConsoleApiContract(AccountConsoleApiCase):
+    """Ending sessions and revoking applications change the realm, so each
+    test has its own."""
 
     def test_ending_other_sessions(self):
         status, _, body = self.request("DELETE", self.api + "/sessions", self.headers)
