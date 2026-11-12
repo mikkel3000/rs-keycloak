@@ -14,7 +14,7 @@ import secrets
 import unittest
 import urllib.parse
 
-from fixture import AdminCase
+from fixture import AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -101,6 +101,8 @@ class ConsentContract(AdminCase):
         self.answer(jar, self.login(jar), "cancel")
         self.assertEqual(self.summarize(self.authorize(jar))["page"], "consent")
 
+
+class_per_test(ConsentContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

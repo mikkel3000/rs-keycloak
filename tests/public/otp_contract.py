@@ -17,7 +17,7 @@ import time
 import unittest
 import urllib.parse
 
-from fixture import AdminCase
+from fixture import AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -124,6 +124,8 @@ class OtpContract(AdminCase):
         self.assertEqual(status, 200)
         self.assertNotIn("KEYCLOAK_IDENTITY", headers.get("set-cookie", ""))
 
+
+class_per_test(OtpContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

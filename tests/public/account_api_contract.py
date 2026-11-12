@@ -10,7 +10,7 @@ import pathlib
 import secrets
 import unittest
 
-from fixture import AdminCase
+from fixture import AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -74,6 +74,8 @@ class AccountApiContract(AdminCase):
         self.assertEqual(status, 204)
         self.assertEqual(self.get()[0], 401)
 
+
+class_per_test(AccountApiContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ import pathlib
 import secrets
 import unittest
 
-from fixture import AdminCase
+from fixture import AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -95,6 +95,8 @@ class AdminSessionsContract(AdminCase):
         self.shape("logout-all", self.call("POST", self.base + "/logout-all"))
         self.refresh("refresh/after-logout-all", again, "first-app")
 
+
+class_per_test(AdminSessionsContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

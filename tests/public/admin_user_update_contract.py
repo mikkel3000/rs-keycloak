@@ -8,7 +8,7 @@ import pathlib
 import secrets
 import unittest
 
-from fixture import AdminCase
+from fixture import AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -94,6 +94,8 @@ class AdminUserUpdateContract(AdminCase):
         self.case(self.call("PUT", self.user, raw="{"), "update/malformed")
         self.case(self.call("PUT", self.user, {"email": "not-an-email"}), "update/invalid-email")
 
+
+class_per_test(AdminUserUpdateContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

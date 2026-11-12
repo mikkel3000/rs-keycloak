@@ -11,7 +11,7 @@ import pathlib
 import secrets
 import unittest
 
-from fixture import ISSUER_BASE, AdminCase
+from fixture import ISSUER_BASE, AdminCase, class_per_test
 
 
 REFERENCE = json.loads(
@@ -105,6 +105,8 @@ class AccountConsoleApiContract(AccountConsoleApiCase):
         _, listed = self.get("/applications")
         self.assertEqual({"apps": sorted([item["clientId"], item.get("inUse"), item.get("offlineAccess")] for item in listed)}, REFERENCE["applications/after-revoke"])
 
+
+class_per_test(AccountConsoleApiContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

@@ -72,6 +72,46 @@ def private_numbers(pem):
     return number("modulus"), public, number("privateExponent")
 
 
+def class_per_test(case, namespace):
+    """Replaces `case` in a module's `namespace` with one class per test,
+    whose per-test setUp and tearDown run in setUpClass and tearDownClass.
+    Every test still gets a fresh setup, but fast.py times only the test's
+    own steps; each class starts its own server."""
+    tests = [name for name in dir(case) if name.startswith("test")]
+    del namespace[case.__name__]
+
+    def single(test):
+        def set_up_class(cls):
+            super(made, cls).setUpClass()
+            shared = cls(test)
+            before = set(vars(shared))
+            case.setUp(shared)
+            cls.shared, cls.state = shared, {key: value for key, value in vars(shared).items() if key not in before}
+
+        def tear_down_class(cls):
+            case.tearDown(cls.shared)
+            super(made, cls).tearDownClass()
+
+        def set_up(self):
+            vars(self).update(self.state)
+
+        def tear_down(self):
+            """The class's setup is undone with the class."""
+
+        attributes = {other: None for other in tests if other != test} | {
+            "setUpClass": classmethod(set_up_class),
+            "tearDownClass": classmethod(tear_down_class),
+            "setUp": set_up,
+            "tearDown": tear_down,
+        }
+        made = type(f"{case.__name__}_{test}", (case,), attributes)
+        return made
+
+    for test in tests:
+        made = single(test)
+        namespace[made.__name__] = made
+
+
 class ServerCase(unittest.TestCase):
     """Starts `rs-keycloak serve` once per class; each test should be one exchange."""
 
