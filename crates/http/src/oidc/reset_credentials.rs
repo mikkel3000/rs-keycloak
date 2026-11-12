@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
-use rs_keycloak_integrations::mail::{Mail, send};
 use serde::Deserialize;
 use zeroize::Zeroizing;
 
@@ -193,29 +192,26 @@ pub(super) async fn request(
             .await
         {
             Ok(true) => {
-                let link = format!(
-                    "{}/realms/{realm}/login-actions/action-token?key={}",
-                    s.issuer_base.trim_end_matches('/'),
-                    *token
-                );
-                let text = format!(
-                    "Someone just requested to change your {realm} account's credentials. If this was you, click on the link below to reset them.\n\n{link}\n\nThis link and code will expire within 5 minutes.\n\nIf you don't want to reset your credentials, just ignore this message and nothing will be changed."
-                );
-                let html = format!(
-                    "<p>Someone just requested to change your {realm} account's credentials. If this was you, click on the link below to reset them.</p><p><a href=\"{link}\">Link to reset credentials</a></p><p>This link and code will expire within 5 minutes.</p><p>If you don't want to reset your credentials, just ignore this message and nothing will be changed.</p>",
-                    realm = escape(&realm),
-                    link = escape(&link),
-                );
+                let link = crate::mail::action_link(&s, &realm, &token);
+                let locale = match s.storage.user(&realm_id, &user_id).await {
+                    Ok(user) => user.and_then(|user| user.locale),
+                    Err(_) => return unavailable(),
+                };
+                let recipient = crate::mail::Recipient {
+                    email: &email,
+                    locale: locale.as_deref(),
+                };
                 // Delivery failures are not shown, so the page stays the same
                 // for every username.
-                let _ = send(
+                let _ = crate::mail::deliver(
+                    &s,
+                    &record,
                     &settings,
-                    Mail {
-                        to: &email,
-                        subject: "Reset password",
-                        text,
-                        html,
-                    },
+                    &recipient,
+                    &headers,
+                    &crate::mail::Template::PasswordReset,
+                    &link,
+                    LINK_SECONDS,
                 )
                 .await;
             }

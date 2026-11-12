@@ -434,7 +434,7 @@ async fn hold(
             }
         }
         LoginStep::VerifyEmail { user_id, email } => {
-            verify_email_page(s, request, &locale, user_id, email).await
+            verify_email_page(s, request, &locale, user_id, email, headers).await
         }
         LoginStep::VerifyTotp {
             credential,
@@ -1022,6 +1022,7 @@ async fn verify_email_page(
     locale: &PageLocale,
     user_id: &str,
     email: &str,
+    headers: &HeaderMap,
 ) -> Response {
     let (realm, request_id) = (request.realm, request.request_id);
     let record = match s.storage.realm_by_name(realm).await {
@@ -1046,11 +1047,22 @@ async fn verify_email_page(
         {
             Ok(true) => {
                 let link = crate::mail::action_link(s, realm, &key);
-                // A failed send still shows the page; the user can resend.
-                let _ = crate::mail::send_verification(
-                    &settings,
-                    realm,
+                let user_locale = match s.storage.user(&record.id, user_id).await {
+                    Ok(user) => user.and_then(|user| user.locale),
+                    Err(_) => return unavailable(),
+                };
+                let recipient = crate::mail::Recipient {
                     email,
+                    locale: user_locale.as_deref(),
+                };
+                // A failed send still shows the page; the user can resend.
+                let _ = crate::mail::deliver(
+                    s,
+                    &record,
+                    &settings,
+                    &recipient,
+                    headers,
+                    &crate::mail::Template::EmailVerification,
                     &link,
                     LOGIN_LINK_SECONDS,
                 )
@@ -1092,7 +1104,7 @@ pub(super) async fn resend(
             match shown_locale(&s, &held, request_id, &headers).await {
                 Ok(locale) => {
                     let request = StepRequest::new(&realm, request_id, &held.csrf);
-                    verify_email_page(&s, request, &locale, &user_id, &email).await
+                    verify_email_page(&s, request, &locale, &user_id, &email, &headers).await
                 }
                 Err(()) => unavailable(),
             }

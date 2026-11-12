@@ -1295,10 +1295,9 @@ pinned source (`RealmLocalizationResource`, `JpaRealmProvider` and the JPA
 `tests/public/realm_localization_contract.py` checks 6 groups, each under
 100 ms.
 
-Remaining differences: `rememberMe` is not implemented, so the login
-page's "Remember me" label is not compared; email templates do not read
-realm texts yet; texts are read from the database for each page, where the
-reference caches the realm.
+Remaining differences: texts are read from the database for each page,
+where the reference caches the realm. "Remember me" and emails came
+later, see "Remember me" and "Realm texts in emails".
 
 ## Email login and duplicate emails
 
@@ -1575,3 +1574,42 @@ Remaining differences: OTP failures are not counted
 the lockout events are not written; any admin update of an enabled user
 clears failures, where the reference does so only when `enabled` is sent
 true.
+
+## Realm texts in emails
+
+The forgot-password, execute-actions and verify-email mails are written
+from the email theme's messages with the realm's localization texts over
+them, in the user's locale, as recorded in
+`tests/reference/email-texts-observations.json` and read from the pinned
+source (`FreeMarkerEmailTemplateProvider`, `Theme.getEnhancedMessages`,
+`LocaleUtil`, `LinkExpirationFormatterMethod` and the email theme's
+`password-reset`, `executeActions`, `email-verification` and `template`
+templates):
+
+- `crates/http/src/email_theme` holds the pinned base email theme's 40
+  bundles, extracted by `compatibility/extract_login_messages.py` with
+  the new `email` theme argument. Mails read them through the login
+  pages' message chain, so a realm text of the mail's locale wins over
+  the theme's.
+- The locale is the user's when internationalization is on and it is
+  supported, then, for mails a login sends, the browser's cookie and
+  `Accept-Language`, then the realm default and English; mails an admin
+  asks for leave out the admin's headers.
+- The subject is the subject key's message without arguments, so a
+  `{0}` in a realm text stays. Bodies get the link, the lifetime in
+  minutes, the realm name and, for execute-actions, the actions'
+  `requiredAction.*` names; the lifetime reads as the theme's
+  `linkExpirationFormatter` units, with Java `ChoiceFormat` choices. The
+  realm name is the display name, else the name with its first letter
+  capitalized.
+- The HTML part is the `…BodyHtml` message with its arguments escaped,
+  kept to paragraphs, breaks, emphasis and web or mail links, as
+  `kcSanitize` keeps them, in `<html lang dir><body>`.
+
+`tests/public/email_texts_contract.py` replays every recorded case in 7
+tests.
+
+Remaining differences: the sanitizer is a small allowlist rather than
+the OWASP policy, so markup it does not know is dropped; the other
+email templates (event notifications, identity-provider links,
+organization invites) are not sent.

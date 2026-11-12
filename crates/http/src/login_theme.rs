@@ -21,26 +21,42 @@ use crate::account_console::properties;
 use crate::locale;
 
 macro_rules! bundles {
-    ($($name:literal),* $(,)?) => {
-        [$(($name, include_str!(concat!("login_theme/messages/messages_", $name, ".properties")))),*]
+    ($theme:literal: $($name:literal),* $(,)?) => {
+        [$(($name, include_str!(concat!($theme, "/messages/messages_", $name, ".properties")))),*]
     };
 }
 
-/// Each bundle's name, as in `messages_<name>.properties`, and its text.
-const FILES: [(&str, &str); 41] = bundles!(
+/// Each login bundle's name, as in `messages_<name>.properties`, and its
+/// text.
+const FILES: [(&str, &str); 41] = bundles!("login_theme":
     "ar", "az", "ca", "cs", "da", "de", "el", "en", "es", "eu", "fa", "fi", "fr", "hr", "hu", "hy",
     "id", "it", "ja", "ka", "kk", "ko", "ky", "lt", "lv", "nl", "no", "pl", "pt", "pt_BR", "ro",
     "ru", "sk", "sl", "sv", "th", "tr", "uk", "vi", "zh_Hans", "zh_Hant",
 );
 
+/// The email theme's bundles, extracted from the same distribution by
+/// `compatibility/extract_login_messages.py` with the `email` theme; it
+/// has no Latvian bundle.
+const EMAIL_FILES: [(&str, &str); 40] = bundles!("email_theme":
+    "ar", "az", "ca", "cs", "da", "de", "el", "en", "es", "eu", "fa", "fi", "fr", "hr", "hu", "hy",
+    "id", "it", "ja", "ka", "kk", "ko", "ky", "lt", "nl", "no", "pl", "pt", "pt_BR", "ro", "ru",
+    "sk", "sl", "sv", "th", "tr", "uk", "vi", "zh_Hans", "zh_Hant",
+);
+
 type Bundle = HashMap<String, String>;
 
-static BUNDLES: LazyLock<HashMap<&'static str, Bundle>> = LazyLock::new(|| {
-    FILES
+type Bundles = HashMap<&'static str, Bundle>;
+
+fn parsed(files: &[(&'static str, &'static str)]) -> Bundles {
+    files
         .iter()
         .map(|(name, text)| (*name, properties::parse(text).into_iter().collect()))
         .collect()
-});
+}
+
+static BUNDLES: LazyLock<Bundles> = LazyLock::new(|| parsed(&FILES));
+
+static EMAIL_BUNDLES: LazyLock<Bundles> = LazyLock::new(|| parsed(&EMAIL_FILES));
 
 /// Longest fallback chain followed; real chains have at most five locales.
 const MAX_LEVELS: usize = 8;
@@ -79,6 +95,21 @@ impl Messages {
     /// locale, and loses to a theme text of a more specific locale, as
     /// `LocaleUtil.mergeGroupedMessages` merges them.
     pub(crate) fn new(lang: &str, settings: &UserSettings, texts: &LocalizationTexts) -> Self {
+        Self::of(&BUNDLES, lang, settings, texts)
+    }
+
+    /// The messages of an email in `lang`, read the same way from the
+    /// email theme, as `Theme.getEnhancedMessages`.
+    pub(crate) fn email(lang: &str, settings: &UserSettings, texts: &LocalizationTexts) -> Self {
+        Self::of(&EMAIL_BUNDLES, lang, settings, texts)
+    }
+
+    fn of(
+        theme: &'static Bundles,
+        lang: &str,
+        settings: &UserSettings,
+        texts: &LocalizationTexts,
+    ) -> Self {
         let mut levels: Vec<Level> = Vec::new();
         let mut next = Some(lang.to_owned());
         while let Some(tag) = next.take() {
@@ -88,7 +119,7 @@ impl Messages {
             next = locale::parent(&tag, settings);
             let bundles = locale::bundle_names(&tag)
                 .iter()
-                .filter_map(|name| BUNDLES.get(name.as_str()))
+                .filter_map(|name| theme.get(name.as_str()))
                 .collect();
             let realm = texts.get(&tag).cloned().unwrap_or_default();
             levels.push(Level {
@@ -105,8 +136,8 @@ impl Messages {
         Self::new("en", &UserSettings::default(), &LocalizationTexts::new())
     }
 
-    /// The most specific value of a key, if any level has it.
-    fn value(&self, key: &str) -> Option<&str> {
+    /// The most specific value of a key, if any level has it, unformatted.
+    pub(crate) fn value(&self, key: &str) -> Option<&str> {
         self.levels.iter().find_map(|level| level.get(key))
     }
 
@@ -238,20 +269,27 @@ mod tests {
 
     #[test]
     fn every_bundle_is_embedded() {
-        let directory =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/login_theme/messages");
-        let mut files: Vec<String> = std::fs::read_dir(directory)
-            .into_iter()
-            .flatten()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .collect();
-        files.sort();
-        let embedded: Vec<String> = FILES
-            .iter()
-            .map(|(name, _)| format!("messages_{name}.properties"))
-            .collect();
-        assert_eq!(files, embedded);
+        for (theme, embedded) in [
+            ("login_theme", &FILES[..]),
+            ("email_theme", &EMAIL_FILES[..]),
+        ] {
+            let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join(theme)
+                .join("messages");
+            let mut files: Vec<String> = std::fs::read_dir(directory)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect();
+            files.sort();
+            let embedded: Vec<String> = embedded
+                .iter()
+                .map(|(name, _)| format!("messages_{name}.properties"))
+                .collect();
+            assert_eq!(files, embedded, "{theme}");
+        }
     }
 
     #[test]

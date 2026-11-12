@@ -13,7 +13,6 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
-use rs_keycloak_integrations::mail::{Mail, send};
 use rs_keycloak_storage_postgres::{
     Actor, Collision, NewPassword, NewUser, UserCreation, UserQuery, UserRecord, UserUpdate,
 };
@@ -1021,23 +1020,23 @@ async fn execute_actions_email(
         return Err(user_not_found());
     }
     let link = crate::mail::action_link(&state, &realm.name, &token);
-    let expiry = crate::mail::expiry(lifespan);
-    let text = format!(
-        "Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.\n\n{link}\n\nThis link will expire within {expiry}.\n\nIf you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.",
-        realm = realm.name,
-    );
-    let html = format!(
-        "<p>Your administrator has just requested that you update your {realm} account by performing the following action(s): Update Password. Click on the link below to start this process.</p><p><a href=\"{link}\">Link to account update</a></p><p>This link will expire within {expiry}.</p><p>If you are unaware that your administrator has requested this, just ignore this message and nothing will be changed.</p>",
-        realm = crate::mail::escape(&realm.name),
-        link = crate::mail::escape(&link),
-    );
-    let mail = Mail {
-        to: &email,
-        subject: "Update Your Account",
-        text,
-        html,
+    let recipient = crate::mail::Recipient {
+        email: &email,
+        locale: user.locale.as_deref(),
     };
-    match send(&settings, mail).await {
+    // The admin's own headers do not choose the user's language.
+    match crate::mail::deliver(
+        &state,
+        &realm,
+        &settings,
+        &recipient,
+        &HeaderMap::new(),
+        &crate::mail::Template::ExecuteActions(&actions),
+        &link,
+        lifespan,
+    )
+    .await
+    {
         Ok(()) => Ok(StatusCode::NO_CONTENT),
         Err(_) => Err(AdminError::Message(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1099,8 +1098,21 @@ async fn send_verify_email(
         return Err(user_not_found());
     }
     let link = crate::mail::action_link(&state, &realm.name, &token);
-    crate::mail::send_verification(&settings, &realm.name, &email, &link, lifespan)
-        .await
-        .map_err(|_| failed())?;
+    let recipient = crate::mail::Recipient {
+        email: &email,
+        locale: user.locale.as_deref(),
+    };
+    crate::mail::deliver(
+        &state,
+        &realm,
+        &settings,
+        &recipient,
+        &HeaderMap::new(),
+        &crate::mail::Template::EmailVerification,
+        &link,
+        lifespan,
+    )
+    .await
+    .map_err(|_| failed())?;
     Ok(StatusCode::NO_CONTENT)
 }
