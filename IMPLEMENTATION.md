@@ -1619,3 +1619,18 @@ Remaining differences: the sanitizer is a small allowlist rather than
 the OWASP policy, so markup it does not know is dropped; the other
 email templates (event notifications, identity-provider links,
 organization invites) are not sent.
+
+## Public realm document
+
+`GET /realms/{realm}` follows `PublicRealmResource.getRealm` and the cases
+in `tests/reference/realm-info-observations.json`: `realm`, `public_key` as
+base64 SubjectPublicKeyInfo, `token-service`, `account-service` and
+`tokens-not-before`, `Cache-Control: no-cache`, the request origin allowed
+with credentials, disabled realms served, and 404 "Realm does not exist"
+for unknown realms. The upstream test framework polls `/realms/master`
+until it answers 200 before it runs any test.
+`tests/public/realm_info_contract.py` checks 2 tests.
+
+Remaining differences: `tokens-not-before` is always 0, since a realm-wide
+not-before push is not stored, and the content type has no charset
+parameter.

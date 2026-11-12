@@ -231,6 +231,7 @@ pub fn router(state: OidcState) -> Router {
                     cors::handle,
                 )),
         )
+        .route("/realms/{realm}", get(realm_info))
         .route(
             "/realms/{realm}/.well-known/openid-configuration",
             get(discovery)
@@ -1616,6 +1617,54 @@ async fn certs(State(s): State<OidcState>, Path(realm): Path<String>) -> Respons
         Err(_) => unavailable(),
     }
 }
+/// Serves the public realm document, `PublicRealmResource.getRealm` in the
+/// reference. Disabled realms are served too, as the reference does.
+async fn realm_info(
+    State(s): State<OidcState>,
+    Path(realm): Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !valid_realm(&realm) {
+        return failure();
+    }
+    match s.storage.realm_by_name(&realm).await {
+        Ok(Some(_)) => (),
+        Ok(None) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({"error":"Realm does not exist"})),
+            )
+                .into_response();
+        }
+        Err(_) => return unavailable(),
+    }
+    let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
+    // Realm-wide not-before revocation is not stored, so it stays 0 as on a
+    // realm where it was never pushed.
+    let mut response = (
+        [(header::CACHE_CONTROL, "no-cache")],
+        Json(json!({
+            "realm": realm,
+            "public_key": s.signer.public_key_info(),
+            "token-service": format!("{issuer}/protocol/openid-connect"),
+            "account-service": format!("{issuer}/account"),
+            "tokens-not-before": 0,
+        })),
+    )
+        .into_response();
+    // The reference allows every origin here, with credentials.
+    if let Some(origin) = headers.get(header::ORIGIN) {
+        let origin = origin.clone();
+        let out = response.headers_mut();
+        out.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin);
+        out.insert(
+            header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+            HeaderValue::from_static("true"),
+        );
+    }
+    response
+}
+
 async fn discovery(State(s): State<OidcState>, Path(realm): Path<String>) -> Response {
     if !valid_realm(&realm) {
         return failure();
