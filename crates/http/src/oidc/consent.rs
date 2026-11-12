@@ -88,6 +88,17 @@ pub(super) async fn answer(
                 Ok(false) => return failure(),
                 Err(_) => return unavailable(),
             }
+            let realm_id = match s.storage.realm_id_by_name(&realm).await {
+                Ok(Some(realm_id)) => realm_id,
+                Ok(None) => return failure(),
+                Err(_) => return unavailable(),
+            };
+            if crate::events::login(&s, &realm_id, &request_id, &pending.session_id, true)
+                .await
+                .is_err()
+            {
+                return unavailable();
+            }
             let code = random_token();
             let redirect = match s
                 .storage

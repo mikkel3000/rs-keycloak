@@ -20,6 +20,7 @@ pub mod oidc;
 mod account;
 pub mod account_console;
 mod admin;
+mod events;
 mod locale;
 mod login_theme;
 mod mail;

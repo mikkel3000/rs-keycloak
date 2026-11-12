@@ -1689,3 +1689,31 @@ Remaining differences: `jboss-logging` is the only listener, so `email`
 is refused, also in a realm update, where the reference takes any name;
 this server writes no event log lines for it. Event types are kept sorted
 rather than in the reference's hash set order.
+
+## Login events
+
+A realm with `eventsEnabled` stores `LOGIN_ERROR` when the login form
+refuses a password, and `LOGIN` when a sign-in ends in an authorization
+code, for the types its `enabledEventTypes` names or, when it names none,
+the reference's default types (`login_events` table, migration 45).
+`LOGIN_ERROR` names `user_not_found` without a user, `user_disabled`,
+`user_temporarily_disabled` or `invalid_user_credentials` with the user,
+as `UsernamePasswordForm` does; `LOGIN` carries the session and the
+reference's details (`auth_method`, `auth_type`, `response_type`,
+`redirect_uri`, `consent`, `code_id`, `username`, `response_mode`). The
+client address comes from the connection through a request-scoped value
+set by one middleware. `GET /admin/realms/{realm}/events` lists them
+newest first with `type`, `client`, `user`, `ipAddress`, `dateFrom`,
+`dateTo` (UTC days or epoch milliseconds), `first`, `max` (100 by
+default) and `direction`, with the reference's 400 messages, and `DELETE`
+clears them; reading needs `view-events` and clearing `manage-events`.
+Events older than `eventsExpiration` are removed, up to 64 at a time, when
+the realm stores its next event, so as in the recording an expired event
+stays listed until then. `tests/public/login_events_contract.py` checks 3
+tests following `tests/reference/login-event-observations.json`.
+
+Remaining differences: only `LOGIN` and `LOGIN_ERROR` are written; the
+other types (`CODE_TO_TOKEN`, `LOGOUT`, `REGISTER`, `UPDATE_PASSWORD` and
+the rest) are not yet. Before a session exists, `code_id` is a digest of
+the authorization request rather than an authentication session id. The
+reference's 500 for an unknown `type` is a 200 with no events here.

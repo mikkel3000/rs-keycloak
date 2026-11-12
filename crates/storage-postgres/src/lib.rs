@@ -7,6 +7,7 @@ mod client_admin;
 mod consent;
 mod cors;
 mod event_settings;
+mod events;
 mod group_admin;
 mod localization;
 mod login_locale;
@@ -29,6 +30,7 @@ pub use client_admin::{
 pub use consent::{ConsentRecord, PendingRequest};
 pub use cors::WebOriginCheck;
 pub use event_settings::{EventSettingChanges, EventSettings};
+pub use events::{LoginEventQuery, LoginEventRecord, LoginSubject, NewLoginEvent, RequestSummary};
 pub use group_admin::{GroupChange, GroupCreation, GroupRecord, MembershipChange};
 pub use localization::LocalizationTexts;
 pub use login_locale::{LoginLocale, UserLocaleUpdate};
@@ -110,6 +112,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0042_otp_policy.sql"),
     include_str!("../../../migrations/0043_brute_force.sql"),
     include_str!("../../../migrations/0044_event_settings.sql"),
+    include_str!("../../../migrations/0045_login_events.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

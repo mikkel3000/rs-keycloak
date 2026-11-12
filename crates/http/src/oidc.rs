@@ -243,6 +243,7 @@ pub fn router(state: OidcState) -> Router {
         .merge(crate::account_console::routes())
         .merge(iframes::routes())
         .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(axum::middleware::from_fn(crate::events::remember_address))
         .with_state(state);
     if prefix.is_empty() {
         routes
@@ -849,6 +850,12 @@ async fn authenticate(
             login_steps::continue_login(&s, &realm, &request_id, &held, &headers).await
         }
         Ok(LoginResult::Denied) => {
+            if crate::events::login_error(&s, &realm_id, &request_id, &form.username)
+                .await
+                .is_err()
+            {
+                return unavailable();
+            }
             login_page(
                 &s,
                 &realm,
@@ -1150,6 +1157,9 @@ async fn consent_or_code(
             &locale,
         ))));
     }
+    crate::events::login(s, request.realm_id, request.request_id, session_id, false)
+        .await
+        .map_err(|_| ())?;
     let code = random_token();
     let redirect = s
         .storage

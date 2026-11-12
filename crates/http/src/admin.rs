@@ -31,6 +31,7 @@ mod event_settings;
 mod export;
 mod groups;
 mod localization;
+mod login_events;
 mod login_settings;
 mod roles;
 mod sessions;
@@ -45,6 +46,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(clients::routes())
         .merge(event_settings::routes())
         .merge(export::routes())
+        .merge(login_events::routes())
         .merge(groups::routes())
         .merge(localization::routes())
         .merge(roles::routes())
