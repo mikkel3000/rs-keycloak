@@ -82,10 +82,21 @@ Notes on the setup:
 With these two the framework starts, its admin client signs in with client
 credentials, and every test reaches its own setup.
 
+The realm document is recorded with `tests/reference/batch.py`
+(`realm-info-observations.json`) and checked by
+`tests/public/realm_info_contract.py`. The bootstrap change has no
+reference recording, since it changes local CLI input rules, not an HTTP
+response; the pinned `start-dev` takes any value for
+`KC_BOOTSTRAP_ADMIN_CLIENT_SECRET` and `KC_BOOTSTRAP_ADMIN_PASSWORD`, and
+`tests/public/bootstrap_client_contract.py` signs in to the admin API with
+`mysecret`.
+
 ## Counts per test area
 
 Tests are JUnit test methods, from 552 classes run plus 22 counted from the
-source. A test counts as cannot-run when it needs something a remote
+source. The figures are the output of `tests/upstream/run.sh` on the release
+binary at commit `92167dd`, with the settings above (fresh JVM per class).
+An earlier run in one JVM was stopped at 233 classes and is not counted. A test counts as cannot-run when it needs something a remote
 rs-keycloak cannot give (groups below), even if it would pass; the other
 tests pass or fail as surefire reports them.
 
@@ -182,20 +193,26 @@ To see the next layer, a throwaway build that ignores unknown realm fields
 ## Ten failing test classes that would unblock the most others
 
 Each class tests the admin feature the framework itself uses to set tests
-up, so making it pass removes a setup failure from many other classes.
-"Blocked" counts failing tests in classes that use the feature.
+up, so making it pass removes a setup failure from many other classes. All
+ten fail in the run. The choice of classes is a judgement from the failure
+causes and the framework source; the "Blocked" figures are computed by
+`tests/upstream/counts.py` (its `BLOCKERS` list) from the run's own reports
+and printed by `tests/upstream/run.sh`. For `RealmCreateTest` it is the
+failing tests whose managed realm creation failed with 400; for the others
+it is the failing tests in classes, parents included, that use the
+feature. The figures overlap: most classes need several of these. The
+throwaway probe above only informed which features come next; none of its
+figures are in this table.
 
 | # | Class | Feature it checks | Blocked |
 | ---: | --- | --- | ---: |
 | 1 | `admin.realm.RealmCreateTest` | `POST /admin/realms` with `id` and the realm fields test realm configs set | 2333 |
-| 2 | `admin.client.ClientProtocolMapperTest` | client protocol mappers, which the default OAuth test client carries | 1446 |
-| 3 | `admin.ClientTest` | client creation with the full client representation (`ClientSupplier`, realm `clients`) | 1840 |
-| 4 | `admin.user.UserSearchTest` | users created and found with the full user representation (`UserSupplier`, realm `users`) | 1959 |
-| 5 | `admin.event.LoginEventsTest` | `GET` and `DELETE /admin/realms/{realm}/events` | 649 |
-| 6 | `admin.event.AdminEventTest` | `GET` and `DELETE /admin/realms/{realm}/admin-events` | 452 |
-| 7 | `admin.event.EventConfigTest` | `eventsEnabled`, `adminEventsEnabled` and `adminEventsDetailsEnabled`, set by the events interceptors | 1078 |
-| 8 | `admin.realm.RealmRolesCRUDTest` | realm roles in realm representations and the roles API | 971 |
+| 2 | `admin.user.UserSearchTest` | users created and found with the full user representation (`@InjectUser`, realm `users`) | 2075 |
+| 3 | `admin.ClientTest` | client creation with the full client representation (`@InjectClient`, realm `clients`) | 1897 |
+| 4 | `admin.client.ClientProtocolMapperTest` | client protocol mappers, which the default OAuth test client carries | 1471 |
+| 5 | `oauth.RefreshTokenTest` | password and code grants through `OAuthClient` against a managed realm | 1471 |
+| 6 | `admin.event.EventConfigTest` | `eventsEnabled`, `adminEventsEnabled` and `adminEventsDetailsEnabled`, set by the events interceptors | 1103 |
+| 7 | `admin.realm.RealmRolesCRUDTest` | realm roles in realm representations and the roles API | 996 |
+| 8 | `admin.event.LoginEventsTest` | `GET` and `DELETE /admin/realms/{realm}/events` | 649 |
 | 9 | `admin.realm.RealmUpdateTest` | `PUT /admin/realms/{realm}` with a full representation, used by `ManagedRealm.updateWithCleanup` | 562 |
-| 10 | `oauth.RefreshTokenTest` | password and code grants through `OAuthClient` against a managed realm | 1446 |
-
-The blocked counts overlap: most classes need several of these.
+| 10 | `admin.event.AdminEventTest` | `GET` and `DELETE /admin/realms/{realm}/admin-events` | 477 |

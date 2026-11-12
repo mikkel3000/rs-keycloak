@@ -45,6 +45,22 @@ FIELD_MARKERS = [
 # their tests are counted from the source.
 WAIT_MARKER = re.compile(r'@InjectCertificates|@InjectInfinispanServer|ClusteredKeycloakServer|@InjectLoadBalancer')
 TEST_METHOD = re.compile(r'@(?:Test|ParameterizedTest|RepeatedTest|TestFactory)\b[^{;]*?\bvoid\s+(\w+)\s*\(', re.S)
+# Failing classes whose feature the framework uses to set other tests up. A
+# failing test counts as blocked by a class when its own class, parents
+# included, uses that feature; the counts overlap. RealmCreateTest counts the
+# tests whose managed realm creation itself failed.
+BLOCKERS = [
+    ('admin.realm.RealmCreateTest', 'RealmSupplier: BadRequestException'),
+    ('admin.client.ClientProtocolMapperTest', re.compile(r'@InjectOAuthClient\b')),
+    ('admin.ClientTest', re.compile(r'\.clients\(|addClient\(|@InjectClient\b')),
+    ('admin.user.UserSearchTest', re.compile(r'\.users\(|addUser\(|@InjectUser\b')),
+    ('admin.event.LoginEventsTest', re.compile(r'@InjectEvents\b')),
+    ('admin.event.AdminEventTest', re.compile(r'@InjectAdminEvents\b')),
+    ('admin.event.EventConfigTest', re.compile(r'@Inject(?:Admin)?Events\b')),
+    ('admin.realm.RealmRolesCRUDTest', re.compile(r'\.roles\(|realmRole')),
+    ('admin.realm.RealmUpdateTest', re.compile(r'updateWithCleanup')),
+    ('oauth.RefreshTokenTest', re.compile(r'@InjectOAuthClient\b')),
+]
 DECLARATION = re.compile(r'\b(?:class|interface|enum|record)\s+(\w+)')
 METHOD = re.compile(r'\b(?:void|[\w<>\[\],.? ]+?)\s+(\w+)\s*\([^)]*\)\s*(?:throws [\w., ]+)?\{')
 
@@ -211,9 +227,21 @@ def main():
             groups[group][area] += len(tests)
             class_counts[short]['cannot-run'] += len(tests)
 
+    blocked = collections.Counter()
+    for short, counts in class_counts.items():
+        failed = counts.get('fail', 0)
+        if not failed:
+            continue
+        text = ''.join(bodies[link] for link in lineage(short.rsplit('.', 1)[-1], bodies))
+        for blocker, need in BLOCKERS:
+            if isinstance(need, str):
+                blocked[blocker] += sum(n for reason, n in class_causes[short].items() if reason.startswith(need))
+            elif need.search(text):
+                blocked[blocker] += failed
+
     if as_json:
         print(json.dumps({
-            'areas': areas, 'groups': groups, 'causes': causes,
+            'areas': areas, 'groups': groups, 'causes': causes, 'blocked': blocked,
             'classes': class_counts,
             'class_causes': {name: dict(counter) for name, counter in class_causes.items()},
         }, indent=1, sort_keys=True))
@@ -233,6 +261,11 @@ def main():
     print('most common failure causes:')
     for reason, count in causes.most_common(15):
         print(f'  {count:>5}  {reason}')
+    print()
+    print('failing tests blocked by each setup class (overlapping):')
+    for blocker, _ in BLOCKERS:
+        state = 'fails' if class_counts[blocker].get('fail') else 'does not fail'
+        print(f'  {blocked[blocker]:>5}  {blocker} ({state})')
 
 
 if __name__ == '__main__':
