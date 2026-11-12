@@ -1384,7 +1384,7 @@ async fn token(
         Err(_) => return unavailable(),
     };
     let refresh_jti = Zeroizing::new(random_token());
-    let (grant, refresh_expiry) = match q {
+    let (grant, refresh_expiry, issued) = match q {
         SessionGrant::Code {
             code,
             redirect_uri,
@@ -1426,7 +1426,7 @@ async fn token(
                 )
                 .await
             {
-                Ok(Some(expiry)) => (grant, expiry),
+                Ok(Some(family)) => (grant, family.expires_at, Some(family.issued)),
                 Ok(None) => return invalid_grant(),
                 Err(_) => return unavailable(),
             }
@@ -1485,12 +1485,18 @@ async fn token(
                     auth_time: refreshed.session.auth_time,
                 },
                 expiry,
+                None,
             )
         }
     };
-    let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(now) => now.as_secs(),
-        Err(_) => return unavailable(),
+    // A new family's tokens are issued at the second its expiry counts
+    // from, so refresh_expires_in is its whole lifetime.
+    let now = match issued.and_then(|issued| u64::try_from(issued).ok()) {
+        Some(issued) => issued,
+        None => match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(now) => now.as_secs(),
+            Err(_) => return unavailable(),
+        },
     };
     let Ok(refresh_expiry) = u64::try_from(refresh_expiry) else {
         return unavailable();

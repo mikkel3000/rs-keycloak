@@ -448,6 +448,14 @@ pub enum RefreshRotation {
     Invalid,
 }
 
+/// A new refresh family's times as Unix seconds, both from one moment.
+pub struct FamilyExpiry {
+    /// The second its first tokens are issued.
+    pub issued: i64,
+    /// When the family ends.
+    pub expires_at: i64,
+}
+
 /// Rotated session and the scopes granted to its refresh family.
 pub struct RefreshGrant {
     /// Fixed refresh family expiry as Unix seconds.
@@ -1110,7 +1118,7 @@ impl Storage {
         scope: &str,
         ttl_seconds: i32,
         client_revision: Option<i64>,
-    ) -> Result<Option<i64>, StorageError> {
+    ) -> Result<Option<FamilyExpiry>, StorageError> {
         if token_hash.len() != 32
             || scope.is_empty()
             || scope.len() > 2048
@@ -1130,15 +1138,22 @@ impl Storage {
         // An offline family lives on its own lifetime; an online one ends
         // with its session.
         let offline = is_offline_scope(scope);
+        // One whole second is the tokens' issue time, so the family's
+        // expiry is exactly its lifetime after it, as the reference
+        // computes both from one time.
+        let issued: i64 =
+            sqlx::query_scalar("SELECT floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *conn)
+                .await?;
         // Issuing tokens counts as session activity, as the reference
         // refreshes the session's idle time, so an online family gets its
         // whole lifetime.
         if !offline {
-            sqlx::query("UPDATE user_sessions us SET expires_at = GREATEST(us.expires_at, clock_timestamp() + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($3, r.sso_session_idle_timeout_remember_me) ELSE $3 END)) FROM realms r WHERE r.id = us.realm_id AND us.realm_id = $1 AND us.id = $2")
-                .bind(realm).bind(session_id).bind(f64::from(ttl_seconds)).execute(&mut *conn).await?;
+            sqlx::query("UPDATE user_sessions us SET expires_at = GREATEST(us.expires_at, to_timestamp($4) + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($3, r.sso_session_idle_timeout_remember_me) ELSE $3 END)) FROM realms r WHERE r.id = us.realm_id AND us.realm_id = $1 AND us.id = $2")
+                .bind(realm).bind(session_id).bind(f64::from(ttl_seconds)).bind(issued as f64).execute(&mut *conn).await?;
         }
-        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN clock_timestamp() + make_interval(secs => $8) ELSE (SELECT LEAST(clock_timestamp() + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($6, r.sso_session_idle_timeout_remember_me) ELSE $6 END), us.expires_at) FROM user_sessions us JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $2 AND us.id = $4) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
-            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).bind(offline).bind(f64::from(OFFLINE_SESSION_SECONDS)).fetch_one(&mut *conn).await?;
+        let expires_at: i64 = sqlx::query_scalar("INSERT INTO refresh_families (id, realm_id, client_id, user_session_id, scope, expires_at, offline) VALUES ($1, $2, $3, $4, $5, CASE WHEN $7 THEN to_timestamp($9) + make_interval(secs => $8) ELSE (SELECT LEAST(to_timestamp($9) + make_interval(secs => CASE WHEN us.remember_me THEN GREATEST($6, r.sso_session_idle_timeout_remember_me) ELSE $6 END), us.expires_at) FROM user_sessions us JOIN realms r ON r.id = us.realm_id WHERE us.realm_id = $2 AND us.id = $4) END, $7) RETURNING floor(EXTRACT(EPOCH FROM expires_at))::bigint")
+            .bind(family_id).bind(realm).bind(&client).bind(session_id).bind(scope).bind(f64::from(ttl_seconds)).bind(offline).bind(f64::from(OFFLINE_SESSION_SECONDS)).bind(issued as f64).fetch_one(&mut *conn).await?;
         sqlx::query(
             "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, 0)",
         )
@@ -1147,7 +1162,7 @@ impl Storage {
         .execute(&mut *conn)
         .await?;
         tx.commit().await?;
-        Ok(Some(expires_at))
+        Ok(Some(FamilyExpiry { issued, expires_at }))
     }
 
     /// Rotate a refresh token once; correctly bound replay revokes its family and session.
