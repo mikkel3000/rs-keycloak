@@ -1634,3 +1634,19 @@ until it answers 200 before it runs any test.
 Remaining differences: `tokens-not-before` is always 0, since a realm-wide
 not-before push is not stored, and the content type has no charset
 parameter.
+
+## Local development bootstrap credentials
+
+With `RS_KEYCLOAK_LOCAL_DEV=true`, `bootstrap-admin` and
+`client add-confidential` accept any non-empty password or client secret,
+as the reference's `start-dev` does with `KC_BOOTSTRAP_ADMIN_PASSWORD` and
+`KC_BOOTSTRAP_ADMIN_CLIENT_SECRET`, so the upstream test framework's
+`admin`/`admin` user and `temp-admin`/`mysecret` client can be created.
+Outside local development the minimums stay 12 and 32 bytes.
+`tests/public/bootstrap_client_contract.py` signs in to the admin API with
+`mysecret`.
+
+Remaining differences: the bootstrap client is made by three commands
+(`add-confidential`, `enable-service-account`, `grant-master-admin`)
+rather than one option, it keeps a redirect URI and the standard flow,
+and it is not marked as a temporary admin.

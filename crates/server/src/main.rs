@@ -374,7 +374,7 @@ async fn bootstrap_admin(username: &str) -> Result<(), &'static str> {
             password.pop();
         }
     }
-    if password.len() < 12
+    if password.len() < minimum_secret_length(12)
         || password.len() > 1024
         || password
             .iter()
@@ -431,6 +431,17 @@ async fn add_public_client(
         .await
         .map_err(|_| "Public client registration failed")?;
     Ok(())
+}
+
+/// The shortest bootstrap password or client secret accepted. Local
+/// development takes any non-empty value, as the reference's `start-dev`
+/// does, so the upstream test framework's `admin` and `mysecret` work.
+fn minimum_secret_length(production: usize) -> usize {
+    if env::var("RS_KEYCLOAK_LOCAL_DEV").ok().as_deref() == Some("true") {
+        1
+    } else {
+        production
+    }
 }
 
 fn validate_client_input(

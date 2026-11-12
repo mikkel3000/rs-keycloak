@@ -29,7 +29,7 @@ pub(crate) async fn add_confidential_client(
             secret.pop();
         }
     }
-    if secret.len() < 32
+    if secret.len() < super::minimum_secret_length(32)
         || secret.len() > 1024
         || secret.iter().any(|byte| matches!(byte, b'\n' | b'\r' | 0))
         || std::str::from_utf8(&secret).is_err()
