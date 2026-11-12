@@ -42,12 +42,14 @@ class AccountConsoleApiContract(AdminCase):
         status, _, body = self.request("POST", f"/realms/{self.realm}/protocol/openid-connect/token", form={"grant_type": "refresh_token", "client_id": client, "refresh_token": tokens["refresh_token"]})
         self.assertEqual({"status": status, "error": json.loads(body).get("error")}, REFERENCE[label], label)
 
-    def test_applications_and_devices(self):
+    def test_applications(self):
         status, listed = self.get("/applications")
         expected = REFERENCE["applications"]
         self.assertEqual(status, expected["status"])
         self.assertEqual(sorted([item["clientId"], item.get("inUse"), item.get("offlineAccess"), item.get("userConsentRequired"), "effectiveUrl" in item] for item in listed), expected["apps"])
         self.assertEqual(sorted({field for item in listed for field in item}), expected["fields"])
+
+    def test_devices(self):
         status, devices = self.get("/sessions/devices")
         expected = REFERENCE["devices"]
         sessions = [session for device in devices for session in device["sessions"]]

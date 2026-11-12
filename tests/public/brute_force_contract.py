@@ -47,17 +47,34 @@ class SettingsContract(BruteForceCase):
             _, realm = self.realm_admin(key, "")
             self.assertEqual({field: realm.get(field) for field in FIELDS}, REFERENCE[f"representation/{key}"], key)
 
-    def test_unprotected_realm_never_locks(self):
-        user = self.new_user("off", "off-user")
+
+class UnprotectedContract(BruteForceCase):
+    """The numbered tests replay one user's recorded sequence in order."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.user = cls.new_user("off", "off-user")
+
+    def test_1_wrong_passwords(self):
         for number in range(6):
             self.assertEqual(self.attempt("off", "off-user", "wrong"), REFERENCE[f"off/wrong-{number}"], number)
+
+    def test_2_never_locks(self):
         self.assertEqual(self.attempt("off", "off-user", self.password), REFERENCE["off/right"])
-        self.assertEqual(self.status_of("off", user), REFERENCE["off/status"])
+        self.assertEqual(self.status_of("off", self.user), REFERENCE["off/status"])
 
 
 class TemporaryLockoutContract(BruteForceCase):
-    def test_lockout_and_clearing(self):
-        user = self.new_user("protected", "locked-user")
+    """The numbered tests replay one user's recorded sequence in order."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.locked = cls.new_user("protected", "locked-user")
+
+    def test_1_lockout(self):
+        user = self.locked
         self.assertEqual(self.status_of("protected", user), REFERENCE["protected/status-before"])
         for number in (1, 2):
             self.assertEqual(self.attempt("protected", "locked-user", "wrong"), REFERENCE[f"protected/wrong-{number}"])
@@ -66,6 +83,9 @@ class TemporaryLockoutContract(BruteForceCase):
         self.assertEqual(self.status_of("protected", user), REFERENCE["protected/status-after-right"])
         _, stored = self.realm_admin("protected", f"/users/{user}")
         self.assertEqual(stored["enabled"], REFERENCE["protected/user-enabled"])
+
+    def test_2_clearing(self):
+        user = self.locked
         status, _ = self.realm_admin("protected", f"/attack-detection/brute-force/users/{user}", "DELETE")
         self.assertEqual({"status": status, "after": self.status_of("protected", user)}, REFERENCE["protected/clear-user"])
         self.assertEqual(self.attempt("protected", "locked-user", self.password), REFERENCE["protected/right-after-clear"])

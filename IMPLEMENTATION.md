@@ -1522,8 +1522,9 @@ and read from the pinned source (`OTPPolicy`,
   `credentialData` with the subtype, digits, counter, period and
   algorithm.
 
-`tests/public/otp_policy_contract.py` replays every recorded case in 14
-tests.
+`tests/public/otp_policy_contract.py` replays every recorded case in 21
+tests; tests that share a credential are numbered to keep the recorded
+order.
 
 Remaining differences: digits outside 1 to 10, an unknown algorithm or
 type, or a period under 1 make every code fail, where the reference
@@ -1566,8 +1567,8 @@ source (`RealmManager`, `DefaultBruteForceProtector`,
   An admin update that leaves the user enabled clears failures and the
   disabled reason.
 
-`tests/public/brute_force_contract.py` replays every recorded case in 6
-tests.
+`tests/public/brute_force_contract.py` replays every recorded case in 8
+tests; tests that share a user are numbered to keep the recorded order.
 
 Remaining differences: OTP failures are not counted
 (`accountTemporarilyDisabledMessageTotp`, `maxSecondaryAuthFailures`);

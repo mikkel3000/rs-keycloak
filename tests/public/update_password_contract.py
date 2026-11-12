@@ -54,17 +54,27 @@ class UpdatePasswordContract(PasswordSteps, AdminCase):
     def required_actions(self):
         return {"requiredActions": json.loads(self.call("GET", self.users)[2])["requiredActions"]}
 
-    def test_temporary_password_must_be_replaced(self):
-        temporary, chosen = secrets.token_urlsafe(30), secrets.token_urlsafe(30)
+    def update_page(self, temporary):
+        """Sets a temporary password and signs in with it; returns the
+        update page's action."""
         status = self.call("PUT", self.users + "/reset-password", {"type": "password", "value": temporary, "temporary": True})[0]
         self.assertEqual(status, REFERENCE["admin/reset-temporary"]["status"])
         self.assertEqual(self.required_actions(), REFERENCE["admin/user-after-temporary"])
         observed, action = self.page(self.password_step(temporary))
         self.assertEqual(observed, REFERENCE["login/update-page"])
+        return action
+
+    def test_temporary_password_refuses_bad_updates(self):
+        chosen = secrets.token_urlsafe(30)
+        action = self.update_page(secrets.token_urlsafe(30))
         observed, action = self.page(self.submit(action, {"password-new": chosen, "password-confirm": chosen + "x"}))
         self.assertEqual(observed, REFERENCE["update/mismatch"])
         observed, action = self.page(self.submit(action, {"password-new": "", "password-confirm": ""}))
         self.assertEqual(observed, REFERENCE["update/empty"])
+
+    def test_temporary_password_must_be_replaced(self):
+        temporary, chosen = secrets.token_urlsafe(30), secrets.token_urlsafe(30)
+        action = self.update_page(temporary)
         observed, _ = self.page(self.submit(action, {"password-new": chosen, "password-confirm": chosen}))
         self.assertEqual(observed, REFERENCE["update/success"])
         self.assertEqual(self.required_actions(), REFERENCE["admin/user-after-update"])

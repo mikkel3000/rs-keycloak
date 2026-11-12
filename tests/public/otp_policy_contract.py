@@ -91,15 +91,23 @@ class RepresentationContract(OtpPolicyCase):
             self.assertEqual({"status": status} | self.policy("partial"), REFERENCE[label], label)
 
 
+def setup_pages(key):
+    def test(self):
+        self.new_user(key, "page-user", {"requiredActions": ["CONFIGURE_TOTP"]})
+        browser = self.browser(key)
+        page = browser.sign_in("page-user", self.password)
+        self.assertEqual(self.setup_page(page)[0], REFERENCE[f"setup/{key}"])
+        manual = browser.visit(re.search(r'<a href="([^"]*)" id="mode-manual"', page[2].decode()).group(1))
+        self.assertEqual(self.setup_page(manual)[0], REFERENCE[f"setup-manual/{key}"])
+    return test
+
+
 class SetupPageContract(OtpPolicyCase):
-    def test_pages_under_each_policy(self):
-        for key in ("default", "sha256", "sha512", "hotp"):
-            self.new_user(key, "page-user", {"requiredActions": ["CONFIGURE_TOTP"]})
-            browser = self.browser(key)
-            page = browser.sign_in("page-user", self.password)
-            self.assertEqual(self.setup_page(page)[0], REFERENCE[f"setup/{key}"], key)
-            manual = browser.visit(re.search(r'<a href="([^"]*)" id="mode-manual"', page[2].decode()).group(1))
-            self.assertEqual(self.setup_page(manual)[0], REFERENCE[f"setup-manual/{key}"], key)
+    pass
+
+
+for name in ("default", "sha256", "sha512", "hotp"):
+    setattr(SetupPageContract, "test_" + name, setup_pages(name))
 
 
 def setup_code(label):
@@ -119,12 +127,31 @@ for name in SETUP_CODES:
         setattr(SetupCodeContract, "test_" + name.replace("/", "_").replace("-", "_"), setup_code(name))
 
 
-class LoginCodeContract(OtpPolicyCase):
-    def test_hotp_counter(self):
-        _, result, secret = self.set_up("hotp", "setup-hotp-initial-counter", lambda s: hotp(s, 5))
+class HotpCounterContract(OtpPolicyCase):
+    """The numbered tests replay one credential's recorded counter in order."""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.new_user("hotp", "setup-hotp-initial-counter", {"requiredActions": ["CONFIGURE_TOTP"]})
+
+    def test_1_setup(self):
+        browser = self.browser("hotp")
+        page = browser.sign_in("setup-hotp-initial-counter", self.password)
+        type(self).secret = self.setup_page(page)[1]
+        result = self.shown(browser.submit(page, {"totp": hotp(self.secret, 5), "userLabel": ""}))
         self.assertEqual(result, REFERENCE["setup-code/hotp/initial-counter"])
-        for label, counter in (("same-code", 5), ("next-counter", 6), ("skips-ahead", 9), ("behind", 8)):
-            self.assertEqual(self.code_form("hotp", "setup-hotp-initial-counter", hotp(secret, counter)), REFERENCE[f"code/hotp/{label}"], label)
+
+    def test_2_used_and_next(self):
+        for label, counter in (("same-code", 5), ("next-counter", 6)):
+            self.assertEqual(self.code_form("hotp", "setup-hotp-initial-counter", hotp(self.secret, counter)), REFERENCE[f"code/hotp/{label}"], label)
+
+    def test_3_ahead_and_behind(self):
+        for label, counter in (("skips-ahead", 9), ("behind", 8)):
+            self.assertEqual(self.code_form("hotp", "setup-hotp-initial-counter", hotp(self.secret, counter)), REFERENCE[f"code/hotp/{label}"], label)
+
+
+class LoginCodeContract(OtpPolicyCase):
 
     def test_hotp_look_ahead_end(self):
         _, result, secret = self.set_up("hotp", "setup-hotp-look-ahead-end", lambda s: hotp(s, 7))
@@ -139,7 +166,10 @@ class LoginCodeContract(OtpPolicyCase):
 
 
 class PolicyChangeContract(OtpPolicyCase):
-    def test_credential_keeps_its_policy_and_reuse(self):
+    """The numbered tests run in order: the policy change of the first
+    sets the default realm's policy for the second."""
+
+    def test_1_credential_keeps_its_policy(self):
         _, result, secret = self.set_up("default", "kept-user", lambda s: totp(s))
         self.assertEqual(result, REFERENCE["setup-code/default/for-policy-change"])
         _, user = self.realm_admin("default", "/users?exact=true&username=kept-user")
@@ -149,13 +179,21 @@ class PolicyChangeContract(OtpPolicyCase):
         status, _ = self.realm_admin("default", "", "PUT", {"otpPolicyType": "totp", "otpPolicyAlgorithm": "HmacSHA256", "otpPolicyDigits": 8, "otpPolicyPeriod": 30, "otpPolicyLookAheadWindow": 1, "otpPolicyInitialCounter": 0})
         self.assertEqual(status, 204)
         self.assertEqual(self.code_form("default", "kept-user", totp(secret, 1)), REFERENCE["code/default/after-policy-change"])
-        for key, digits, algorithm in (("default", 8, "HmacSHA256"), ("reusable", 6, "HmacSHA1")):
-            username = "reuse-" + key
-            _, result, secret = self.set_up(key, username, lambda s: totp(s, -1, digits, 30, algorithm))
-            self.assertEqual(result, REFERENCE[f"setup-code/{key}/reuse"], key)
-            code = totp(secret, 0, digits, 30, algorithm)
-            self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/first-use"], key)
-            self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/second-use"], key)
+
+    def reuse(self, key, digits, algorithm):
+        username = "reuse-" + key
+        _, result, secret = self.set_up(key, username, lambda s: totp(s, -1, digits, 30, algorithm))
+        self.assertEqual(result, REFERENCE[f"setup-code/{key}/reuse"])
+        code = totp(secret, 0, digits, 30, algorithm)
+        self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/first-use"])
+        self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/second-use"])
+
+    def test_2_default_codes_once(self):
+        # The default realm's policy is now HmacSHA256 with 8 digits.
+        self.reuse("default", 8, "HmacSHA256")
+
+    def test_3_reusable_codes_again(self):
+        self.reuse("reusable", 6, "HmacSHA1")
 
 
 if __name__ == "__main__":
