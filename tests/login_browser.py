@@ -62,6 +62,14 @@ def hotp(secret, counter, digits=6, algorithm='HmacSHA1'):
     return str(value % 10 ** digits).zfill(digits)
 
 
+def wait_for_step(period, needed):
+    """Waits until the current time step has `needed` seconds left, so
+    codes computed now keep their step through the next requests."""
+    left = period - time.time() % period
+    if left < needed:
+        time.sleep(left + 0.1)
+
+
 def totp(secret, steps=0, digits=6, period=30, algorithm='HmacSHA1'):
     """RFC 6238: the code `steps` periods from now."""
     return hotp(secret, int(time.time() // period) + steps, digits, algorithm)
