@@ -1489,7 +1489,9 @@ the REGISTER event is not written.
 
 Realms keep an OTP policy and OTP credentials keep the policy they were
 made with, as recorded in `tests/reference/otp-policy-observations.json`
-and read from the pinned source (`OTPPolicy`,
+(the policy settings and the manual setup mode) and
+`tests/reference/otp-code-observations.json` (the QR code's key URI and
+the setup and login code checks), and read from the pinned source (`OTPPolicy`,
 `DefaultExportImportManager.toPolicy`, `TotpBean`,
 `login-config-totp.ftl`, the `OTPApplicationProvider`s, `UpdateTotp`,
 `CredentialHelper.createOTPCredential`, `OTPCredentialProvider`,
@@ -1522,8 +1524,9 @@ and read from the pinned source (`OTPPolicy`,
   `credentialData` with the subtype, digits, counter, period and
   algorithm.
 
-`tests/public/otp_policy_contract.py` replays every recorded case in 21
-tests; tests that share a credential are numbered to keep the recorded
+`tests/public/otp_policy_contract.py` replays the policy cases in 5 tests
+and `tests/public/otp_codes_contract.py` the key URI and code cases in
+20; tests that share a credential are numbered to keep the recorded
 order.
 
 Remaining differences: digits outside 1 to 10, an unknown algorithm or
