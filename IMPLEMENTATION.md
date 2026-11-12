@@ -1650,3 +1650,21 @@ Remaining differences: the bootstrap client is made by three commands
 (`add-confidential`, `enable-service-account`, `grant-master-admin`)
 rather than one option, it keeps a redirect URI and the standard flow,
 and it is not marked as a temporary admin.
+
+## Realm ids on creation
+
+`POST /admin/realms` takes `id`, as the upstream test framework's
+`RealmSupplier` sends it set to the realm name, following
+`RealmManager.importRealm` and `tests/reference/realm-id-observations.json`:
+a missing or blank id gets a UUID, an id with an RFC 3986 reserved character
+or a backslash answers 400 `{"error":"Character 'X' not allowed."}`, and an
+id another realm has answers 409 "Duplicate resource error". A realm update
+takes `id` and keeps the stored one, and takes `ssoSessionIdleTimeout` and
+`ssoSessionMaxLifespan` when they carry the fixed values the representation
+shows, so a representation read from the server can be sent back. Realm
+create and update take bodies up to 1 MiB; other routes keep 16 KiB.
+`tests/public/realm_ids_contract.py` checks 3 tests.
+
+Remaining differences: an id over 36 characters answers 400 "Database
+operation failed" as the reference's column does, but from a length check;
+realm names keep this server's stricter character set.

@@ -8,7 +8,7 @@
 //! silently ignored.
 
 use axum::body::Bytes;
-use axum::extract::{Path, State};
+use axum::extract::{DefaultBodyLimit, Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -48,13 +48,26 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(roles::routes())
         .merge(sessions::routes())
         .merge(users::routes())
-        .route("/admin/realms", post(create_realm).get(list_realms))
+        .route(
+            "/admin/realms",
+            post(create_realm)
+                .layer(DefaultBodyLimit::max(REALM_BODY_LIMIT))
+                .get(list_realms),
+        )
         .route("/admin/realms/{realm}/keys", get(realm_keys))
         .route(
             "/admin/realms/{realm}",
-            get(read_realm).put(update_realm).delete(delete_realm),
+            get(read_realm)
+                .put(update_realm)
+                .layer(DefaultBodyLimit::max(REALM_BODY_LIMIT))
+                .delete(delete_realm),
         )
 }
+
+/// The body limit of realm create and update. Realm representations carry
+/// whole realm configurations, such as the upstream test suite's realm
+/// files, so they get more than the 16 KiB of the other routes.
+const REALM_BODY_LIMIT: usize = 1024 * 1024;
 
 /// Admin API failures with the reference status and body shapes.
 enum AdminError {
@@ -307,8 +320,42 @@ async fn authorize_master(state: &OidcState, headers: &HeaderMap) -> Result<Acto
 
 /// The supported subset of a RealmRepresentation.
 struct NewRealm {
+    /// The given id, if any; a new realm gets a UUID otherwise.
+    id: Option<String>,
     name: String,
     settings: RealmSettings,
+}
+
+/// Characters a realm id cannot hold, RFC 3986's reserved characters plus
+/// the backslash, as the reference's `ReservedCharValidator`.
+const RESERVED_ID_CHARACTERS: &str = ":/?#@!$&()*+,;=[]\\";
+
+/// Reads a new realm's `id`. A missing or blank id leaves the choice to the
+/// server, as in the reference's `RealmManager.importRealm`; ids longer than
+/// the reference's 36-character column fail as its database does.
+fn new_realm_id(fields: &Map<String, Value>) -> Result<Option<String>, AdminError> {
+    let id = match fields.get("id") {
+        None | Some(Value::Null) => return Ok(None),
+        Some(Value::String(id)) => id,
+        Some(_) => {
+            return Err(AdminError::bad_request(
+                "unable to read contents from stream",
+            ));
+        }
+    };
+    if id.trim().is_empty() {
+        return Ok(None);
+    }
+    if let Some(reserved) = id.chars().find(|c| RESERVED_ID_CHARACTERS.contains(*c)) {
+        return Err(AdminError::Error(
+            StatusCode::BAD_REQUEST,
+            format!("Character '{reserved}' not allowed."),
+        ));
+    }
+    if id.chars().count() > 36 {
+        return Err(AdminError::bad_request("Database operation failed"));
+    }
+    Ok(Some(id.clone()))
 }
 
 /// Parses Keycloak's `smtpServer` object, whose values are strings. An empty
@@ -457,7 +504,10 @@ fn access_token_lifespan(fields: &Map<String, Value>) -> Result<Option<i32>, Adm
 }
 
 /// Realm fields this server stores besides the name.
-const REALM_FIELDS: [&str; 15] = [
+/// Realm representation fields read here. An update takes `id` and keeps the
+/// stored one, as the reference does.
+const REALM_FIELDS: [&str; 16] = [
+    "id",
     "loginWithEmailAllowed",
     "duplicateEmailsAllowed",
     "localizationTexts",
@@ -564,11 +614,12 @@ impl UserSettingFields {
 }
 
 fn unsupported_realm_field(fields: &Map<String, Value>) -> Result<(), AdminError> {
-    match fields
-        .keys()
-        .find(|key| !REALM_FIELDS.contains(&key.as_str()) && !login_settings::reads(key))
-    {
-        Some(field) => Err(AdminError::bad_request(format!(
+    match fields.iter().find(|(key, value)| {
+        !REALM_FIELDS.contains(&key.as_str())
+            && !login_settings::reads(key)
+            && !login_settings::keeps_fixed(key, value)
+    }) {
+        Some((field, _)) => Err(AdminError::bad_request(format!(
             "Unsupported realm field: {field}"
         ))),
         None => Ok(()),
@@ -607,6 +658,7 @@ fn parse_new_realm(body: &[u8]) -> Result<NewRealm, AdminError> {
         Some(_) => Err(unreadable()),
     };
     Ok(NewRealm {
+        id: new_realm_id(&fields)?,
         name: name.to_owned(),
         settings: RealmSettings {
             enabled,
@@ -629,14 +681,13 @@ async fn create_realm(
 ) -> Result<Response, AdminError> {
     let actor = authorize_master(&state, &headers).await?;
     let realm = parse_new_realm(&body)?;
+    let id = realm
+        .id
+        .clone()
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
     let created = state
         .storage
-        .create_realm(
-            &Uuid::new_v4().to_string(),
-            &realm.name,
-            &realm.settings,
-            &actor,
-        )
+        .create_realm(&id, &realm.name, &realm.settings, &actor)
         .await?;
     match created {
         RealmCreation::Created => {
@@ -651,6 +702,10 @@ async fn create_realm(
         RealmCreation::Exists => Err(AdminError::Message(
             StatusCode::CONFLICT,
             format!("Realm {} already exists", realm.name),
+        )),
+        RealmCreation::IdTaken => Err(AdminError::Message(
+            StatusCode::CONFLICT,
+            "Duplicate resource error".to_owned(),
         )),
     }
 }

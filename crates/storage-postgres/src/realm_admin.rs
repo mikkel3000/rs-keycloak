@@ -196,6 +196,8 @@ pub enum RealmCreation {
     Created,
     /// A realm with this name already exists.
     Exists,
+    /// Another realm already has the given id.
+    IdTaken,
 }
 
 /// Outcome of deleting a realm.
@@ -345,8 +347,17 @@ impl Storage {
             .bind(users.login_with_email_allowed).bind(users.duplicate_emails_allowed)
             .fetch_optional(tx.connection()).await?;
         if created.is_none() {
+            let name_taken: bool =
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM realms WHERE name = $1)")
+                    .bind(name)
+                    .fetch_one(tx.connection())
+                    .await?;
             tx.commit().await?;
-            return Ok(RealmCreation::Exists);
+            return Ok(if name_taken {
+                RealmCreation::Exists
+            } else {
+                RealmCreation::IdTaken
+            });
         }
         change_login_settings(tx.connection(), name, &settings.login).await?;
         for (locale, texts) in &settings.localization_texts {

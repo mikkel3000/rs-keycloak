@@ -30,6 +30,16 @@ pub(super) fn reads(field: &str) -> bool {
     FIELDS.contains(&field) || BRUTE_FORCE_FIELDS.contains(&field)
 }
 
+/// Whether a field this module shows with a fixed value carries that value,
+/// so a representation read from the server can be sent back unchanged.
+pub(super) fn keeps_fixed(field: &str, value: &Value) -> bool {
+    match field {
+        "ssoSessionIdleTimeout" => value == &json!(SSO_SESSION_IDLE_TIMEOUT),
+        "ssoSessionMaxLifespan" => value == &json!(SSO_SESSION_MAX_LIFESPAN),
+        _ => false,
+    }
+}
+
 /// Whether [`represent`] adds a realm field, which partial import then
 /// leaves alone.
 pub(super) fn represented(field: &str) -> bool {
