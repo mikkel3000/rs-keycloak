@@ -1485,12 +1485,13 @@ async fn token(
                     auth_time: refreshed.session.auth_time,
                 },
                 expiry,
-                None,
+                refreshed.issued,
             )
         }
     };
-    // A new family's tokens are issued at the second its expiry counts
-    // from, so refresh_expires_in is its whole lifetime.
+    // Tokens are issued at the second their family's expiry was set from,
+    // so a new or refreshed offline family's refresh_expires_in is its
+    // whole lifetime.
     let now = match issued.and_then(|issued| u64::try_from(issued).ok()) {
         Some(issued) => issued,
         None => match SystemTime::now().duration_since(UNIX_EPOCH) {

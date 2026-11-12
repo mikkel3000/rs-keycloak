@@ -880,8 +880,10 @@ groups.
 Remaining differences: the online session of an offline login stays listed
 under `/users/{id}/sessions`, where the reference lists none; introspection
 reports offline refresh tokens as `Refresh` and only while their login
-session lives; offline sessions have no idle timeout; a refused
-`not_allowed` exchange still leaves an unused offline family.
+session lives; a refused `not_allowed` exchange still leaves an unused
+offline family. Each refresh of an offline family now starts its 30 days
+again, as the reference's offline idle timeout does, so offline sessions
+have that idle timeout and no separate maximum lifespan.
 
 ## Account console API routes
 

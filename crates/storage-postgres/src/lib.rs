@@ -458,8 +458,11 @@ pub struct FamilyExpiry {
 
 /// Rotated session and the scopes granted to its refresh family.
 pub struct RefreshGrant {
-    /// Fixed refresh family expiry as Unix seconds.
+    /// Refresh family expiry as Unix seconds.
     pub expires_at: i64,
+    /// The second a rotation issues its tokens at, which the expiry
+    /// counts from for offline families; `None` outside rotation.
+    pub issued: Option<i64>,
     /// Current authoritative session state.
     pub session: ActiveSession,
     /// Scope granted to the family.
@@ -1208,7 +1211,16 @@ impl Storage {
             return Ok(RefreshRotation::Invalid);
         }
         sqlx::query("UPDATE refresh_tokens SET consumed_at = clock_timestamp() WHERE token_hash = $1 AND consumed_at IS NULL").bind(token_hash).execute(&mut *conn).await?;
-        let next: i64 = sqlx::query_scalar("UPDATE refresh_families SET generation = generation + 1 WHERE id = $1 AND expires_at > clock_timestamp() AND revoked_at IS NULL RETURNING generation").bind(&family).fetch_one(&mut *conn).await?;
+        // One whole second is the new tokens' issue time. An offline
+        // family's idle lifetime starts again from it, as the reference
+        // refreshes an offline session on each refresh.
+        let issued: i64 =
+            sqlx::query_scalar("SELECT floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint")
+                .fetch_one(&mut *conn)
+                .await?;
+        let rotated = sqlx::query("UPDATE refresh_families SET generation = generation + 1, expires_at = CASE WHEN offline THEN to_timestamp($2) + make_interval(secs => $3) ELSE expires_at END WHERE id = $1 AND expires_at > clock_timestamp() AND revoked_at IS NULL RETURNING generation, floor(EXTRACT(EPOCH FROM expires_at))::bigint AS expires_at")
+            .bind(&family).bind(issued as f64).bind(f64::from(OFFLINE_SESSION_SECONDS)).fetch_one(&mut *conn).await?;
+        let next: i64 = rotated.try_get("generation")?;
         sqlx::query(
             "INSERT INTO refresh_tokens (token_hash, family_id, generation) VALUES ($1, $2, $3)",
         )
@@ -1218,7 +1230,8 @@ impl Storage {
         .execute(&mut *conn)
         .await?;
         let result = RefreshGrant {
-            expires_at: row.try_get("expires_at")?,
+            expires_at: rotated.try_get("expires_at")?,
+            issued: Some(issued),
             session: active_session_row(&row)?,
             scope: row.try_get("scope")?,
         };
@@ -1373,6 +1386,7 @@ impl Storage {
             Some(row) => Some(RefreshIntrospection {
                 grant: RefreshGrant {
                     expires_at: row.try_get("expires_at")?,
+                    issued: None,
                     session: active_session_row(&row)?,
                     scope: row.try_get("scope")?,
                 },
