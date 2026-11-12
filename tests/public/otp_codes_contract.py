@@ -147,20 +147,33 @@ class PolicyChangeContract(OtpCase):
         self.assertEqual(status, 204)
         self.assertEqual(self.code_form("default", "kept-user", totp(secret, 1)), REFERENCE["code/default/after-policy-change"])
 
-    def reuse(self, key, digits, algorithm):
+    # The default realm's policy is now HmacSHA256 with 8 digits.
+    REUSE = {"default": (8, "HmacSHA256"), "reusable": (6, "HmacSHA1")}
+    codes = {}
+
+    def first_use(self, key):
+        digits, algorithm = self.REUSE[key]
         username = "reuse-" + key
         _, result, secret = self.set_up(key, username, lambda s: totp(s, -1, digits, 30, algorithm))
         self.assertEqual(result, REFERENCE[f"setup-code/{key}/reuse"])
         code = totp(secret, 0, digits, 30, algorithm)
+        self.codes[key] = code
         self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/first-use"])
-        self.assertEqual(self.code_form(key, username, code), REFERENCE[f"code/{key}/second-use"])
 
-    def test_2_default_codes_once(self):
-        # The default realm's policy is now HmacSHA256 with 8 digits.
-        self.reuse("default", 8, "HmacSHA256")
+    def second_use(self, key):
+        self.assertEqual(self.code_form(key, "reuse-" + key, self.codes[key]), REFERENCE[f"code/{key}/second-use"])
 
-    def test_3_reusable_codes_again(self):
-        self.reuse("reusable", 6, "HmacSHA1")
+    def test_2_default_code_first_use(self):
+        self.first_use("default")
+
+    def test_3_default_code_used_again(self):
+        self.second_use("default")
+
+    def test_4_reusable_code_first_use(self):
+        self.first_use("reusable")
+
+    def test_5_reusable_code_used_again(self):
+        self.second_use("reusable")
 
 
 if __name__ == "__main__":
