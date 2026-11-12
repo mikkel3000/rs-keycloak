@@ -9,7 +9,7 @@ import pathlib
 import secrets
 import unittest
 
-from fixture import ENDPOINT, ISSUER_BASE, ServerCase, cli
+from fixture import ENDPOINT, ISSUER_BASE, ServerCase, class_per_test, cli
 
 
 REFERENCE = json.loads(
@@ -34,6 +34,8 @@ class AdminUsersContract(ServerCase):
         self.realm = "users-" + secrets.token_hex(6)
         self.assertEqual(self.call("POST", "/admin/realms", {"realm": self.realm, "enabled": True})[0], 201)
         self.users = f"/admin/realms/{self.realm}/users"
+        # The login client the password tests sign in with.
+        self.assertEqual(cli("client", "add-public", self.realm, "login-app", CALLBACK).returncode, 0)
 
     def tearDown(self):
         self.call("DELETE", "/admin/realms/" + self.realm)
@@ -114,7 +116,6 @@ class AdminUsersContract(ServerCase):
         reset = f"{self.users}/{user_id}/reset-password"
         self.assert_case(self.call("PUT", reset, {"type": "password", "value": ""}), "password/empty")
         self.assert_case(self.call("PUT", reset, {"type": "password", "value": password, "temporary": False}), "password/success")
-        self.assertEqual(cli("client", "add-public", self.realm, "login-app", CALLBACK).returncode, 0)
         claims = self.verify(self.browser_login(self.realm, "login-app", CALLBACK, "reference-user", password)["access_token"])
         self.assertEqual(claims["sub"], user_id)
         self.assertEqual(claims["realm_access"]["roles"], sorted([f"default-roles-{self.realm}", "offline_access", "uma_authorization"]))
@@ -122,6 +123,8 @@ class AdminUsersContract(ServerCase):
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/success")
         self.assert_case(self.call("DELETE", f"{self.users}/{user_id}"), "delete/repeat")
 
+
+class_per_test(AdminUsersContract, globals())
 
 if __name__ == "__main__":
     unittest.main()

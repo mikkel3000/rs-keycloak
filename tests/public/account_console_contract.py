@@ -20,7 +20,7 @@ import secrets
 import unittest
 import urllib.parse
 
-from fixture import ISSUER_BASE, AdminCase, requires_setting
+from fixture import ISSUER_BASE, AdminCase, class_per_test, requires_setting
 
 
 REFERENCE = json.loads(
@@ -202,6 +202,10 @@ class AccountConsoleIframes(ConsoleCase):
 
 @needs_console
 class AccountConsoleApi(ConsoleCase):
+    def setUp(self):
+        super().setUp()
+        self.tokens, _ = self.sign_in()
+
     def api(self, label, path, headers):
         status, pairs, body = self.get(f"/realms/{self.realm}/account" + path, headers)
         content_type = self.headers_of(pairs).get("content-type")
@@ -212,8 +216,7 @@ class AccountConsoleApi(ConsoleCase):
         return parsed
 
     def test_console_calls(self):
-        tokens, _ = self.sign_in()
-        bearer = {"Authorization": "Bearer " + tokens["access_token"]}
+        bearer = {"Authorization": "Bearer " + self.tokens["access_token"]}
         console = bearer | {"Content-Type": "application/json"}
         profile = self.api("api/profile-with-metadata", "/?userProfileMetadata=true", console)
         expected = REFERENCE["api/profile-with-metadata"]
@@ -249,6 +252,8 @@ class WithoutConsole(ConsoleCase):
         self.assertEqual(self.get(f"/resources/{self.realm}/account/en")[0], 404)
         self.assertEqual(self.get("/resources/abcde/account/keycloak.v3/favicon.svg")[0], 404)
 
+
+class_per_test(AccountConsoleApi, globals())
 
 if __name__ == "__main__":
     unittest.main()
