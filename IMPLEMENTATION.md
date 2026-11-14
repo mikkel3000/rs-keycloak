@@ -1717,3 +1717,35 @@ other types (`CODE_TO_TOKEN`, `LOGOUT`, `REGISTER`, `UPDATE_PASSWORD` and
 the rest) are not yet. Before a session exists, `code_id` is a digest of
 the authorization request rather than an authentication session id. The
 reference's 500 for an unknown `type` is a 200 with no events here.
+
+## Client protocol mappers
+
+Clients take `protocolMappers` on creation, and an update with the field
+replaces the set by protocol and name, keeping the ids of the mappers it
+keeps, as `RepresentationToModel.updateClientProtocolMappers` does; a
+client shows its mappers' stored configuration and has no field without
+any. `/clients/{id}/protocol-mappers/models` lists, creates, reads,
+updates and deletes them, `protocol/{protocol}` lists one protocol's and
+`add-models` creates several at once, following `ProtocolMappersResource`
+and `tests/reference/protocol-mapper-observations.json`: the models show
+the effective configuration (`introspection.token.claim` and
+`userinfo.token.claim` default to the access and ID token settings), an
+update replaces only the configuration, and the reference's errors are
+kept, including 409 "Duplicate resource error" for a mapper without name
+or protocol and "Client X already exists" for two mappers with one name
+in a new client (migration 46). The OpenID Connect audience mapper is the
+mapper type: `included.custom.audience`, or `included.client.audience`
+while that client exists and is enabled, joins the `aud` of access tokens
+with `access.token.claim` and of ID tokens with `id.token.claim`, in code
+and client-credentials grants. `aud` is a string for one audience and an
+array for several. A client read and sent back keeps its scope lists.
+`tests/public/protocol_mappers_contract.py` checks 6 tests.
+
+Remaining differences: other mapper types and the `saml` protocol are
+refused with 400, also in client representations, where the reference
+takes any type; a given mapper `id` is replaced by a new one. Tokens name
+their own client first, where the reference's default role mappings give
+`account`; introspection and logout hints still accept only the token's
+own client, so a client named by an audience mapper cannot introspect the
+token, and introspection shows the access token's audience. Partial
+exports do not carry mappers yet.

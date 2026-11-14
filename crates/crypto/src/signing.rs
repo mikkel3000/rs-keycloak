@@ -14,6 +14,65 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use spki::SubjectPublicKeyInfoRef;
 
+/// A token's `aud` claim: one name is written as a string and several as
+/// an array, as the reference writes it, and either form is read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Audience(Vec<String>);
+
+impl Audience {
+    /// The audience of `first` followed by `others`, without repeats.
+    pub fn new<'a>(first: &str, others: impl IntoIterator<Item = &'a str>) -> Self {
+        let mut names = vec![first.to_owned()];
+        for name in others {
+            if !names.iter().any(|known| known == name) {
+                names.push(name.to_owned());
+            }
+        }
+        Self(names)
+    }
+
+    /// The first name, which this server always sets to the token's client
+    /// or, for refresh tokens, the issuer.
+    pub fn first(&self) -> &str {
+        self.0.first().map_or("", String::as_str)
+    }
+
+    /// Whether the audience names `name`.
+    pub fn contains(&self, name: &str) -> bool {
+        self.0.iter().any(|known| known == name)
+    }
+
+    /// Whether `name` is the only audience.
+    pub fn is_only(&self, name: &str) -> bool {
+        self.0.len() == 1 && self.0[0] == name
+    }
+}
+
+impl Serialize for Audience {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0.as_slice() {
+            [one] => serializer.serialize_str(one),
+            names => names.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Audience {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Form {
+            One(String),
+            Many(Vec<String>),
+        }
+        match Form::deserialize(deserializer)? {
+            Form::One(name) => Ok(Self(vec![name])),
+            Form::Many(names) if !names.is_empty() => Ok(Self(names)),
+            Form::Many(_) => Err(serde::de::Error::custom("empty audience")),
+        }
+    }
+}
+
 /// Signing or key parsing failed without disclosing key material.
 #[derive(Debug)]
 pub struct SigningError;
@@ -50,7 +109,7 @@ pub struct TokenClaims<'a> {
     /// Stable user subject.
     pub sub: &'a str,
     /// Intended audience.
-    pub aud: &'a str,
+    pub aud: Audience,
     /// Unix issued-at seconds.
     pub iat: u64,
     /// Unix expiry seconds.
@@ -114,7 +173,7 @@ pub struct IdTokenClaims<'a> {
     /// Stable user ID.
     pub sub: &'a str,
     /// Client audience.
-    pub aud: &'a str,
+    pub aud: Audience,
     /// Token creation time.
     pub iat: u64,
     /// Token expiration time.
@@ -143,7 +202,7 @@ pub struct VerifiedIdToken {
     /// User subject.
     pub sub: String,
     /// Client audience.
-    pub aud: String,
+    pub aud: Audience,
     /// Session ID, absent from service-account ID tokens.
     #[serde(default)]
     pub sid: Option<String>,
@@ -159,7 +218,7 @@ pub struct VerifiedToken {
     /// User subject.
     pub sub: String,
     /// Intended client audience.
-    pub aud: String,
+    pub aud: Audience,
     /// Issue time.
     pub iat: u64,
     /// Expiry time.

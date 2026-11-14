@@ -4,7 +4,21 @@ use std::process::{Command, Stdio};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use ring::signature;
-use rs_keycloak_crypto::signing::{SigningKey, TokenClaims, UserClaims};
+use rs_keycloak_crypto::signing::{Audience, SigningKey, TokenClaims, UserClaims};
+
+#[test]
+fn audiences_are_a_string_alone_and_an_array_with_others() {
+    let one = Audience::new("client", ["client"]);
+    assert_eq!(serde_json::to_string(&one).unwrap(), r#""client""#);
+    let two = Audience::new("client", ["other", "client"]);
+    assert_eq!(
+        serde_json::to_string(&two).unwrap(),
+        r#"["client","other"]"#
+    );
+    let read: Audience = serde_json::from_str(r#"["client","other"]"#).unwrap();
+    assert_eq!((read.first(), read.contains("other")), ("client", true));
+    assert!(serde_json::from_str::<Audience>("[]").is_err());
+}
 
 #[test]
 fn rs256_jwt_verifies_with_published_jwk() {
@@ -39,7 +53,7 @@ fn rs256_jwt_verifies_with_published_jwk() {
     let claims = TokenClaims {
         iss: "https://issuer.example",
         sub: "user",
-        aud: "client",
+        aud: Audience::new("client", []),
         iat: 100,
         exp: 200,
         jti: "token",

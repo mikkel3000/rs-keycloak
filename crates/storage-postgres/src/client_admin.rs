@@ -3,6 +3,7 @@
 use sqlx::Row;
 use sqlx::postgres::PgRow;
 
+use crate::protocol_mappers::{NewProtocolMapper, insert_mappers, replace_mappers};
 use crate::service_account::service_account_username;
 use crate::{Actor, Storage, StorageError, audit};
 
@@ -46,6 +47,9 @@ pub struct NewClient<'a> {
     pub name: Option<&'a str>,
     /// Description shown to users, if set; may be empty.
     pub description: Option<&'a str>,
+    /// Protocol mappers: added on creation, and on update the client's
+    /// whole set; `None` keeps an updated client's mappers.
+    pub protocol_mappers: Option<&'a [NewProtocolMapper<'a>]>,
 }
 
 /// A stored client with the fields of the admin representation.
@@ -90,7 +94,9 @@ pub struct ClientRecord {
 pub enum ClientCreation {
     /// The client was created.
     Created,
-    /// A client with this identifier already exists in the realm.
+    /// A client with this identifier already exists in the realm, or two of
+    /// its protocol mappers share a protocol and name, which the reference
+    /// reports the same way.
     Exists,
 }
 
@@ -197,6 +203,11 @@ impl Storage {
                 return Err(StorageError::Conflict);
             }
         }
+        if let Some(mappers) = client.protocol_mappers
+            && !insert_mappers(&mut *conn, realm_id, id, mappers).await?
+        {
+            return Ok(ClientCreation::Exists);
+        }
         audit(conn, actor, "client_created").await?;
         tx.commit().await?;
         Ok(ClientCreation::Created)
@@ -299,6 +310,9 @@ impl Storage {
             if inserted == 0 {
                 return Err(StorageError::Conflict);
             }
+        }
+        if let Some(mappers) = client.protocol_mappers {
+            replace_mappers(&mut *conn, realm_id, id, mappers).await?;
         }
         audit(conn, actor, "client_updated").await?;
         tx.commit().await?;

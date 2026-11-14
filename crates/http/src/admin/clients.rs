@@ -26,6 +26,7 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
+use super::protocol_mappers::{self, MapperInput};
 use super::users::{
     json_object, json_response, realm_id, representation as user_representation, unparsable,
 };
@@ -231,7 +232,8 @@ fn text_field(fields: &Map<String, Value>, name: &str) -> Result<Option<String>,
 
 /// Request fields a client representation may carry here; the rest are
 /// refused rather than ignored.
-const SUPPORTED: [&str; 19] = [
+const SUPPORTED: [&str; 20] = [
+    "protocolMappers",
     "name",
     "description",
     "rootUrl",
@@ -407,6 +409,7 @@ impl Settings {
             base_url: self.base_url.as_deref(),
             name: self.name.as_deref(),
             description: self.description.as_deref(),
+            protocol_mappers: None,
         }
     }
 }
@@ -491,12 +494,18 @@ pub(super) async fn create_from(
         (false, None) => Some(seal(state, realm_id, &id, random_token().as_bytes())?),
         (false, Some(secret)) => Some(seal(state, realm_id, &id, secret.as_bytes())?),
     };
+    let mappers = protocol_mappers::parse_client_mappers(fields)?;
+    let stored_mappers = mappers
+        .as_ref()
+        .map(|mappers| mappers.iter().map(MapperInput::stored).collect::<Vec<_>>());
+    let mut client = settings.client(&client_identifier);
+    client.protocol_mappers = stored_mappers.as_deref();
     let created = state
         .storage
         .create_client(
             realm_id,
             &id,
-            &settings.client(&client_identifier),
+            &client,
             secret.as_ref(),
             &Uuid::new_v4().to_string(),
             actor,
@@ -541,7 +550,26 @@ pub(super) async fn update_from(
     actor: &Actor,
 ) -> Result<(), AdminError> {
     let id = stored.id.clone();
-    let settings = Settings::stored(&stored).apply(fields, &["id"])?;
+    // The scope lists the representation shows are taken back unchanged,
+    // so a representation read from the server can be sent back.
+    let shown_scopes = [
+        (
+            "defaultClientScopes",
+            json!(super::client_scopes::default_scope_names()),
+        ),
+        ("optionalClientScopes", json!([])),
+    ];
+    for (field, shown) in &shown_scopes {
+        if fields.get(*field).is_some_and(|value| value != shown) {
+            return Err(AdminError::bad_request(format!(
+                "Unsupported client field: {field}"
+            )));
+        }
+    }
+    let settings = Settings::stored(&stored).apply(
+        fields,
+        &["id", "defaultClientScopes", "optionalClientScopes"],
+    )?;
     let client_identifier = client_identifier(fields)?.unwrap_or(stored.client_identifier);
     let sealed = match (settings.public, requested_secret(fields)?) {
         (true, Some(_)) => {
@@ -562,12 +590,18 @@ pub(super) async fn update_from(
         (None, true) => SecretChange::Remove,
         (None, false) => SecretChange::Keep,
     };
+    let mappers = protocol_mappers::parse_client_mappers(fields)?;
+    let stored_mappers = mappers
+        .as_ref()
+        .map(|mappers| mappers.iter().map(MapperInput::stored).collect::<Vec<_>>());
+    let mut client = settings.client(&client_identifier);
+    client.protocol_mappers = stored_mappers.as_deref();
     let updated = state
         .storage
         .update_client(
             realm_id,
             &id,
-            &settings.client(&client_identifier),
+            &client,
             secret,
             &Uuid::new_v4().to_string(),
             actor,
@@ -601,9 +635,19 @@ async fn list_clients(
         .storage
         .clients(&realm_id, params.get("clientId").map(String::as_str))
         .await?;
+    let mappers = state.storage.realm_protocol_mappers(&realm_id).await?;
     let mut listed = Vec::with_capacity(clients.len());
     for client in &clients {
-        listed.push(representation(client, open(&state, &realm_id, client)?));
+        let mut shown = representation(client, open(&state, &realm_id, client)?);
+        let own: Vec<Value> = mappers
+            .iter()
+            .filter(|(owner, _)| *owner == client.id)
+            .map(|(_, mapper)| protocol_mappers::representation(mapper, false))
+            .collect();
+        if !own.is_empty() {
+            shown["protocolMappers"] = Value::Array(own);
+        }
+        listed.push(shown);
     }
     Ok(json_response(Value::Array(listed)))
 }
@@ -629,7 +673,23 @@ async fn read_client(
     let realm_id = realm_id(&state, &realm).await?;
     let client = find_client(&state, &realm_id, &id).await?;
     let secret = open(&state, &realm_id, &client)?;
-    Ok(json_response(representation(&client, secret)))
+    let mut shown = representation(&client, secret);
+    // As the reference, a client without mappers has no protocolMappers
+    // field, and the client shows each mapper's stored configuration.
+    let mappers = state
+        .storage
+        .protocol_mappers(&realm_id, &client.id)
+        .await?
+        .unwrap_or_default();
+    if !mappers.is_empty() {
+        shown["protocolMappers"] = Value::Array(
+            mappers
+                .iter()
+                .map(|mapper| protocol_mappers::representation(mapper, false))
+                .collect(),
+        );
+    }
+    Ok(json_response(shown))
 }
 
 async fn read_secret(

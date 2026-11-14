@@ -307,7 +307,10 @@ async fn browser(
     };
     let mut confirm = true;
     let mut forced = false;
-    let named = client_param.or(hint.as_ref().map(|claims| &claims.aud));
+    // An ID token names its client first; audience mappers add others.
+    let named = client_param
+        .map(String::as_str)
+        .or(hint.as_ref().map(|claims| claims.aud.first()));
     let rules = match named {
         Some(client) => match state.storage.post_logout_rules(&realm_id, client).await {
             Ok(rules) => rules,
@@ -317,7 +320,7 @@ async fn browser(
     };
     match (client_param, &hint) {
         (Some(_), _) if rules.is_none() => forced = true,
-        (Some(client), Some(claims)) if claims.aud != *client => {
+        (Some(client), Some(claims)) if claims.aud.first() != client.as_str() => {
             return refused(
                 StatusCode::BAD_REQUEST,
                 "invalidParameterMessage",

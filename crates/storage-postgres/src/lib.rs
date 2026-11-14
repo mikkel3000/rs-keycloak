@@ -14,6 +14,7 @@ mod login_locale;
 mod login_settings;
 mod login_steps;
 mod logout;
+mod protocol_mappers;
 mod realm_admin;
 mod role_admin;
 mod service_account;
@@ -42,6 +43,9 @@ pub use login_steps::{
     RequiredActionSetting,
 };
 pub use logout::{LogoutRequest, RefreshLogout};
+pub use protocol_mappers::{
+    MapperCreation, NewProtocolMapper, ProtocolMapperRecord, TokenAudiences,
+};
 pub use realm_admin::{
     MASTER_REALM, RealmChanges, RealmCreation, RealmDeletion, RealmRecord, RealmSettings,
     RealmSmtp, UserSettingChanges, UserSettings,
@@ -113,6 +117,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0043_brute_force.sql"),
     include_str!("../../../migrations/0044_event_settings.sql"),
     include_str!("../../../migrations/0045_login_events.sql"),
+    include_str!("../../../migrations/0046_protocol_mappers.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

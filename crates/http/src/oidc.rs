@@ -39,7 +39,7 @@ use login_locale::LocaleQuery;
 use rs_keycloak_authentication::{LoginAttempt, LoginResult, LoginService, PasswordWorkError};
 use rs_keycloak_crypto::secret_box::SecretKey;
 use rs_keycloak_crypto::signing::{
-    IdTokenClaims, RealmAccess, SigningKey, TokenClaims, UserClaims, VerifiedToken,
+    Audience, IdTokenClaims, RealmAccess, SigningKey, TokenClaims, UserClaims, VerifiedToken,
 };
 use rs_keycloak_protocols::client_urls::{redirect_matches, resolve_redirect};
 use rs_keycloak_protocols::pkce::{self, Challenge};
@@ -1539,6 +1539,21 @@ async fn token(
         )
             .into_response();
     }
+    let Ok(audiences) = s
+        .storage
+        .token_audiences(&realm_id, &grant.client_identifier)
+        .await
+    else {
+        return unavailable();
+    };
+    let access_audience = Audience::new(
+        &grant.client_identifier,
+        audiences.access.iter().map(String::as_str),
+    );
+    let id_audience = Audience::new(
+        &grant.client_identifier,
+        audiences.id.iter().map(String::as_str),
+    );
     let scope = grant.scope.clone();
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&s.signer);
@@ -1548,7 +1563,7 @@ async fn token(
         let claims = TokenClaims {
             iss: &issuer,
             sub: &grant.user_id,
-            aud: &grant.client_identifier,
+            aud: access_audience,
             iat: now,
             exp: now + lifespan,
             jti: &jti,
@@ -1564,7 +1579,7 @@ async fn token(
         let id_claims = IdTokenClaims {
             iss: &issuer,
             sub: &grant.user_id,
-            aud: &grant.client_identifier,
+            aud: id_audience,
             iat: now,
             exp: now + lifespan,
             auth_time: Some(grant.auth_time),
@@ -1575,7 +1590,7 @@ async fn token(
         let refresh_claims = TokenClaims {
             iss: &issuer,
             sub: &grant.user_id,
-            aud: &issuer,
+            aud: Audience::new(&issuer, []),
             iat: now,
             exp: refresh_expiry,
             jti: &refresh_jti,
@@ -1939,7 +1954,9 @@ pub(crate) async fn verified_access_any(
     };
     // Like the reference, only expiry is checked against the clock: a token
     // issued a moment "in the future" by a clock step is still valid.
-    if claims.exp <= now || claims.aud != claims.azp {
+    // Access tokens name their own client first; audience mappers add the
+    // others after it.
+    if claims.exp <= now || claims.aud.first() != claims.azp {
         return Ok(None);
     }
     Ok(Some((realm.to_owned(), claims)))
@@ -1972,7 +1989,7 @@ async fn verified_refresh(
     let issuer = format!("{}/realms/{realm}", s.issuer_base.trim_end_matches('/'));
     if claims.iss != issuer
         || claims.exp <= now
-        || claims.aud != issuer
+        || !claims.aud.is_only(&issuer)
         || granted_login_scope(&claims.scope).is_none()
     {
         return Ok(None);

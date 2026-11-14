@@ -33,6 +33,7 @@ mod groups;
 mod localization;
 mod login_events;
 mod login_settings;
+mod protocol_mappers;
 mod roles;
 mod sessions;
 mod users;
@@ -47,6 +48,7 @@ pub(crate) fn routes() -> Router<OidcState> {
         .merge(event_settings::routes())
         .merge(export::routes())
         .merge(login_events::routes())
+        .merge(protocol_mappers::routes())
         .merge(groups::routes())
         .merge(localization::routes())
         .merge(roles::routes())
@@ -233,6 +235,17 @@ async fn token_holder(
     state: &OidcState,
     headers: &HeaderMap,
 ) -> Result<(String, Actor), AdminError> {
+    token_caller(state, headers)
+        .await
+        .map(|(realm, actor, _)| (realm, actor))
+}
+
+/// The bearer token's realm name, its holder, and the `clientId` it was
+/// issued to.
+async fn token_caller(
+    state: &OidcState,
+    headers: &HeaderMap,
+) -> Result<(String, Actor, String), AdminError> {
     let token = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -264,7 +277,7 @@ async fn token_holder(
         | AccessTokenStatus::Revoked
         | AccessTokenStatus::SessionNotFound => return Err(AdminError::Unauthorized),
     };
-    Ok((realm, Actor { realm_id, user_id }))
+    Ok((realm, Actor { realm_id, user_id }, claims.azp))
 }
 
 /// Resolves the bearer token and what it may do in the named realm. Only

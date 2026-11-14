@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use axum::Json;
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use rs_keycloak_crypto::signing::{IdTokenClaims, RealmAccess, TokenClaims, UserClaims};
+use rs_keycloak_crypto::signing::{Audience, IdTokenClaims, RealmAccess, TokenClaims, UserClaims};
 use rs_keycloak_storage_postgres::ServiceAccountGrant;
 use serde_json::json;
 
@@ -112,16 +112,25 @@ pub(super) async fn grant(
     else {
         return unavailable();
     };
+    let Ok(audiences) = state
+        .storage
+        .token_audiences(realm_id, &client.client_id)
+        .await
+    else {
+        return unavailable();
+    };
     let issuer = format!("{}/realms/{realm}", state.issuer_base.trim_end_matches('/'));
     let signer = Arc::clone(&state.signer);
     let client_id = client.client_id;
+    let access_audience = Audience::new(&client_id, audiences.access.iter().map(String::as_str));
+    let id_audience = Audience::new(&client_id, audiences.id.iter().map(String::as_str));
     let tokens = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let jti = random_token();
         let access = signer.sign(&TokenClaims {
             iss: &issuer,
             sub: &account.user_id,
-            aud: &client_id,
+            aud: access_audience,
             iat: now,
             exp: now + lifespan,
             jti: &jti,
@@ -138,7 +147,7 @@ pub(super) async fn grant(
             Some(signer.sign_id_token(&IdTokenClaims {
                 iss: &issuer,
                 sub: &account.user_id,
-                aud: &client_id,
+                aud: id_audience,
                 iat: now,
                 exp: now + lifespan,
                 auth_time: None,

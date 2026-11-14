@@ -166,7 +166,8 @@ pub(super) async fn handle(
         Ok(None) => return inactive(),
         Err(_) => return unavailable(),
     };
-    if claims.aud != client.client_id {
+    // Only the token's own client, its first audience, introspects it.
+    if claims.aud.first() != client.client_id {
         return inactive();
     }
     let username = match state
