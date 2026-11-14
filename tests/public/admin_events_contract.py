@@ -114,7 +114,7 @@ class AdminEventsContract(AdminCase):
         """The recorder's changes in one realm."""
         name = self.names[key]
         base = f"/admin/realms/{name}"
-        status, headers, _ = self.send("POST", base + "/users", {"username": "alice", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "alice@example.invalid", "emailVerified": True, "credentials": [{"type": "password", "value": secrets.token_urlsafe(20), "temporary": False}]})
+        status, headers, _ = self.send("POST", base + "/users", {"username": "alice", "enabled": True, "firstName": "Reference", "lastName": "User", "email": "alice@example.invalid", "emailVerified": True})
         self.assertEqual(status, 201)
         user = headers["location"].rsplit("/", 1)[1]
         self.ids["user"] = user
@@ -132,51 +132,72 @@ class AdminEventsContract(AdminCase):
         self.send("DELETE", f"{base}/users/{user}")
         return duplicate
 
-    def test_changes_by_setting(self):
-        self.make_realms({"admin": {"adminEventsEnabled": True}, "details": {"adminEventsEnabled": True, "adminEventsDetailsEnabled": True}, "off": {}})
-        for key in ("admin", "details", "off"):
-            self.assertEqual({"events": len(self.events(key)[1])}, REFERENCE[f"initial/{key}"], key)
-            duplicate = self.changes(key)
-            status, listed = self.events(key)
-            expected = REFERENCE[f"events/{key}"]
-            expected = dict(expected, events=[comparable(event) for event in expected["events"]])
-            observed = {"status": status, "duplicate_status": duplicate, "events": [comparable(self.summary(event, key)) for event in listed]}
-            self.assertEqual(observed, expected, key)
+    def check_changes(self, key, settings):
+        # The user gets no password, which only the reference's stripped
+        # representation would show; the reset-password ACTION sets one.
+        self.make_realms({key: settings})
+        self.assertEqual({"events": len(self.events(key)[1])}, REFERENCE[f"initial/{key}"], key)
+        duplicate = self.changes(key)
+        status, listed = self.events(key)
+        expected = REFERENCE[f"events/{key}"]
+        expected = dict(expected, events=[comparable(event) for event in expected["events"]])
+        observed = {"status": status, "duplicate_status": duplicate, "events": [comparable(self.summary(event, key)) for event in listed]}
+        self.assertEqual(observed, expected, key)
 
-    def test_filters_and_clearing(self):
+    def test_changes_with_admin_events(self):
+        self.check_changes("admin", {"adminEventsEnabled": True})
+
+    def test_changes_with_representations(self):
+        self.check_changes("details", {"adminEventsEnabled": True, "adminEventsDetailsEnabled": True})
+
+    def test_changes_with_admin_events_off(self):
+        self.check_changes("off", {})
+
+    def test_clearing(self):
+        self.make_realms({"admin": {"adminEventsEnabled": True}})
+        name = self.names["admin"]
+        self.assertEqual(self.send("POST", f"/admin/realms/{name}/roles", {"name": "events-role"})[0], 201)
+        self.assertEqual(len(self.events("admin")[1]), 1)
+        status, _, body = self.send("DELETE", f"/admin/realms/{name}/admin-events")
+        self.assertEqual({"status": status, "body": body, "after": self.events("admin")[1]}, REFERENCE["clear"])
+        self.assertEqual({"status": self.request("GET", f"/admin/realms/{name}/admin-events")[0]}, REFERENCE["list/no-token"])
+        self.assertEqual({"status": self.request("DELETE", f"/admin/realms/{name}/admin-events")[0]}, REFERENCE["clear/no-token"])
+
+    def check_filters(self, cases):
         self.make_realms({"admin": {"adminEventsEnabled": True}})
         self.changes("admin")
-        status, listed = self.events("admin", "direction=desc")
-        self.assertEqual({"status": self.events("admin", "")[0], "same_as_desc": self.events("admin", "")[1] == listed}, REFERENCE["order/default"])
-        today = datetime.datetime.now(datetime.UTC).date()
-        cases = {
+        for label, query in cases(self).items():
+            status, listed = self.events("admin", query)
+            operations = [[event["operationType"], event.get("resourceType")] for event in listed] if isinstance(listed, list) else listed
+            self.assertEqual({"status": status, "operations": operations}, REFERENCE[f"filter/{label}"], label)
+
+    def test_filters_by_resource(self):
+        self.check_filters(lambda test: {
             "operation-create": "operationTypes=CREATE&direction=asc",
             "operation-two": "operationTypes=CREATE&operationTypes=DELETE&direction=asc",
             "resource-user": "resourceTypes=USER&direction=asc",
             "path-users": "resourcePath=users/*&direction=asc",
             # The recorder's id is a user of another realm.
             "path-exact": f"resourcePath=users/{secrets.token_hex(8)}&direction=asc",
-            "auth-realm": f"authRealm={self.master_id}&direction=asc",
-            "auth-realm-other": f"authRealm={self.realm_ids['admin']}&direction=asc",
-            "auth-client": f"authClient={self.admin_client}&direction=asc",
-            "auth-user": f"authUser={self.service_account}&direction=asc",
+            "date-invalid": "dateTo=tomorrow",
+            "direction-invalid": "direction=up",
+        })
+        status, listed = self.events("admin", "direction=desc")
+        self.assertEqual({"status": self.events("admin", "")[0], "same_as_desc": self.events("admin", "")[1] == listed}, REFERENCE["order/default"])
+
+    def test_filters_by_caller_and_time(self):
+        today = datetime.datetime.now(datetime.UTC).date()
+        self.check_filters(lambda test: {
+            "auth-realm": f"authRealm={test.master_id}&direction=asc",
+            "auth-realm-other": f"authRealm={test.realm_ids['admin']}&direction=asc",
+            "auth-client": f"authClient={test.admin_client}&direction=asc",
+            "auth-user": f"authUser={test.service_account}&direction=asc",
             "auth-ip": "authIpAddress=127.0.0.1&direction=asc",
             "max": "max=2&direction=asc",
             "first": "first=2&max=2&direction=asc",
             "date-today": f"dateFrom={today}&dateTo={today}&direction=asc",
             "epoch-future": f"dateFrom={int(time.time() * 1000) + 3600000}",
-            "date-invalid": "dateTo=tomorrow",
-            "direction-invalid": "direction=up",
-        }
-        for label, query in cases.items():
-            status, listed = self.events("admin", query)
-            operations = [[event["operationType"], event.get("resourceType")] for event in listed] if isinstance(listed, list) else listed
-            self.assertEqual({"status": status, "operations": operations}, REFERENCE[f"filter/{label}"], label)
-        status, _, body = self.send("DELETE", f"/admin/realms/{self.names['admin']}/admin-events")
-        self.assertEqual({"status": status, "body": body, "after": self.events("admin")[1]}, REFERENCE["clear"])
-        name = self.names["admin"]
-        self.assertEqual({"status": self.request("GET", f"/admin/realms/{name}/admin-events")[0]}, REFERENCE["list/no-token"])
-        self.assertEqual({"status": self.request("DELETE", f"/admin/realms/{name}/admin-events")[0]}, REFERENCE["clear/no-token"])
+        })
 
     def test_events_config(self):
         self.make_realms({"config": {}})

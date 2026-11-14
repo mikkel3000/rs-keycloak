@@ -56,13 +56,26 @@ class EventConfigContract(AdminCase):
             self.assertEqual(config_summary(*self.admin("/events/config", realm=realm)), REFERENCE[f"config/{key}"], key)
         self.assertEqual(self.admin("/events/config")[1]["enabledEventTypes"], REFERENCE["default-event-types"])
 
-    def test_config_updates(self):
-        cases = [
+    def check_config_updates(self, cases):
+        for label, payload in cases:
+            status, body = self.admin("/events/config", "PUT", payload)
+            self.assertEqual({"status": status, "body": body}, REFERENCE[f"put/{label}"], label)
+            self.assertEqual(config_summary(*self.admin("/events/config")), REFERENCE[f"after/{label}"], label)
+            self.assertEqual(realm_events(self.admin("")[1]), REFERENCE[f"realm-after/{label}"], label)
+
+    def test_config_flags_and_types(self):
+        self.check_config_updates([
             ("enable-all", {"eventsEnabled": True, "adminEventsEnabled": True, "adminEventsDetailsEnabled": True}),
             ("admin-flags-absent", {"eventsEnabled": True}),
             ("events-absent", {"adminEventsEnabled": True}),
             ("types", {"eventsEnabled": True, "enabledEventTypes": ["CLIENT_DELETE", "CLIENT_DELETE_ERROR"]}),
             ("types-empty", {"eventsEnabled": True, "enabledEventTypes": []}),
+        ])
+
+    def test_config_expiration_and_listeners(self):
+        # The recorded sequence reaches these cases with every flag on.
+        self.admin("/events/config", "PUT", {"eventsEnabled": True, "adminEventsEnabled": True, "adminEventsDetailsEnabled": True})
+        cases = [
             ("expiration", {"eventsEnabled": True, "eventsExpiration": 3600}),
             ("expiration-absent", {"eventsEnabled": True}),
             ("listeners-empty", {"eventsEnabled": True, "eventsListeners": []}),
@@ -70,11 +83,7 @@ class EventConfigContract(AdminCase):
             ("listeners-unknown", {"eventsEnabled": True, "eventsListeners": ["no-such-listener"]}),
             ("not-an-object", []),
         ]
-        for label, payload in cases:
-            status, body = self.admin("/events/config", "PUT", payload)
-            self.assertEqual({"status": status, "body": body}, REFERENCE[f"put/{label}"], label)
-            self.assertEqual(config_summary(*self.admin("/events/config")), REFERENCE[f"after/{label}"], label)
-            self.assertEqual(realm_events(self.admin("")[1]), REFERENCE[f"realm-after/{label}"], label)
+        self.check_config_updates(cases)
 
     def test_realm_updates_and_access(self):
         self.admin("/events/config", "PUT", {"eventsEnabled": True, "adminEventsEnabled": True, "adminEventsDetailsEnabled": True})
