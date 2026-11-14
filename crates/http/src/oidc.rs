@@ -238,7 +238,7 @@ pub fn router(state: OidcState) -> Router {
                 .options(|| async { StatusCode::OK })
                 .layer(axum::middleware::from_fn(cors::metadata)),
         )
-        .merge(crate::admin::routes())
+        .merge(crate::admin::routes(state.clone()))
         .merge(crate::account::routes(state.clone()))
         .merge(crate::account_console::routes())
         .merge(iframes::routes())

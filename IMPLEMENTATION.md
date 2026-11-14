@@ -1749,3 +1749,37 @@ their own client first, where the reference's default role mappings give
 own client, so a client named by an audience mapper cannot introspect the
 token, and introspection shows the access token's audience. Partial
 exports do not carry mappers yet.
+
+## Admin events
+
+A realm with `adminEventsEnabled` stores an admin event for each
+successful admin API change (migration 47). One middleware around the
+admin routes classifies the request by method and path into the
+reference's operation (`CREATE`, `UPDATE`, `DELETE`, or `ACTION` for
+password resets, logouts, action emails, credential and consent removal
+and secret regeneration) and resource type (`USER`, `CLIENT`,
+`REALM_ROLE`, `GROUP`, `PROTOCOL_MAPPER`, role mappings, group
+memberships and the rest), with the path below the realm, or the new
+resource's from `Location`. Realm creation and deletion are stored in the
+acting token's realm with the realm name as path; the realm's own update
+has no path; an events config update is stored when admin events were on
+before or are on after, as `AdminEventBuilder.refreshRealmEventsConfig`
+does; other changes when they were on before the change. With
+`adminEventsDetailsEnabled`, creations and updates keep the request body
+without `credentials` and with `secret` masked. `authDetails` carries the
+token's realm, its client's id, its user and the caller's address.
+`GET /admin/realms/{realm}/admin-events` lists them with
+`operationTypes`, `resourceTypes`, `resourcePath` (`*` matches any text),
+`authRealm`, `authClient`, `authUser`, `authIpAddress`, `dateFrom`,
+`dateTo`, `first`, `max` and `direction`, and `DELETE` clears them.
+`tests/public/admin_events_contract.py` checks 4 tests following
+`tests/reference/admin-event-observations.json`.
+
+Remaining differences: the event is written after the change commits, so
+a failed write answers 503 although the change stays, where the reference
+writes both in one transaction. A representation is the request body,
+without the fields the reference's resources add (`id`, `composite`,
+`subGroups`, a created realm's full representation), and a deletion keeps
+none. Clearing events, partial exports and partial imports record
+nothing; the reference records each imported resource. Roles by id are
+always `REALM_ROLE`.

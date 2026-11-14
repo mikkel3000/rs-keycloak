@@ -2,6 +2,7 @@
 
 mod account;
 mod action_tokens;
+mod admin_events;
 mod brute_force;
 mod client_admin;
 mod consent;
@@ -24,6 +25,7 @@ mod user_admin;
 
 pub use account::{AccountApplication, AccountChange, AccountConflicts, AccountSession};
 pub use action_tokens::{ActionToken, LinkUser, RedeemedToken, TokenLookup, VerifyLink};
+pub use admin_events::{AdminEventQuery, AdminEventRecord, NewAdminEvent};
 pub use brute_force::BruteForceStatus;
 pub use client_admin::{
     ClientCreation, ClientRecord, ClientUpdate, NewClient, SealedSecret, SecretChange,
@@ -118,6 +120,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0044_event_settings.sql"),
     include_str!("../../../migrations/0045_login_events.sql"),
     include_str!("../../../migrations/0046_protocol_mappers.sql"),
+    include_str!("../../../migrations/0047_admin_events.sql"),
 ];
 const BOOTSTRAP_LOCK_KEY: i64 = 0x72736b626f6f74;
 

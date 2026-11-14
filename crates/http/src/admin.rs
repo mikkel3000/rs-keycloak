@@ -23,6 +23,7 @@ use uuid::Uuid;
 
 use crate::oidc::{OidcState, digest, valid_realm, verified_access_any};
 
+mod admin_events;
 mod attack_detection;
 mod authentication;
 mod client_scopes;
@@ -39,8 +40,9 @@ mod sessions;
 mod users;
 
 /// Admin routes, mounted with the public routes below the issuer path.
-pub(crate) fn routes() -> Router<OidcState> {
+pub(crate) fn routes(state: OidcState) -> Router<OidcState> {
     Router::new()
+        .merge(admin_events::routes())
         .merge(attack_detection::routes())
         .merge(authentication::routes())
         .merge(client_scopes::routes())
@@ -68,6 +70,10 @@ pub(crate) fn routes() -> Router<OidcState> {
                 .layer(DefaultBodyLimit::max(REALM_BODY_LIMIT))
                 .delete(delete_realm),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            admin_events::record,
+        ))
 }
 
 /// The body limit of realm create and update. Realm representations carry
